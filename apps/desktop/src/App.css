@@ -1,0 +1,2896 @@
+/* ═══════════════════════════════════════════════════
+   Offline_Intelligence CSS - Dark/Light Theme System
+   ═══════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════
+   Offline Counsel AI — surface styles
+   ═══════════════════════════════════════════════════
+
+   Design tokens live in styles/tokens.css and primitives in
+   styles/primitives.css, both imported from index.css BEFORE this file.
+
+   The token blocks that used to sit here were removed rather than migrated:
+   they redefined the same :root custom properties later in source order, so
+   while they existed they silently won over tokens.css.
+
+   Rules below still referencing legacy names (--bg-primary, --border-primary,
+   …) resolve through the alias block in tokens.css. Those aliases are a
+   migration aid; new rules should name roles directly.
+   ═══════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════
+   App Root Layout
+   ═══════════════════════════════════════════════════ */
+
+.app-root {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  position: relative;
+}
+
+/* ═══════════════════════════════════════════════════
+   THE RAIL (sidebar) — one shade off the canvas, per theme
+   ═══════════════════════════════════════════════════
+
+   Every colour below still comes from a --rail-* token, and that indirection
+   is the point: this block did not change when the rail stopped being dark.
+
+   What DID change is where those tokens live. They used to be declared once
+   in tokens.css outside every theme block, making the rail structurally
+   incapable of flipping — a permanently dark spine in both themes, on the
+   reasoning that "the rail is chrome, not content".
+
+   That premise is now rejected. The rail is the same paper as the canvas, one
+   shade down, divided by a single hairline; a black spine bolted to a paper
+   product is the one element that does not belong to it. So --rail-* is
+   declared in BOTH theme blocks instead, which keeps the parity rule intact
+   (every token defined in both) while letting the plane track the theme.
+
+   The rail keeps its own ring and accent tokens even so. They are no longer
+   compensating for a fixed dark plane — they exist so the rail can be retuned
+   independently of the canvas without hunting through this file.
+   ═══════════════════════════════════════════════════ */
+
+.sidebar {
+  width: 260px;
+  height: 100vh;
+  background-color: var(--rail-bg);
+  border-right: 1px solid var(--rail-border);
+  display: flex;
+  flex-direction: column;
+  padding: 32px var(--sp-2) var(--sp-2);
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: var(--z-rail);
+  transform: translateX(-100%);
+  transition: transform var(--dur-3) var(--ease-out);
+  /* Text inside the rail inherits rail colours rather than the themed
+     --text-* set. Set once here so a descendant that forgets to specify a
+     colour still lands correctly. */
+  color: var(--rail-text);
+}
+
+.app-root[data-sidebar="open"] .sidebar {
+  transform: translateX(0);
+}
+
+/* Scoped scrollbar: the rail's thumb must stay light-on-dark even in light
+   mode, so it cannot use the themed --scrollbar-* tokens. */
+.sidebar *::-webkit-scrollbar-thumb {
+  background: var(--rail-active);
+  background-clip: content-box;
+}
+.sidebar *::-webkit-scrollbar-thumb:hover {
+  background: var(--rail-selected);
+  background-clip: content-box;
+}
+
+/* The toggle sits OUTSIDE the rail (position: fixed, over the canvas) when the
+   rail is CLOSED, so it is the one sidebar-named control that must follow the
+   theme — it is drawn on themed canvas, not on the rail. When the rail is open
+   it overlaps the rail and flips to rail colours (rule below). */
+.sidebar-toggle-btn {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: var(--z-rail-toggle);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-toggle-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* When the rail is open the toggle overlaps it, so it flips to rail colours. */
+.app-root[data-sidebar="open"] .sidebar-toggle-btn {
+  color: var(--rail-text-dim);
+}
+.app-root[data-sidebar="open"] .sidebar-toggle-btn:hover {
+  background-color: var(--rail-hover);
+  color: var(--rail-text);
+}
+
+/* ── Identity row (top of the rail) ──────────────────────────────────────
+   The account control. Logged out: "Welcome User" + a login glyph. Logged
+   in: the user's full name in bold caps + a square initials tile, opening a
+   Logout menu. Sits ABOVE New Discussion and is the only place the user
+   signs in or out. All colours are --rail-* because the rail is black in
+   both themes. */
+.sidebar-identity-wrap {
+  position: relative;
+  margin-bottom: var(--sp-2);
+}
+
+.sidebar-identity {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-identity:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-identity:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: -2px;
+}
+
+/* Bold caps, per the product spec. `text-transform` rather than uppercasing
+   the string so the accessible name and title tooltip keep the real casing. */
+.sidebar-identity__name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-wide);
+  color: var(--rail-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Square (not pill) tile, per the spec. */
+.sidebar-identity__initials {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  background-color: var(--rail-accent-solid);
+  color: var(--rail-bg);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+}
+
+.sidebar-identity__login {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--rail-border);
+  color: var(--rail-text-dim);
+  transition: color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-identity:hover .sidebar-identity__login {
+  color: var(--rail-text);
+  border-color: var(--rail-text-faint);
+}
+
+.sidebar-identity__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: var(--z-popover);
+  padding: var(--sp-1);
+  background-color: var(--rail-bg-raised);
+  border: 1px solid var(--rail-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Icon buttons in three sizes. Consolidated to one declaration with size
+   modifiers driven by custom properties — previously three near-identical
+   rule pairs that had already drifted (only the xs variant changed colour on
+   hover, for no stated reason). */
+.sidebar-icon-btn,
+.sidebar-icon-btn-sm,
+.sidebar-icon-btn-xs {
+  --rail-btn-pad: var(--sp-2);
+  --rail-btn-radius: var(--r-md);
+  background: transparent;
+  border: none;
+  color: var(--rail-text-dim);
+  cursor: pointer;
+  padding: var(--rail-btn-pad);
+  border-radius: var(--rail-btn-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-icon-btn-sm {
+  --rail-btn-pad: var(--sp-1);
+  --rail-btn-radius: var(--r-sm);
+}
+
+.sidebar-icon-btn-xs {
+  --rail-btn-pad: 2px;
+  --rail-btn-radius: var(--r-xs);
+}
+
+.sidebar-icon-btn:hover,
+.sidebar-icon-btn-sm:hover,
+.sidebar-icon-btn-xs:hover {
+  background-color: var(--rail-hover);
+  color: var(--rail-text);
+}
+
+.sidebar-icon-btn:focus-visible,
+.sidebar-icon-btn-sm:focus-visible,
+.sidebar-icon-btn-xs:focus-visible,
+.sidebar-nav-btn:focus-visible,
+.sidebar-search-input:focus-visible,
+.sidebar-chat-title:focus-visible,
+.sidebar-profile-row:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: 2px;
+}
+
+.sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: transparent;
+  border: none;
+  color: var(--rail-text);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+  text-align: left;
+}
+
+.sidebar-nav-btn:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-nav-btn > svg {
+  color: var(--rail-text-dim);
+  flex: 0 0 auto;
+  transition: color var(--dur-1) var(--ease-out);
+}
+.sidebar-nav-btn:hover > svg {
+  color: var(--rail-text);
+}
+
+/* Popovers anchored inside the rail stay on the rail's plane — a themed
+   dropdown here would be a white card hanging off a black panel. */
+.sidebar-dropdown,
+.sidebar-profile-popup {
+  position: absolute;
+  left: 0;
+  background: var(--rail-bg-raised);
+  border: 1px solid var(--rail-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  min-width: 200px;
+  padding: var(--sp-1);
+  z-index: var(--z-popover);
+}
+
+.sidebar-dropdown {
+  top: 100%;
+  margin-top: var(--sp-1);
+}
+
+.sidebar-profile-popup {
+  bottom: 100%;
+  margin-bottom: var(--sp-2);
+}
+
+.sidebar-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: none;
+  color: var(--rail-text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-dropdown-item:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-search-input {
+  width: 100%;
+  padding: 7px var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--rail-border);
+  background: var(--rail-bg-raised);
+  color: var(--rail-text);
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  outline: none;
+  transition: border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+  box-sizing: border-box;
+}
+
+.sidebar-search-input:focus {
+  border-color: var(--rail-accent);
+  background: var(--rail-hover);
+}
+
+.sidebar-search-input::placeholder {
+  color: var(--rail-text-faint);
+}
+
+.sidebar-section-title {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--rail-text-faint);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.sidebar-chat-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar-empty-state {
+  padding: var(--sp-3);
+  color: var(--rail-text-faint);
+  font-size: var(--fs-sm);
+}
+
+.sidebar-chat-item {
+  border-radius: var(--r-md);
+  transition: background-color var(--dur-1) var(--ease-out);
+  cursor: pointer;
+  /* Reserve the selected state's border on every row so selecting one does
+     not shift its text by half a pixel. */
+  border: 1px solid transparent;
+}
+
+.sidebar-chat-item:hover {
+  background-color: var(--rail-hover);
+}
+
+/* Selection is carried by a left accent marker plus a fill, rather than the
+   previous 0.5px all-round border. A sub-pixel border renders inconsistently
+   at non-integer device pixel ratios (it was visibly absent on some rows),
+   and the two per-theme --chat-selected-border definitions it needed are
+   exactly the kind of override this rail removes. */
+.sidebar-chat-item.selected {
+  background-color: var(--rail-selected);
+  border-color: var(--rail-border);
+  position: relative;
+}
+
+.sidebar-chat-item.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 60%;
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
+  background: var(--rail-accent);
+}
+
+.sidebar-chat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.sidebar-chat-indicators {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sidebar-pin-icon {
+  color: var(--rail-accent);
+}
+
+.sidebar-save-icon {
+  color: var(--rail-text-faint);
+}
+
+.sidebar-chat-title {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  color: var(--rail-text);
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  cursor: pointer;
+  padding: 0;
+}
+
+.sidebar-chat-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Settings + Help & Feedback, pinned to the bottom of the rail. Uses the
+   same .sidebar-nav-btn as the top group so the two ends of the rail match. */
+.sidebar-footer-section {
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--rail-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-profile-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-profile-row:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-profile-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-pill);
+  /* Rail tokens, not --accent/--text-on-accent: those follow the theme, and
+     on the light theme --accent is near-black — a black disc with white
+     initials sitting on the (now always black) rail, i.e. invisible. */
+  background-color: var(--rail-accent-solid);
+  color: var(--rail-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  flex-shrink: 0;
+}
+
+.sidebar-profile-name {
+  flex: 1;
+  font-size: var(--fs-sm);
+  color: var(--rail-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════
+   Chat Window
+   ═══════════════════════════════════════════════════ */
+
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background-color: var(--bg-chat);
+}
+
+/* Transparent, not a surface.
+   This was `background-color: var(--bg-primary)` — which aliases to
+   --bg-surface (#ffffff in light mode) while the canvas beneath it is
+   --bg-canvas (#f6f5f2). The result was a white band across the top of the
+   chat pane with a hard colour seam under it, and the header was the ONLY one
+   of its three siblings doing that: .chat-messages and .chat-input-bar both
+   use the canvas colour.
+
+   Transparent rather than pinned to --bg-canvas because this class is shared
+   by five panels (ChatWindow, Models, Settings, Help, Storage). Inheriting
+   means each header takes its own page's background instead of every page
+   being forced to agree with the chat canvas. */
+.chat-header {
+  padding: var(--sp-5) var(--sp-4) var(--sp-3);
+  background-color: transparent;
+}
+
+.chat-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-header-bar.centered {
+  justify-content: center;
+}
+
+.chat-header-bar.centered .chat-header-left {
+  position: absolute;
+  left: 16px;
+}
+
+.chat-header-bar.centered .header-actions {
+  position: absolute;
+  right: 16px;
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════
+   MODEL CAPSULE
+   ═══════════════════════════════════════════════════
+
+   The active-model chip in the chat header. Three properties, all of which the
+   previous inline-styled version got wrong:
+
+   1. CONSTANT SIZE. It had `maxWidth: 280px` with `flexWrap: 'wrap'`, so a long
+      model id did not truncate — it WRAPPED, growing the capsule to two lines
+      and pushing the Save and ⋮ buttons around. A fixed `width` plus ellipsis
+      means the chip occupies exactly the same box whether the model is
+      "gemma-3-1b-it" or "Meta-Llama-3.1-8B-Instruct-Q4_K_M".
+
+   2. SHOWS WHAT FITS. The name truncates with an ellipsis, and the full value
+      lives in the `title` attribute so nothing is unrecoverable.
+
+   3. PERMANENTLY DARK. It was light grey with black text, inverting to black
+      with white text on hover — via two JS mouse handlers writing inline
+      styles. It is now dark with light text at rest, in both themes, using the
+      theme-invariant --inverse-* tokens; hover lifts the fill one step instead
+      of reversing the colours.
+   ═══════════════════════════════════════════════════ */
+
+.model-capsule {
+  /* The one number that governs "constant size". Wide enough for ~22
+     characters at --fs-sm, which covers the common `family-params-quant`
+     shape; anything longer ellipses. */
+  width: 176px;
+  flex-shrink: 0;
+
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 30px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--inverse-border);
+  border-radius: var(--r-pill);
+  background: var(--inverse-bg);
+  color: var(--inverse-text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+.model-capsule:hover {
+  background: var(--inverse-bg-hover);
+  border-color: var(--inverse-bg-hover);
+}
+
+.model-capsule:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: 2px;
+}
+
+/* Status dot. Never shrinks, so the truncation always happens to the NAME. */
+.model-capsule__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--success);
+  flex: 0 0 auto;
+}
+
+.model-capsule__dot--idle {
+  background: var(--inverse-text-dim);
+}
+
+/* The truncating element. `min-width: 0` is required: a flex child will not
+   shrink below its content's intrinsic width without it, so the ellipsis would
+   never engage and the capsule would overflow instead. */
+.model-capsule__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.header-icon-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Capsule buttons ────────────────────────────────────────────────────────
+   Both legacy capsule classes now delegate to the `.ui-btn` primitive so the
+   markup using them needs no change while the visual definition lives in one
+   place.
+
+   What was here before, and why it had to go:
+
+   `.header-capsule-btn` inverted completely on hover — light: grey fill →
+   solid BLACK; dark: #2d3748 → solid WHITE. Two different designs, one per
+   theme, and the most violent possible response to a mouse passing over.
+
+   `.capsule-btn-gray`'s `[data-theme="dark"]` block was byte-for-byte
+   identical to its own base rule: eight lines whose only effect was to
+   suggest to the next reader that the themes differed here.
+
+   Both also carried `dark .header-capsule-btn` selectors — `dark` as a TYPE
+   selector, matching an element named <dark> that does not exist. Dead in
+   every theme.
+
+   `transition: all` is replaced by an explicit property list: `all` animates
+   layout properties too, so any width or padding change was being smeared
+   over 200ms. */
+.header-capsule-btn,
+.capsule-btn-gray {
+  --btn-h: 30px;
+  --btn-px: var(--sp-3);
+  --btn-fs: var(--fs-sm);
+  /* Rounded rectangle, not a full pill: in the reference, pills are reserved
+     for source/context CHIPS, while action buttons ("Create") are 8px rects.
+     Keeping that distinction is what stops every control reading alike. */
+  --btn-radius: var(--r-md);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: var(--btn-h);
+  padding: 0 var(--btn-px);
+  border: 1px solid var(--border);
+  border-radius: var(--btn-radius);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--btn-fs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.capsule-btn-gray {
+  --btn-h: 36px;
+  --btn-px: var(--sp-4);
+  --btn-fs: var(--fs-md);
+}
+
+/* Hover shifts the fill by one step. The foreground never changes, so a label
+   cannot flash as the pointer crosses it. */
+.header-capsule-btn:hover,
+.capsule-btn-gray:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.header-capsule-btn:active,
+.capsule-btn-gray:active {
+  background-color: var(--bg-active);
+  box-shadow: none;
+  transform: translateY(1px);
+}
+
+.header-capsule-btn:focus-visible,
+.capsule-btn-gray:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.header-capsule-btn:disabled,
+.capsule-btn-gray:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Modal surface ─────────────────────────────────────────────────────────
+   The name is kept for the markup that references it, but the glass effect is
+   gone. Its light variant was rgba(255,255,255,0.15) over a white surface —
+   i.e. invisible — and a 10px backdrop blur behind a modal costs a
+   full-viewport composite on every repaint, which is real on the integrated
+   GPUs this app targets. A solid token surface reads better and costs
+   nothing. */
+.modal-glass {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+}
+
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  padding: 0 4px;
+}
+
+.header-brand-text {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Dropdown */
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  background: var(--bg-dropdown);
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px var(--shadow);
+  min-width: 180px;
+  padding: 4px;
+  z-index: 1000;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.dropdown-item:hover { background: var(--bg-hover); }
+.dropdown-item.delete { color: var(--danger); }
+.dropdown-item.delete:hover { background: var(--danger-bg); }
+.dropdown-item .icon { width: 18px; height: 18px; flex-shrink: 0; }
+
+/* ═══════════════════════════════════════════════════
+   Messages
+   ═══════════════════════════════════════════════════ */
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 16px;
+  background-color: var(--bg-chat);
+}
+
+.chat-messages-container {
+  max-width: 768px;
+  margin: 0 auto;
+}
+
+/* Welcome */
+.chat-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  text-align: center;
+}
+
+/* The wordmark is the only thing on the welcome screen: no triangle mark, and
+   no "Ask anything to get started" subtitle. Plain block layout — the flex
+   centring and gap here existed solely to sit the mark beside the text. */
+/* Wordmark, matching the loading screen: --font-brand, which is now the
+   DISPLAY SERIF rather than the previous Helvetica-Light grotesque.
+
+   Weight is --fw-regular, not --fw-light, and that pairing is load-bearing: a
+   transitional serif already has fine hairlines, so asking for 300 on top of
+   that either picks a synthesised face or thins the strokes to the point of
+   disappearing on a paper-white canvas. The reference wordmark is a
+   normal-weight serif and reads as engraved. */
+.chat-welcome-title {
+  font-family: var(--font-brand);
+  font-size: var(--fs-4xl);
+  font-weight: var(--fw-regular);
+  color: var(--text-heading);
+  margin: 0;
+  letter-spacing: var(--ls-tight);
+}
+
+/* Messages */
+.message-wrapper { display: flex; margin-bottom: 24px; }
+.message-wrapper.user { justify-content: flex-end; }
+.message-wrapper.assistant { justify-content: flex-start; }
+
+/* The user bubble is now a quiet filled well with a hairline, not an
+   accent-coloured capsule. --bg-bubble-user used to alias --accent, and the
+   accent is now near-black — a black bubble would be the loudest object on a
+   paper canvas and would fight the assistant's prose for attention. The alias
+   points at --bg-inset instead, so the bubble reads as "the user's turn"
+   through its fill and alignment rather than through colour. */
+.message-bubble.user {
+  max-width: 70%;
+  padding: 12px 16px;
+  border-radius: var(--r-xl);
+  background-color: var(--bg-bubble-user);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.message-content-plain {
+  max-width: 85%;
+  padding: 4px 0;
+  color: var(--text-primary);
+}
+
+/* Message Attachments (visual display in chat bubbles) */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  /* Was rgba(255,255,255,·), which only worked because the bubble beneath it
+     was a saturated accent fill. On the light bubble it was invisible. */
+  border-top: 1px solid var(--border);
+}
+
+.message-bubble.user .message-attachments {
+  border-top-color: var(--border);
+}
+
+.message-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  /* White pill on a hairline — the reference's source-chip treatment. The
+     previous translucent-white fills assumed a coloured bubble underneath. */
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.message-bubble.user .message-attachment-chip {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.message-attachment-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.message-attachment-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loading-bubble { display: flex; gap: 6px; padding: 16px 20px; }
+
+.loading-dot {
+  width: 8px; height: 8px;
+  background-color: var(--text-muted);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.loading-dot:nth-child(1) { animation-delay: -0.32s; }
+.loading-dot:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════
+   Chat Input (pill-shaped, no compartment)
+   ═══════════════════════════════════════════════════ */
+
+.chat-input-bar {
+  padding: 12px 16px 16px;
+  background-color: var(--bg-chat);
+}
+
+.chat-input-form {
+  max-width: 768px;
+  margin: 0 auto;
+}
+
+/* The composer is a filled WELL, not an outlined pill.
+   ────────────────────────────────────────────────────────────────────────────
+   Two changes from the previous treatment, both taken from the reference:
+
+   · The fill (--bg-field) is a distinctly greyer plane than the canvas, and it
+     is what defines the control. The border is therefore transparent at rest —
+     a fill and a hairline both saying "edge" is one too many.
+   · Radius drops from a full 999px pill to --r-lg. At this height a full pill
+     reads as a search box; the reference's composer is a rounded rectangle,
+     which reads as a place to write more than one line.
+
+   Focus darkens the fill by one step and brings the hairline in, rather than
+   swapping the border to full --text-primary as before — a near-black outline
+   on focus was the single highest-contrast event in the app. */
+.chat-input-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--bg-field);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  padding: 8px 12px;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+  min-width: 0;
+  overflow: visible;
+}
+
+.chat-input-pill:focus-within {
+  background-color: var(--bg-field-focus);
+  border-color: var(--border-strong);
+}
+
+.input-icon-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 0.2s, background-color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.input-icon-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+/* The one primary action on the screen, and the only near-black fill in the
+   chat view. A rounded rectangle rather than a circle, matching the
+   reference's "Ask Harvey" button; it now names --accent instead of borrowing
+   --text-primary, so it tracks the accent role in both themes. Hover shifts
+   the fill by one step rather than fading the whole control out. */
+.input-send-btn {
+  flex-shrink: 0;
+  background-color: var(--accent);
+  color: var(--text-on-accent);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out);
+}
+
+.input-send-btn:hover:not(:disabled) { background-color: var(--accent-hover); }
+.input-send-btn:active:not(:disabled) { background-color: var(--accent-active); }
+.input-send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.chat-input {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  /* Was a hardcoded 15px. --fs-lg is the same size today but now moves with
+     the scale instead of pinning this one field to a literal. */
+  font-size: var(--fs-lg);
+  font-family: var(--font-sans);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.chat-input::placeholder { color: var(--text-muted); }
+
+/* @filename Autocomplete Dropdown */
+.file-autocomplete-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 8px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.file-autocomplete-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.file-autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.file-autocomplete-item:hover,
+.file-autocomplete-item.selected {
+  background-color: var(--bg-hover);
+}
+
+.file-autocomplete-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.file-autocomplete-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-disclaimer {
+  margin-top: 6px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ═══════════════════════════════════════════════════
+   ATTACHMENT TRAY
+   ═══════════════════════════════════════════════════
+
+   Rebuilt as a two-line document card rather than a one-line pill.
+
+   The old chip showed a filename, an emoji and a byte count — which says
+   nothing about the thing the user actually needs to know: whether the
+   document was READ. Extraction is the entire point of attaching a file here,
+   it happens asynchronously the moment the file is picked, and it can fail
+   per-file for reasons the user can act on ("save it as .docx"). A single line
+   of 12px secondary text had no room to say any of that, so a failed
+   extraction showed the word "unreadable" and the reason went to the console.
+
+   Each card now carries: type glyph, filename, and a metadata line that
+   changes with state — extracting / extracted character count / the failure
+   reason itself. Cards are left-aligned and full-width-capable so the reason
+   has somewhere to go.
+   ═══════════════════════════════════════════════════ */
+
+.attachment-tray-above-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  max-width: 768px;
+  margin: 0 auto var(--sp-2);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  /* Left-aligned: these are documents being staged, and reading a ragged-left
+     list of filenames is measurably harder than a ragged-right one. The old
+     tray was right-aligned against the input's right edge. */
+  justify-content: flex-start;
+}
+
+.attachment-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 208px;
+  max-width: 100%;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+  animation: attachment-chip-in var(--dur-3) var(--ease-entrance) both;
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+
+@keyframes attachment-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Type glyph. A monospace extension label, not an emoji: emoji render
+   differently per platform, carry no information beyond a rough category, and
+   at 14px are illegible. Three or four letters of the actual extension are
+   unambiguous and align in a column. */
+.attachment-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.attachment-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 1px;
+}
+
+.attachment-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
+}
+
+/* The metadata line. Carries state, so it is the element that changes between
+   extracting / ready / failed. */
+.attachment-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.attachment-meta__sep {
+  opacity: 0.5;
+}
+
+.attachment-remove {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: var(--sp-1);
+  margin: -2px -2px 0 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.attachment-remove:hover {
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+
+.attachment-remove:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* ── State: extracting ─────────────────────────────────────────────────────
+   An indeterminate bar pinned to the card's bottom edge. Indeterminate rather
+   than a percentage because the backend genuinely cannot report one: a scanned
+   PDF's cost is dominated by per-page OCR whose page count is unknown until
+   pdfium has opened the file, and the extraction lanes may have the file
+   queued behind another of the same format. A fake percentage would be a
+   guess presented as a measurement. */
+.attachment-chip.is-extracting {
+  border-color: var(--accent-border);
+}
+
+.attachment-chip__progress {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.attachment-chip__progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: var(--accent);
+  animation: attachment-progress-slide 1.2s var(--ease-in-out) infinite;
+}
+
+@keyframes attachment-progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.attachment-chip.is-extracting .attachment-glyph {
+  background: var(--accent-quiet);
+  color: var(--accent-fg);
+}
+
+/* ── State: ready ──────────────────────────────────────────────────────── */
+.attachment-chip.is-ready .attachment-glyph {
+  background: var(--success-quiet);
+  color: var(--success-fg);
+}
+
+/* ── State: failed ─────────────────────────────────────────────────────────
+   Tinted, and the reason is shown inline. The reason strings the backend
+   produces are written to be acted on ("this is a legacy binary Word file,
+   save it as .docx"), which only works if they reach the user — previously
+   they were logged and the card said "unreadable". */
+.attachment-chip.is-failed {
+  border-color: var(--danger-border);
+  background: var(--danger-quiet);
+}
+
+.attachment-chip.is-failed .attachment-glyph {
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+
+.attachment-chip.is-failed .attachment-name {
+  color: var(--text-primary);
+}
+
+.attachment-error {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-snug);
+  color: var(--danger-fg);
+  max-width: 260px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Notice on image chips read with basic OCR while no vision model was
+   active: basic OCR cannot read handwriting, and the user should know
+   before relying on the answer. */
+.attachment-ocr-note {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-snug);
+  color: var(--warning-fg, #b45309);
+  max-width: 260px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.attachment-count {
+  align-self: center;
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 0 var(--sp-1);
+}
+
+/* ═══════════════════════════════════════════════════
+   DROP ZONE
+   ═══════════════════════════════════════════════════
+   Drag-and-drop was entirely absent before this — no onDrop, no dataTransfer,
+   no Tauri drag handler anywhere in the frontend — which for a document
+   product is the most expected gesture there is.
+
+   The overlay covers the chat pane and is inert until a drag is in progress,
+   so it can never intercept a click.
+   ═══════════════════════════════════════════════════ */
+.chat-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+
+.chat-dropzone.is-active {
+  opacity: 1;
+}
+
+.chat-dropzone__scrim {
+  position: absolute;
+  inset: var(--sp-3);
+  border: 1.5px dashed var(--accent-border);
+  border-radius: var(--r-xl);
+  background: var(--bg-overlay);
+  backdrop-filter: blur(2px);
+}
+
+.chat-dropzone__label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6) var(--sp-8);
+  border-radius: var(--r-lg);
+  text-align: center;
+  transform: scale(0.97);
+  transition: transform var(--dur-2) var(--ease-entrance);
+}
+
+.chat-dropzone.is-active .chat-dropzone__label {
+  transform: scale(1);
+}
+
+.chat-dropzone__icon {
+  color: var(--accent-fg);
+}
+
+.chat-dropzone__title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.chat-dropzone__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  max-width: 34ch;
+}
+
+/* ═══════════════════════════════════════════════════
+   Attached Files Tray
+   ═══════════════════════════════════════════════════ */
+
+.attached-files-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 4px;
+  max-width: 768px;
+  margin: 0 auto;
+  animation: traySlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes traySlideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.attached-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  border-radius: 8px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  font-size: 12px;
+  color: var(--text-secondary);
+  animation: chipSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  transition: all 0.2s ease;
+  max-width: 220px;
+  position: relative;
+  overflow: hidden;
+}
+
+.attached-file-chip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 60%, var(--bg-input) 100%);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.attached-file-chip:hover {
+  border-color: var(--accent);
+  background-color: var(--bg-hover);
+}
+
+.attached-file-chip.removing {
+  animation: chipSlideOut 0.25s cubic-bezier(0.55, 0, 1, 0.45) forwards;
+}
+
+@keyframes chipSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.9);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes chipSlideOut {
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.85);
+    filter: blur(2px);
+  }
+}
+
+@keyframes chipPulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 3px var(--accent-quiet); }
+}
+
+.attached-file-chip:not(.removing) {
+  animation: chipSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards,
+             chipPulse 1.5s ease-in-out 0.4s 1;
+}
+
+.attached-file-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.attached-file-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.attached-file-size {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.attached-file-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  opacity: 0.6;
+}
+
+.attached-file-remove:hover {
+  color: var(--danger);
+  background-color: var(--danger-quiet);
+  opacity: 1;
+}
+
+.attached-files-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.attach-btn-active {
+  color: var(--accent) !important;
+  position: relative;
+}
+
+.attach-btn-active::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  animation: badgePop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes badgePop {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════
+   Icons
+   ═══════════════════════════════════════════════════ */
+
+.icon { width: 20px; height: 20px; }
+.icon-sm { width: 16px; height: 16px; }
+
+/* ═══════════════════════════════════════════════════
+   Modals
+   ═══════════════════════════════════════════════════ */
+
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background-color: var(--bg-modal);
+  border-radius: 12px;
+  box-shadow: 0 20px 25px -5px var(--shadow);
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  text-align: center;
+}
+
+.modal-header { display: flex; justify-content: center; margin-bottom: 12px; }
+.modal-icon { width: 48px; height: 48px; color: var(--warning); }
+
+.modal-title {
+  font-size: 18px; font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 8px 0;
+}
+
+.modal-message {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 24px 0;
+}
+
+.modal-buttons { display: flex; gap: 12px; justify-content: center; }
+
+.modal-button {
+  padding: 10px 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 100px;
+}
+
+.modal-button.cancel { background-color: var(--bg-primary); color: var(--text-primary); }
+.modal-button.cancel:hover { background-color: var(--bg-hover); }
+.modal-button.delete { background-color: var(--danger); color: var(--text-on-accent); border-color: var(--danger); }
+.modal-button.delete:hover { background-color: var(--danger-hover); }
+
+/* ═══════════════════════════════════════════════════
+   Search Modal
+   ═══════════════════════════════════════════════════ */
+
+.search-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+  z-index: 1000;
+}
+
+.search-modal-container {
+  background-color: var(--bg-modal);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px var(--shadow);
+  width: 90%; max-width: 680px; max-height: 80vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+.search-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px; border-bottom: 1px solid var(--border-primary); gap: 12px;
+}
+
+.search-modal-input-wrapper { display: flex; align-items: center; gap: 12px; flex: 1; }
+.search-icon { width: 20px; height: 20px; color: var(--text-muted); flex-shrink: 0; }
+
+.search-modal-input {
+  flex: 1; border: none; outline: none; font-size: 16px;
+  background: transparent; color: var(--text-primary);
+}
+
+.search-modal-input::placeholder { color: var(--text-muted); }
+
+.search-clear-button {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 4px; display: flex; transition: color 0.2s;
+}
+
+.search-clear-button:hover { color: var(--text-primary); }
+.search-clear-icon { width: 18px; height: 18px; }
+
+.search-modal-close-button {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 20px; padding: 4px 8px;
+  display: flex; transition: color 0.2s; flex-shrink: 0;
+}
+
+.search-modal-close-button:hover { color: var(--text-primary); }
+
+.search-modal-results { flex: 1; overflow-y: auto; padding: 8px 0; }
+
+.search-empty-state {
+  display: flex; align-items: center; justify-content: center;
+  height: 200px; color: var(--text-muted); font-size: 14px;
+}
+
+.search-results-group { padding: 0; }
+
+.search-group-title {
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  padding: 12px 16px 8px; text-transform: capitalize;
+}
+
+.search-result-item {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 12px 16px; background: none;
+  border: none; cursor: pointer; transition: background-color 0.2s; text-align: left;
+}
+
+.search-result-item:hover { background-color: var(--bg-hover); }
+
+.search-result-icon {
+  width: 32px; height: 32px; background-color: var(--bg-tertiary);
+  border-radius: 6px; display: flex; align-items: center;
+  justify-content: center; flex-shrink: 0;
+}
+
+.search-result-icon svg { width: 16px; height: 16px; color: var(--text-secondary); }
+.search-result-content { flex: 1; min-width: 0; }
+
+.search-result-title {
+  font-size: 14px; color: var(--text-primary); font-weight: 500; word-break: break-word;
+}
+
+.search-modal-results::-webkit-scrollbar { width: 8px; }
+.search-modal-results::-webkit-scrollbar-track { background: transparent; }
+.search-modal-results::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
+.search-modal-results::-webkit-scrollbar-thumb:hover { background-color: var(--text-muted); }
+
+/* ═══════════════════════════════════════════════════
+   Markdown Content
+   ═══════════════════════════════════════════════════ */
+
+.markdown-content {
+  font-size: var(--fs-lg); line-height: var(--lh-relaxed);
+  color: var(--text-primary);
+  word-wrap: break-word; overflow-wrap: break-word;
+}
+
+.markdown-p { margin: 0 0 12px 0; }
+.markdown-p:last-child { margin-bottom: 0; }
+
+.markdown-h1 {
+  font-size: 1.4em; font-weight: 700; margin: 20px 0 10px;
+  color: var(--text-heading); border-bottom: 1px solid var(--border-primary); padding-bottom: 6px;
+}
+
+.markdown-h2 { font-size: 1.2em; font-weight: 700; margin: 16px 0 8px; color: var(--text-heading); }
+.markdown-h3 { font-size: 1.05em; font-weight: 600; margin: 14px 0 6px; color: var(--text-heading); }
+
+/* Inline code was magenta (#d63384) — the last saturated accent left in the
+   prose stream, and jarring against a monochrome page. It is now ordinary
+   text; the inset fill and hairline already mark it as code. */
+.inline-code {
+  background-color: var(--bg-inset); color: var(--text-primary);
+  padding: 2px 6px; border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: 0.88em; border: 1px solid var(--border-subtle);
+}
+
+/* ── Code blocks ────────────────────────────────────────────────────────────
+   Every colour here used to be a hardcoded dark grey (#3a3a3a border,
+   #a0a0a0 label, #d4d4d4 code, #2d2d2d scrollbar). That was invisible-to-
+   unreadable the moment the app rendered on paper: light grey text on a
+   near-white inset. All of it now names roles, so the block is a light well
+   in light mode and a dark well in dark mode without a single override. */
+.code-block-wrapper {
+  margin: 12px 0; border-radius: var(--r-md); overflow: hidden;
+  border: 1px solid var(--border); background-color: var(--bg-code);
+}
+
+.code-block-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px; background-color: var(--bg-code-header);
+  border-bottom: 1px solid var(--border);
+}
+
+.code-block-language {
+  font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-muted);
+  text-transform: lowercase;
+  font-family: var(--font-mono);
+}
+
+.code-copy-button {
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; color: var(--text-muted);
+  font-size: var(--fs-sm); cursor: pointer; padding: 3px 8px;
+  border-radius: var(--r-xs);
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.code-copy-button:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+
+.code-block-pre {
+  margin: 0; padding: 16px; overflow-x: auto;
+  background-color: var(--bg-code);
+}
+
+.code-block-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md); line-height: 1.6; color: var(--text-primary);
+  tab-size: 4; white-space: pre;
+}
+
+.code-block-pre::-webkit-scrollbar { height: 6px; }
+.code-block-pre::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+.code-block-pre::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
+
+.markdown-ul { margin: 8px 0; padding-left: 24px; list-style-type: disc; }
+.markdown-ol { margin: 8px 0; padding-left: 24px; list-style-type: decimal; }
+.markdown-li { margin: 4px 0; line-height: 1.6; }
+.markdown-li > .markdown-ul, .markdown-li > .markdown-ol { margin: 2px 0; }
+
+.markdown-blockquote {
+  margin: 12px 0; padding: 10px 16px;
+  /* 2px hairline rather than a 4px near-black bar: --accent is ink now, and
+     a heavy black rule beside quoted text outweighs the text itself. */
+  border-left: 2px solid var(--border-strong);
+  background-color: var(--bg-tertiary);
+  border-radius: 0 8px 8px 0; color: var(--text-primary);
+}
+
+.markdown-blockquote p { margin: 0; }
+
+.table-wrapper {
+  margin: 12px 0; overflow-x: auto;
+  border-radius: 8px; border: 1px solid var(--border-primary);
+}
+
+.markdown-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+
+.markdown-table th {
+  background-color: var(--bg-tertiary); font-weight: 600;
+  text-align: left; padding: 10px 14px;
+  border-bottom: 2px solid var(--border-primary); color: var(--text-primary);
+}
+
+.markdown-table td {
+  padding: 8px 14px; border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.markdown-table tr:last-child td { border-bottom: none; }
+.markdown-table tr:hover td { background-color: var(--bg-hover); }
+
+/* Links carry a PERMANENT underline now, not one that appears on hover.
+   With an achromatic accent, colour can no longer signal "this is a link" —
+   the underline is the only affordance left, so it cannot be hover-only or
+   the link is indistinguishable from body text until the pointer finds it. */
+.markdown-link {
+  color: var(--accent-fg);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-border);
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+.markdown-link:hover { border-bottom-color: var(--accent-fg); }
+.markdown-hr { border: none; border-top: 1px solid var(--border-primary); margin: 20px 0; }
+.markdown-content strong { font-weight: 700; color: var(--text-heading); }
+.markdown-content em { font-style: italic; }
+.markdown-content del { text-decoration: line-through; color: var(--text-muted); }
+.markdown-content img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+
+.message-text {
+  font-size: 15px; line-height: 1.6;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+
+/* ═══════════════════════════════════════════════════
+   Activity Panel
+   ═══════════════════════════════════════════════════ */
+
+.activity-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+
+.activity-panel {
+  background-color: var(--bg-modal);
+  border-radius: 16px;
+  box-shadow: 0 20px 40px var(--shadow);
+  width: 90%; max-width: 560px; max-height: 85vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+.activity-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px; border-bottom: 1px solid var(--border-primary);
+}
+
+.activity-header h2 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin: 0; }
+
+.activity-close-btn {
+  background: transparent; border: none; color: var(--text-secondary);
+  cursor: pointer; padding: 4px; border-radius: 6px;
+  display: flex; transition: background-color 0.2s;
+}
+
+.activity-close-btn:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+
+.activity-content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+
+.activity-notice {
+  display: flex; gap: 10px; padding: 12px 14px;
+  background-color: var(--bg-tertiary); border-radius: 8px;
+  margin-bottom: 20px; align-items: flex-start;
+}
+
+.activity-notice svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
+.activity-notice p { font-size: 12px; color: var(--text-secondary); margin: 0; line-height: 1.5; }
+
+.activity-setting-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0; border-bottom: 1px solid var(--border-subtle); gap: 16px;
+}
+
+.activity-setting-info h3 { font-size: 14px; font-weight: 500; color: var(--text-primary); margin: 0 0 2px 0; }
+.activity-setting-info p { font-size: 12px; color: var(--text-muted); margin: 0; }
+
+.activity-toggle {
+  width: 44px; height: 24px; border-radius: 12px;
+  background-color: var(--border-primary); border: none;
+  cursor: pointer; position: relative; transition: background-color 0.2s; flex-shrink: 0;
+}
+
+.activity-toggle.active { background-color: var(--success); }
+
+.activity-toggle-thumb {
+  width: 20px; height: 20px; border-radius: 50%;
+  background-color: var(--bg-surface); position: absolute; top: 2px; left: 2px;
+  transition: transform 0.2s;
+}
+
+.activity-toggle.active .activity-toggle-thumb { transform: translateX(20px); }
+
+.activity-select {
+  padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background-color: var(--bg-input); color: var(--text-primary);
+  font-size: 13px; cursor: pointer; flex-shrink: 0;
+}
+
+.activity-delete-btn {
+  padding: 6px 14px; border-radius: 6px;
+  border: 1px solid var(--danger); background: transparent;
+  color: var(--danger); font-size: 13px; cursor: pointer;
+  transition: background-color 0.2s; flex-shrink: 0;
+}
+
+.activity-delete-btn:hover { background-color: var(--danger-bg); }
+
+.activity-recent { margin-top: 20px; }
+.activity-recent h3 { font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0; }
+.activity-empty { font-size: 13px; color: var(--text-muted); }
+
+.activity-day-group { margin-bottom: 4px; }
+
+.activity-day-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 0; background: transparent; border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary); font-size: 13px;
+  cursor: pointer; text-align: left; transition: color 0.2s;
+}
+
+.activity-day-header:hover { color: var(--accent); }
+
+.activity-day-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+.activity-chevron { transition: transform 0.2s; color: var(--text-muted); }
+.activity-chevron.expanded { transform: rotate(180deg); }
+
+.activity-day-list { list-style: none; padding: 0; margin: 0; }
+
+.activity-conv-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-radius: 6px; transition: background-color 0.2s;
+}
+
+.activity-conv-item:hover { background-color: var(--bg-hover); }
+
+.activity-conv-title {
+  font-size: 13px; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+
+.activity-conv-delete {
+  background: transparent; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 4px; border-radius: 4px;
+  display: flex; transition: color 0.2s, background-color 0.2s;
+}
+
+.activity-conv-delete:hover { color: var(--danger); background-color: var(--danger-bg); }
+
+.activity-confirm-overlay {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex; align-items: center; justify-content: center; border-radius: 16px;
+}
+
+.activity-confirm {
+  background-color: var(--bg-modal); border-radius: 12px;
+  padding: 24px; text-align: center; max-width: 320px;
+}
+
+.activity-confirm h3 { font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 8px 0; }
+.activity-confirm p { font-size: 13px; color: var(--text-secondary); margin: 0 0 20px 0; }
+.activity-confirm-buttons { display: flex; gap: 10px; justify-content: center; }
+
+.activity-confirm-cancel {
+  padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-primary);
+  background: transparent; color: var(--text-primary); font-size: 13px;
+  cursor: pointer; transition: background-color 0.2s;
+}
+
+.activity-confirm-cancel:hover { background-color: var(--bg-hover); }
+
+.activity-confirm-delete {
+  padding: 8px 16px; border-radius: 6px; border: none;
+  background-color: var(--danger); color: var(--text-on-accent); font-size: var(--fs-md);
+  cursor: pointer; transition: background-color 0.2s;
+}
+
+.activity-confirm-delete:hover { background-color: var(--danger-hover); }
+
+/* ═══════════════════════════════════════════════════
+   Login Prompt
+   ═══════════════════════════════════════════════════ */
+
+.login-prompt-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+
+.login-prompt {
+  background-color: var(--bg-modal); border-radius: 16px;
+  box-shadow: 0 20px 40px var(--shadow);
+  padding: 32px; width: 90%; max-width: 420px;
+  position: relative; text-align: center;
+}
+
+.login-prompt-close {
+  position: absolute; top: 12px; right: 12px;
+  background: transparent; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 6px; border-radius: 6px;
+  display: flex; transition: background-color 0.2s;
+}
+
+.login-prompt-close:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+
+.login-prompt-icon { margin-bottom: 16px; color: var(--accent); }
+
+.login-prompt h2 { font-size: 20px; font-weight: 600; color: var(--text-primary); margin: 0 0 20px 0; }
+
+.login-prompt-features { list-style: none; padding: 0; margin: 0 0 16px 0; text-align: left; }
+
+.login-prompt-features li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 6px 0; font-size: 14px; color: var(--text-primary);
+}
+
+.login-prompt-features svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
+.login-prompt-note { font-size: 12px; color: var(--text-muted); margin: 0 0 20px 0; }
+.login-prompt-actions { display: flex; flex-direction: column; gap: 10px; }
+
+.login-prompt-btn {
+  padding: 10px 20px; border-radius: 8px; font-size: 14px;
+  font-weight: 500; cursor: pointer; transition: all 0.2s; border: none;
+}
+
+.login-prompt-btn.primary { background-color: var(--accent); color: var(--text-on-accent); }
+.login-prompt-btn.primary:hover { background-color: var(--accent-hover); }
+.login-prompt-btn.secondary { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-primary); }
+.login-prompt-btn.secondary:hover { background-color: var(--bg-hover); }
+
+/* ═══════════════════════════════════════════════════
+   Scrollbars
+   ═══════════════════════════════════════════════════ */
+
+.chat-messages::-webkit-scrollbar { width: 8px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
+.chat-messages::-webkit-scrollbar-thumb:hover { background-color: var(--text-muted); }
+
+/* Rail scrollbar. Uses --rail-* rather than the themed --scrollbar-* tokens:
+   this list lives on the permanently dark rail, so a themed thumb would go
+   near-black-on-black in light mode. Same specificity as the `.sidebar *`
+   rule above but later in source order, so it is what actually applies. */
+.sidebar-chat-list::-webkit-scrollbar { width: 6px; }
+.sidebar-chat-list::-webkit-scrollbar-track { background: transparent; }
+.sidebar-chat-list::-webkit-scrollbar-thumb {
+  background-color: var(--rail-active);
+  border-radius: var(--r-pill);
+}
+.sidebar-chat-list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--rail-selected);
+}
+
+.activity-content::-webkit-scrollbar { width: 6px; }
+.activity-content::-webkit-scrollbar-track { background: transparent; }
+.activity-content::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
+
+/* ═══════════════════════════════════════════════════
+   Local Files Panel
+   ═══════════════════════════════════════════════════ */
+
+.local-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  font-size: 13px;
+  color: var(--text-primary);
+  gap: 8px;
+}
+
+.local-file-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.local-file-item.selected {
+  background-color: var(--bg-tertiary);
+}
+
+.local-file-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.local-file-item:hover .local-file-delete-btn {
+  opacity: 1;
+}
+
+.local-file-delete-btn:hover {
+  color: var(--danger);
+  background-color: var(--danger-bg);
+}
+
+/* Header button style for panels */
+.header-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.header-button:hover {
+  background-color: var(--bg-hover);
+}
+
+.header-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.header-icon-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════════════
+   Download Notification Bubble
+   ═══════════════════════════════════════════════════ */
+
+.download-bubble {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 900;
+  background-color: var(--bg-modal);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px var(--shadow);
+  padding: 12px 16px;
+  min-width: 300px;
+  max-width: 400px;
+}
+
+.download-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.download-bubble-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.download-bubble-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+}
+
+.download-bubble-close:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+/* Download bubble content items */
+.download-bubble-item {
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.download-bubble-item:last-child {
+  margin-bottom: 0;
+}
+
+/* Prevent long model names from overflowing bubble */
+.download-bubble-item h4,
+.download-bubble-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Download bubble entrance animation */
+@keyframes bubbleSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.download-bubble {
+  animation: bubbleSlideIn 0.25s ease-out;
+}
+
+/* ═══════════════════════════════════════════════════
+   Engine Manager Panel
+   ═══════════════════════════════════════════════════ */
+
+.engines-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  flex: 1;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.engines-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.engines-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.engines-back-btn:hover {
+  background-color: var(--bg-hover);
+}
+
+.engines-header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.engines-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.engines-refresh-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.engines-refresh-btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+}
+
+.engines-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rotating {
+  animation: spin 1s linear infinite;
+}
+
+/* Hardware Info Banner */
+.hardware-info-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  padding: 16px 24px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.hardware-summary, .gpu-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hardware-summary h3, .gpu-info h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hardware-summary p, .gpu-info p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.acceleration-support {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.accel-tag {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Accelerator tags were three saturated brand fills (#007acc / #333 / #ac32e4)
+   sitting on one row — the loudest colour in the app, spent on a label that is
+   already legible as text. They now share one quiet badge treatment and are
+   distinguished by what they say, not by hue. */
+.accel-tag.cuda,
+.accel-tag.metal,
+.accel-tag.vulkan {
+  background-color: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+/* Recommendations Section */
+.recommendations-section {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.recommendations-section h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.recommendations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.recommendation-card {
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+}
+
+.rec-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.rec-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.priority-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  background-color: var(--accent);
+  color: var(--text-on-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recommendation-card p {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.performance-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metric span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.meter {
+  height: 6px;
+  background-color: var(--bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background-color: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Controls Bar */
+.engines-controls-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+  flex-wrap: wrap;
+}
+
+.engines-search-container {
+  flex: 1;
+  min-width: 200px;
+}
+
+.engines-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.engines-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.engines-sort-container select {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.engines-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Engines Grid */
+.engines-grid {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: min-content;
+  gap: 20px;
+  min-height: 0;
+}
+
+.engines-empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+.engines-empty-state svg {
+  margin-bottom: 16px;
+  color: var(--text-muted);
+}
+
+.engines-empty-state h3 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.engines-empty-state p {
+  margin: 0 0 20px 0;
+  font-size: 14px;
+}
+
+.refresh-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.refresh-empty-btn:hover {
+  background-color: var(--bg-hover);
+}
+
+/* Engine Card */
+.engine-card {
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.engine-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.engine-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-quiet);
+}
+
+.engine-card.downloading {
+  border-color: var(--accent);
+}
+
+.engine-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.engine-name-section {
+  flex: 1;
+}
+
+.engine-name-section h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.engine-version {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background-color: var(--bg-hover);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.compatibility-score {
+  display: flex;
+  align-items: center;
+}
+
+.score-badge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Score badges keep their colour — this is STATUS, where hue carries real
+   information — but move to the muted `-quiet` fill + `-fg` text pairing so
+   they read as tinted paper rather than as three saturated blocks. */
+.score-badge.high {
+  background-color: var(--success-quiet);
+  color: var(--success-fg);
+}
+
+.score-badge.medium {
+  background-color: var(--warning-quiet);
+  color: var(--warning-fg);
+}
+
+.score-badge.low {
+  background-color: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+
+.engine-description {
+  padding: 16px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.engine-specs {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.spec-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.acceleration-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.acceleration-tags .accel-tag {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.engine-status {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.status-active, .status-installed, .status-downloading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.status-active {
+  color: var(--success-fg);
+}
+
+.status-installed {
+  color: var(--text-secondary);
+}
+
+.status-downloading {
+  color: var(--accent);
+}
+
+.download-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-primary);
+  border-top: 2px solid var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.engine-actions {
+  padding: 16px;
+}
+
+.download-btn, .activate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px;
+  border-radius: 6px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.download-btn {
+  background-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.download-btn:hover {
+  background-color: var(--accent-hover);
+}
+
+.activate-btn {
+  background-color: var(--success);
+  color: var(--text-on-accent);
+}
+
+.activate-btn:hover {
+  background-color: var(--success-fg);
+}
+
+.download-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 6px;
+  background-color: var(--bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Loading State */
+.engines-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top: 3px solid var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}

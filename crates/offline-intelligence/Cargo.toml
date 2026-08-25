@@ -1,0 +1,148 @@
+﻿[package]
+name = "offline-intelligence"
+version = "0.1.1"
+description = "OFFLINE INTELLIGENCE"
+license = "Apache-2.0"
+repository = ""
+readme = "README.md"
+edition = "2021"
+
+[lib]
+name = "offline_intelligence"
+path = "src/lib.rs"
+crate-type = ["lib"]
+
+[[bin]]
+name = "offline-intelligence"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+anyhow = "1.0"
+dotenvy = "0.15"
+prometheus = "0.13"
+lazy_static = "1.4"
+tower = { version = "0.4", features = ["limit", "buffer", "util"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "timeout", "limit"] }
+sysinfo = "0.30"
+nvml-wrapper = { version = "0.10", optional = true }
+num_cpus = "1.16"
+futures = "0.3"
+futures-util = "0.3"
+gguf = "0.1"
+zip = "1.1"
+clap = { version = "4.4", features = ["derive"] }
+dashmap = "5.5"
+rusqlite = { version = "0.32", features = ["bundled", "functions", "modern_sqlite"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4", "serde"] }
+regex = "1.10"
+blake3 = "1.5"
+bincode = "1.3"
+rand = "0.8"
+moka = { version = "0.12", features = ["future", "sync"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+hora = "0.1"
+validator = { version = "0.16", features = ["derive"] }
+rayon = "1.8"
+bytes = "1.5"
+which = "1.0"
+crossbeam-queue = "0.3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+async-stream = "0.3"
+tokio-stream = "0.1"
+pin-project-lite = "0.2"
+async-trait = "0.1"
+arc-swap = "1.7"
+# Archive extraction (engine downloader — tar.gz for macOS/Linux engines)
+flate2 = "1.0"
+tar = "0.4"
+# Engine download integrity (SHA256 pinned against GitHub release digests)
+sha2 = "0.10"
+# Model management dependencies
+dirs = "5.0"
+walkdir = "2.4"
+fs2 = "0.4"
+tempfile = "3.8"
+whoami = "1.5"
+# File processing dependencies - using simpler alternatives to avoid conflicts
+base64 = "0.22"
+mime_guess = "2.0"
+# Email / SMTP
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+# Authentication
+jsonwebtoken = "9"
+argon2 = "0.5"
+hex = "0.4"
+# Document extraction (accuracy-first: real parsers, no regex-over-XML)
+calamine = { version = "0.26", features = ["dates"] }
+quick-xml = "0.37"
+encoding_rs = "0.8"
+chardetng = "0.1"
+html2text = "0.12"
+# PDF text extraction via PDFium (Chrome's PDF engine); dynamic binding to a
+# bundled pdfium.dll resolved at runtime — see utils/pdf_text.rs
+# `thread_safe` is DELIBERATELY disabled (it is on by default).
+#
+# That feature wraps every binding in a GLOBAL std::sync::Mutex held for the
+# whole lifetime of a `Pdfium` object. Because a std Mutex POISONS when a
+# holder panics, a single panic anywhere in a live pdfium scope permanently
+# disabled PDF extraction for the rest of the process - and `catch_unwind`
+# cannot prevent that, since the guard poisons as it is dropped during the
+# unwind, below any catch boundary (measured; see utils::pdf_text).
+#
+# PDFium genuinely is not thread-safe, so the serialisation is still
+# required - it is now provided by a NON-poisoning mutex we own
+# (utils::extraction_scheduler::pdfium_permit), which `bind_pdfium` acquires
+# and hands back bundled with the instance so it cannot be bypassed.
+#
+# `pdfium_latest` and `image` are the other two defaults, kept as-is.
+pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "image"] }
+# Already in the build graph via pdfium-render's `image` feature — `as_image()`
+# returns a `DynamicImage`. Declared directly so the document workspace can name
+# the type to PNG-encode rendered pages; this adds no compilation and no binary
+# size. `default-features = false` keeps it to the one codec we actually use.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# NOTE: no shipped code of ours decodes images any more. Attached JPG/PNG/BMP/
+# TIFF/GIF files are decoded by the Windows Imaging Component inside
+# utils::win_ocr — the same codec stack the OCR engine itself uses — so the
+# original bytes reach the engine with no third-party decode, no re-encode,
+# and no resampling. See utils/win_ocr.rs for why that intermediate hop was
+# removed: it discarded EXIF rotation (phone photos reached OCR sideways) and
+# downscaled against a 2600px limit that does not exist (the engine reports
+# 10000).
+#
+# `image` is therefore no longer a DIRECT dependency; it is listed only under
+# [dev-dependencies], where it builds test fixtures. It does still appear in
+# the build graph transitively via pdfium-render, so this is a correctness and
+# accuracy change, not a binary-size one.
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Built-in Windows OCR (Windows.Media.Ocr) for scanned PDFs — offline, ships
+# with Windows 10/11, zero installer growth.
+windows = { version = "0.58", features = [
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+] }
+
+[features]
+default = []
+nvidia = ["nvml-wrapper"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockito = "1.2"
+proptest = "1.4"
+# Test-fixture construction only — synthesizes genuine PNG/JPEG bytes that are
+# then fed to the production WIC path. Never used by shipped code.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "gif", "tiff"] }

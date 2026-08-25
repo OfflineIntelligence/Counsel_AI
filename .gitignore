@@ -1,0 +1,19 @@
+# Runtime resources (binaries + models) - never committed, populated at runtime or via UI download
+crates/offline-intelligence/Resources/
+
+# Rust build artifacts
+target/
+
+# Local SQLite databases (do not commit runtime data)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+crates/offline-intelligence/data/*.db
+crates/offline-intelligence/data/*.db-shm
+crates/offline-intelligence/data/*.db-wal
+apps/desktop/src-tauri/data/*.db
+apps/desktop/src-tauri/data/*.db-shm
+apps/desktop/src-tauri/data/*.db-wal
+
+# OS files
+.DS_Store

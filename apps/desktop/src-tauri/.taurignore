@@ -1,0 +1,6 @@
+# Ignore data directory to prevent rebuilds when database files change
+data/
+data/**
+*.db
+*.db-shm
+*.db-wal

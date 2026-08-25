@@ -1,0 +1,123 @@
+/* @import MUST be the first thing in the file — CSS ignores any @import that
+   follows another rule. Tokens first, then primitives, so a component rule can
+   override a primitive but never the reverse. main.tsx imports this file
+   before App.tsx, which is what puts App.css last in the bundle.
+   ────────────────────────────────────────────────────────────────────────────
+   The three `@tailwind base/components/utilities` directives that used to sit
+   above these imports are gone. They were dead, and provably so: this project
+   has no postcss.config or tailwind.config anywhere, so nothing ever expanded
+   them — they passed through the build verbatim and shipped to users as three
+   invalid at-rules (confirmed by grepping the built dist/assets/index.css:
+   `@tailwind base;@tailwind components;@tailwind utilities;` present, and zero
+   `--tw-` custom properties, i.e. no preflight and no utilities).
+   They were also what broke these imports: three unknown at-rules ahead of
+   them meant @import was no longer first, so both files were silently dropped
+   and every token in this app resolved to nothing.
+   Tailwind remains in package.json; the app is written in hand-authored CSS
+   and does not use it. */
+@import './styles/tokens.css';
+@import './styles/primitives.css';
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* `color-scheme` is set per theme in tokens.css rather than the previous
+   blanket `dark light`, which let the browser choose and so left native
+   controls disagreeing with the app's own theme. */
+
+body {
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--ls-normal);
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Kerning and contextual alternates on by default — free typographic
+     quality on Segoe UI Variable and the Palatino-class serifs. */
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+}
+
+/* Headings default to the display serif. Surfaces opt out with `.ui-stat`
+   where a serif reads as too editorial — large live numerals, mainly. */
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  /* Ligatures off: Cascadia Code turns != and => into single glyphs, which is
+     wrong for document text and for anything the user may need to copy
+     character by character. */
+  font-feature-settings: 'kern' 0, 'liga' 0, 'calt' 0;
+}
+
+/* Form controls do not inherit typography by default. */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+
+/* The browser's default selection blue clashes with the warm neutrals. */
+::selection {
+  background: var(--accent-quiet);
+  color: var(--text-heading);
+}
+
+/* Thin, theme-aware scrollbars everywhere. The old stylesheet themed only a
+   few specific containers, so the rest kept the platform default — a dark
+   scrollbar on a white panel in light mode. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}

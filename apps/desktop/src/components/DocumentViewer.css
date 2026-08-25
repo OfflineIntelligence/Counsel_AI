@@ -1,0 +1,133 @@
+/* Document viewer.
+   ───────────────────────────────────────────────────────────────────────────
+   Every colour now resolves to a role token. Previously each var() carried a
+   hardcoded fallback, and one of them — `var(--border-color, ...)` — named a
+   token that has never existed in this codebase (the old system called it
+   --border-primary), so the header rule ALWAYS used its grey fallback and that
+   border was never themed at all. Fallbacks are removed rather than corrected:
+   a fallback on a design token hides exactly this class of mistake, because a
+   misspelled name still renders something plausible. */
+
+.document-viewer-modal {
+  width: min(900px, 92vw);
+  height: min(85vh, 900px);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.document-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.document-viewer-header .modal-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-viewer-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--sp-1);
+  display: flex;
+  border-radius: var(--r-sm);
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.document-viewer-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.document-viewer-close:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.document-viewer-body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--sp-5);
+  /* Inset rather than --bg-surface: the body is a well holding rendered pages,
+     and the pages themselves are white paper. */
+  background: var(--bg-inset);
+}
+
+.document-viewer-status {
+  text-align: center;
+  padding: var(--sp-10) var(--sp-5);
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+}
+
+.document-viewer-error {
+  color: var(--danger-fg);
+}
+
+.pdf-canvas-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Rendered pages stay white in both themes — they are a reproduction of the
+   physical document, not app chrome, and inverting them would misrepresent
+   the source. Same reasoning for .docx-preview below. */
+.pdf-page-canvas {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-xs);
+  box-shadow: var(--shadow-md);
+  background: #ffffff;
+}
+
+.docx-preview {
+  background: #ffffff;
+  color: #1a1a1a;
+  padding: var(--sp-10);
+  border-radius: var(--r-xs);
+  box-shadow: var(--shadow-md);
+  max-width: 800px;
+  margin: 0 auto;
+  line-height: var(--lh-relaxed);
+}
+
+.docx-preview img {
+  max-width: 100%;
+}
+
+.image-preview {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  margin: 0 auto;
+  border-radius: var(--r-xs);
+  box-shadow: var(--shadow-md);
+}
+
+.text-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  margin: 0;
+}

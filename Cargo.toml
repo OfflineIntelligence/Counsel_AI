@@ -1,0 +1,23 @@
+# Offline_Intelligence/Cargo.toml [workspace root]
+
+[workspace]
+members = [
+    "crates/offline-intelligence",
+    "apps/desktop/src-tauri",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Tauri Core - aligned with npm packages
+# Using latest stable 2.x for security patches and bug fixes
+# Note: tauri and tauri-build use different version numbers but are compatible
+tauri = { version = "=2.11.1" }
+tauri-build = { version = "=2.6.1" }
+
+# Plugins - aligned with npm package versions
+# These versions match the @tauri-apps/plugin-* npm packages
+tauri-plugin-shell = { version = "2.3" }
+tauri-plugin-fs = { version = "2.5" }
+tauri-plugin-dialog = { version = "2.7" }
+
+offline-intelligence = { path = "crates/offline-intelligence" }

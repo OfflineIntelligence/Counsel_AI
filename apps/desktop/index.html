@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      connect-src must permit http://127.0.0.1:* — that is the address the
+      backend actually binds (API_HOST=127.0.0.1, an IPv4-only socket), and the
+      address src/api/backendUrl.ts targets. Previously only http://localhost:*
+      was allowed for HTTP while ws://127.0.0.1:* was allowed for WebSockets,
+      an asymmetry that forced the frontend onto "localhost" — which on Windows
+      resolves to ::1 first and cannot reach an IPv4-only socket without a
+      failed connect and a retry. Both host spellings are now allowed for both
+      schemes so neither side can drift again.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:*; img-src 'self' asset: https://asset.localhost data: blob: http://127.0.0.1:* http://localhost:*; media-src 'self' https://media.localhost; connect-src 'self' http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* ipc: http://ipc.localhost https://ipc.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offline Counsel AI</title>
+    <script>
+      // Critical early error logging - BEFORE anything else
+      window.onerror = function(msg, src, line, col, error) {
+        console.error('[FATAL] Window error:', msg, 'at', src + ':' + line);
+        var errDiv = document.createElement('div');
+        // Last-resort crash screen. Literal values, not tokens: this runs when
+        // the bundle has failed, so no stylesheet can be assumed to have loaded.
+        // Retuned from red-on-#1a1a2e navy to the app's own dark canvas with a
+        // readable warm red, so a startup failure looks like this product
+        // failing rather than a raw browser error page.
+        errDiv.style = 'color:#dd8b7f;padding:24px;background:#171715;min-height:100vh;font-family:Consolas,monospace;font-size:13px;line-height:1.6;';
+        errDiv.innerHTML = '<h1>Startup Error</h1><pre style="white-space:pre-wrap;">' + msg + '\n\n' + (error?.stack || 'No stack trace') + '</pre>';
+        document.body.innerHTML = '';
+        document.body.appendChild(errDiv);
+        return true;
+      };
+      window.onunhandledrejection = function(e) {
+        console.error('[FATAL] Unhandled promise rejection:', e.reason);
+      };
+      console.log('[index.html] Starting...');
+      // Port is resolved at runtime via Tauri IPC — do NOT hardcode here.
+
+      // Apply the saved theme BEFORE React mounts.
+      //
+      // ThemeProvider sets data-theme in a useEffect, and main.tsx nests it
+      // INSIDE LoadingScreen — so during the entire boot sequence the attribute
+      // was unset, every token resolved to its :root (dark) value, and a user on
+      // the light theme watched the app load dark and then snap. Reading the same
+      // localStorage key here, synchronously, removes that flash for the loading
+      // screen, the engine-setup gate and the first paint of the app itself.
+      // Key must match ThemeContext.tsx.
+      try {
+        var saved = localStorage.getItem('offline-intelligence-theme');
+        document.documentElement.setAttribute(
+          'data-theme',
+          saved === 'light' || saved === 'dark' ? saved : 'dark'
+        );
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    </script>
+    <script src="./port-config.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+    <!--
+      Pre-React loader. This paints before any bundle has parsed, so it cannot
+      use the design tokens and must restate a few values literally — but it has
+      to AGREE with them, or the app visibly flashes from one palette to another
+      the moment React mounts. Previously it was a #1a1a2e→#16213e navy gradient
+      with a #00d4aa teal spinner, matching nothing in the product.
+      Values below are --bg-canvas / --text-secondary / --border for each theme.
+      If those tokens change, change these too.
+    -->
+    <style>
+      /* Black in BOTH themes, matching LoadingScreen.css — so there is no
+         seam when React takes over the splash. Values below are --rail-bg,
+         --rail-text, --rail-text-dim, --rail-border and --rail-accent from
+         tokens.css. No [data-theme] variants: this screen never changes. */
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #0b0b0a;
+      }
+      .init-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        color: #9c9a93;
+        /* Same stack as --font-brand; see tokens.css for why Helvetica is
+           requested first even though Windows does not ship it. */
+        font-family: 'Helvetica Neue', Helvetica, 'Segoe UI', Arial, sans-serif;
+        font-weight: 300;
+        letter-spacing: -0.006em;
+      }
+      .init-loading-content {
+        text-align: center;
+      }
+      .init-loading-text {
+        font-size: 13.5px;
+      }
+      .init-spinner {
+        width: 22px;
+        height: 22px;
+        border: 1.5px solid #242421;
+        border-top-color: #86aade;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        margin: 0 auto 14px;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="init-loading">
+        <div class="init-loading-content">
+          <div class="init-spinner"></div>
+          <span class="init-loading-text">Loading Offline Counsel AI...</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

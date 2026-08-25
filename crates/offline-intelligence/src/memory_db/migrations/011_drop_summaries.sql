@@ -1,0 +1,39 @@
+-- Migration 011: Remove the Tier-2 summary subsystem entirely.
+--
+-- Tier 2 was architecture with no producer. `SummaryStore::store_summary` and
+-- `update_summary` had ZERO callers anywhere in the crate, so `summaries` was
+-- never written on any install. Every consumer that read it was therefore a
+-- permanently-dead branch: `TierManager::get_tier2_content` always returned an
+-- empty vector, `RetrievalPlanner`'s `has_summaries` was always false, and the
+-- summary-scoring paths in `context_builder` / `smart_retrieval` could never
+-- execute. Retrieval is served by document memory (this session's documents,
+-- whole or announced-excerpt) and by the FTS5 past-material search, neither of
+-- which consults a summary.
+--
+-- Dropped rather than left dormant, for the same reason migration 010 dropped
+-- the embedding tables: an empty table with a full API around it reads as a
+-- feature that exists, and the next person to touch context assembly would
+-- reasonably assume Tier 2 was carrying weight.
+--
+-- Nothing a user authored is lost. Any summary row would have been DERIVED
+-- from `messages`, which is retained in full; and no code path in this
+-- codebase ever produced one.
+--
+-- Determinism note: migrations 001..010 are deliberately left untouched as the
+-- historical record. `summaries` is created by 001_initial.sql, so every
+-- on-disk database has it and the DROP below always finds its target. IF
+-- EXISTS is used anyway because a DROP is free to be defensive (unlike
+-- `ALTER TABLE ... DROP COLUMN`, which has no such form) - it costs nothing
+-- and survives a database restored from an unusual state.
+--
+-- The in-memory database used by tests takes a different path
+-- (memory_db::schema::SCHEMA_SQL) and never runs migrations; the summaries
+-- DDL is removed there in Rust instead, so the two paths stay in agreement.
+
+-- `details` is a SEPARATE dormant table and is deliberately NOT touched here:
+-- it carries no foreign key into `summaries` (both reference `sessions`), so
+-- dropping summaries has no effect on it.
+DROP TABLE IF EXISTS summaries;
+
+-- idx_summaries_session (created in 001_initial.sql) is removed automatically
+-- with its table.

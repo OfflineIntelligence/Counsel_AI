@@ -1,0 +1,36 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Offline Counsel AI",
+    "version": "0.1.0",
+    "identifier": "com.offlinecounselai.desktop",
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "beforeBuildCommand": "npm run build",
+        "frontendDist": "../dist",
+        "devUrl": "http://localhost:3000"
+    },
+    "app": {
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": ["nsis"],
+        "resources": {
+            "../../../.env": ".env",
+            "../../../vendor/pdfium/win-x64/pdfium.dll": "pdfium.dll"
+        },
+        "icon": [
+            "icons/icon.png",
+            "icons/icon.ico",
+            "icons/icon.icns"
+        ],
+        "windows": {
+            "nsis": {
+                "installMode": "currentUser",
+                "installerHooks": "installer-hooks.nsi"
+            }
+        }
+    }
+}

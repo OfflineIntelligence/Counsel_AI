@@ -1,0 +1,457 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS — the single source of visual truth
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Two rules govern this file, and they are what make theme parity structural
+   rather than something to remember:
+
+   1. EVERY token is defined in BOTH themes. A component therefore never needs
+      a `[data-theme]` selector of its own — it names a role, and the role
+      resolves per theme.
+
+   2. Tokens are named for their ROLE (--bg-field, --border-strong), never for
+      their appearance (--gray-800). A name like "surface-2" forces every
+      caller to know the elevation ramp; a name like "--bg-field" tells them
+      what it is for, and can be retuned without touching a single component.
+
+   ── Palette direction: MONOCHROME PAPER ────────────────────────────────────
+   Warm near-neutrals on a paper-white ground, and no chromatic accent at all
+   in the chrome. The single loudest element on any screen is a near-black
+   fill on the one primary action; everything else is separated by hairline
+   borders and one-step fill shifts.
+
+   This is a deliberate reversal of the previous "ink blue accent" direction.
+   A saturated accent competes with document content for attention, and in a
+   product whose entire job is reading legal text, the interface should
+   recede. Colour is therefore reserved for STATUS (success/warning/danger),
+   where it carries information, and spent nowhere else.
+
+   ── Accent = ink ───────────────────────────────────────────────────────────
+   --accent is the primary-action FILL: near-black on light, near-white on
+   dark. Not pure #000/#fff — a true black reads as a hole punched in the page
+   rather than an object sitting on it, and #fff on a dark field haloes.
+
+   Because the accent is now achromatic, it cannot signal "interactive" as
+   text. Anything that relied on accent-coloured text for affordance (prose
+   links, most obviously) must carry an underline instead. --accent-fg exists
+   for those callers and is tuned to stay legible, not to stand out.
+
+   ── Borders do the work ────────────────────────────────────────────────────
+   With no accent and almost no shadow, hairlines carry all the structure.
+   They are deliberately low-contrast: --border against --bg-surface is a few
+   percent of luminance. That is the look. Reaching for --border-strong
+   everywhere would undo it.
+
+   ── Elevation ──────────────────────────────────────────────────────────────
+   Near-flat. A card is a white plane with a hairline, not a floating object.
+   Shadows survive only where something genuinely overlaps the page (popovers,
+   modals, toasts), and even there they are soft and low-alpha.
+
+   ── Fonts ─────────────────────────────────────────────────────────────────
+   System stacks only, by necessity: the app is fully offline and its CSP is
+   `font-src 'self' data:`, so no webfont can be fetched. A licensed display
+   serif is therefore off the table regardless. The serif/sans pairing is
+   reproduced with faces that genuinely ship on the target platforms.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   THEME-INVARIANT TOKENS
+   Typography, geometry, motion. These describe STRUCTURE, and structure has
+   no business changing when the lights go out — which is the other half of
+   what "consistency between themes" means.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── Type families ──────────────────────────────────────────────────── */
+
+  /* Display serif, for the wordmark, headings and numerals that should feel
+     authored.
+
+     Ordered Times-class FIRST, which is a change: the previous stack led with
+     Iowan Old Style / Palatino, which are warm, wide, old-style faces. The
+     reference wordmark is a transitional serif — high stroke contrast, fine
+     hairlines, narrow set — and Times New Roman / Liberation Serif are the
+     faces that actually ship on the target platforms with those qualities.
+     Palatino stays as a fallback rather than a first choice. */
+  /* PRODUCT DECISION (2026-08-08): one family everywhere — Arial. The
+     previous mixed system (Times-class serif for headings/wordmark, Segoe UI
+     for body) read as inconsistent across the Models / Local Storage /
+     Metrics pages. All four family tokens now resolve to the same Arial
+     stack so every page, heading, badge and numeral matches. Only
+     --font-mono stays monospace (code blocks need fixed-width). */
+  --font-display: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
+    sans-serif;
+
+  /* UI text — same Arial stack, kept as a separate token so a future
+     re-split of display vs body only touches this file. */
+  --font-sans: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
+    sans-serif;
+
+  /* Large-size cut — same Arial stack (see product decision above). */
+  --font-display-sans: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
+    sans-serif;
+
+  --font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'SF Mono', Menlo,
+    'Roboto Mono', monospace;
+
+  /* Brand face — the wordmark on the loading screen and the chat welcome.
+     ─────────────────────────────────────────────────────────────────────────
+     Now the DISPLAY SERIF, not a grotesque. This is the single largest change
+     in the file's feel: the wordmark was previously Helvetica/Segoe UI Light,
+     and the reference sets its wordmark in a serif at regular weight.
+
+     Pair this with --fw-regular, NOT --fw-light. A hairline-contrast serif at
+     300 either synthesises badly or disappears; the reference wordmark is a
+     normal-weight serif and reads as engraved rather than thin. */
+  --font-brand: var(--font-display);
+
+  /* ── Type scale ─────────────────────────────────────────────────────────
+     Deliberately small — UI text sits at 13.5px, labels at 11.5–12.5px. The
+     reference gets its calm from restraint in size, not from whitespace
+     alone. Fractional pixel values land closer to a true modular scale than
+     integers do, and subpixel text rendering resolves them cleanly. */
+  --fs-2xs: 10.5px;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 13.5px; /* body default */
+  --fs-lg: 15px;
+  --fs-xl: 17.5px;
+  --fs-2xl: 21px;
+  --fs-3xl: 27px;
+  --fs-4xl: 34px;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.35;
+  --lh-normal: 1.55;
+  --lh-relaxed: 1.7; /* long-form assistant prose */
+
+  /* Negative tracking at UI sizes is most of what separates a refined
+     interface from a default one; positive tracking is for small caps. */
+  --ls-tighter: -0.025em;
+  --ls-tight: -0.014em;
+  --ls-normal: -0.006em;
+  --ls-wide: 0.04em;
+  --ls-caps: 0.08em; /* overlines / section labels */
+
+  --fw-light: 300;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* ── Geometry ──────────────────────────────────────────────────────────
+     4px base. Named by size so a component picks an intent, not a number. */
+  --sp-0: 0;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-2xl: 18px;
+  --r-pill: 999px;
+
+  /* ── Motion ────────────────────────────────────────────────────────────
+     One easing curve does most of the work: a decelerating curve with no
+     overshoot, which is what makes an interface feel quick without feeling
+     bouncy. --ease-entrance has a slight overshoot and is reserved for
+     things that ARRIVE (toasts, popovers), never for state changes. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-entrance: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  --dur-1: 110ms; /* hover, focus — must feel instant */
+  --dur-2: 180ms; /* the default for state changes */
+  --dur-3: 260ms; /* panels, disclosure */
+  --dur-4: 400ms; /* entrances, progress fills */
+
+  --z-content: 1;
+  --z-rail: 90;
+  --z-rail-toggle: 100;
+  --z-popover: 1000;
+  --z-modal: 1100;
+  --z-toast: 1200;
+
+  /* ───────────────────────────────────────────────────────────────────────
+     INVERSE — a maximum-contrast chip that stays dark in BOTH themes.
+     ───────────────────────────────────────────────────────────────────────
+     Theme-INVARIANT by design, so it lives outside every theme block where
+     nothing can redefine it.
+
+     Used by the model capsule in the chat header. It could not use --solid,
+     which is the existing high-contrast neutral: --solid is deliberately
+     paper in dark mode and ink in light mode so a "secondary" button keeps
+     the same WEIGHT in both. That inverts, and this chip must not — it is a
+     persistent identity marker, and having it flip from black-on-paper to
+     white-on-charcoal makes it read as a different control. */
+  --inverse-bg: #161614;
+  --inverse-bg-hover: #26251f;
+  --inverse-text: #f8f7f4;
+  --inverse-text-dim: #9d9a91;
+  --inverse-border: #2b2a24;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   LIGHT THEME  (also the default — :root carries it so a missing data-theme
+   attribute renders correctly instead of unstyled)
+   ───────────────────────────────────────────────────────────────────────────
+   Warm paper rather than #ffffff everywhere. A pure-white canvas with pure-
+   white cards has no elevation to work with; here the canvas is a shade
+   softer than the cards that sit on it, which is what lets a card read as a
+   plane without needing a shadow.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Surfaces, by role */
+  --bg-canvas: #fcfcfb; /* the app's ground plane */
+  --bg-surface: #ffffff; /* cards, panels, modals */
+  --bg-surface-alt: #f7f7f5; /* secondary panels, table headers */
+  --bg-raised: #ffffff; /* popovers, dropdowns — above surface */
+  --bg-field: #f1f0ee; /* inputs, the composer — a filled well, no border */
+  --bg-field-focus: #eceae7;
+  --bg-hover: #f2f1ef;
+  --bg-active: #e9e8e5;
+  --bg-selected: #edece9;
+  --bg-overlay: rgba(24, 24, 22, 0.28); /* modal scrim */
+  --bg-inset: #f5f4f2; /* wells, code blocks, progress troughs */
+
+  /* Text, by emphasis */
+  --text-heading: #141413;
+  --text-primary: #1f1f1d;
+  --text-secondary: #6b6a65;
+  --text-muted: #8f8d87;
+  --text-faint: #b0aea8;
+  --text-on-accent: #ffffff; /* on the near-black accent fill */
+  --text-on-solid: #ffffff; /* text on the ink solid fill */
+
+  /* Borders, by weight. Deliberately faint — these carry the structure. */
+  --border-strong: #d4d2cd;
+  --border: #e6e5e1;
+  --border-subtle: #f0efec;
+
+  /* Accent = ink. Achromatic by design; see the header note. */
+  --accent: #1a1a18;
+  --accent-hover: #2e2e2a;
+  --accent-active: #000000;
+  --accent-quiet: rgba(26, 26, 24, 0.06);
+  --accent-fg: #1f1f1d; /* accent AS text — pair with an underline */
+  --accent-border: rgba(26, 26, 24, 0.22);
+
+  /* Status. The only chromatic tokens in the system, and muted at that. */
+  --success: #3d7a52;
+  --success-quiet: rgba(61, 122, 82, 0.10);
+  --success-fg: #2f6642;
+
+  --warning: #8a6d1f;
+  --warning-quiet: rgba(138, 109, 31, 0.11);
+  --warning-fg: #745913;
+
+  --danger: #a33a2c;
+  --danger-hover: #8a2f23;
+  --danger-quiet: rgba(163, 58, 44, 0.09);
+  --danger-fg: #8f3226;
+  --danger-border: rgba(163, 58, 44, 0.26);
+
+  /* Neutral solid fill — the "secondary button" surface.
+     In light mode this is INK, not paper, otherwise a "secondary" button
+     would be invisible against a white card. */
+  --solid: #1f1f1d;
+  --solid-hover: #141413;
+
+  /* Elevation — near-flat. */
+  --shadow-xs: 0 1px 1px rgba(20, 20, 19, 0.04);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.05), 0 1px 1px rgba(20, 20, 19, 0.03);
+  --shadow-md: 0 2px 8px rgba(20, 20, 19, 0.06), 0 1px 2px rgba(20, 20, 19, 0.04);
+  --shadow-lg: 0 8px 28px rgba(20, 20, 19, 0.10), 0 2px 6px rgba(20, 20, 19, 0.05);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
+  --ring: rgba(26, 26, 24, 0.32);
+
+  --scrollbar-thumb: #dcdad5;
+  --scrollbar-thumb-hover: #c6c4be;
+  --scrollbar-track: transparent;
+
+  /* ── THE RAIL ─────────────────────────────────────────────────────────
+     Deliberately NOT defined here. The rail is theme-INVARIANT — always
+     black — and lives in its own block after both theme blocks, so a
+     per-theme value cannot be reintroduced by accident. See "THE RAIL
+     (THEME-INVARIANT)" below. */
+
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   DARK THEME
+   The same monochrome language, inverted. Not a different design: the accent
+   is still "maximum contrast against the canvas", which here means near-white
+   rather than near-black.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg-canvas: #171716;
+  --bg-surface: #1e1e1c;
+  --bg-surface-alt: #1a1a19;
+  --bg-raised: #242422;
+  --bg-field: #232321;
+  --bg-field-focus: #292927;
+  --bg-hover: #262624;
+  --bg-active: #2f2f2c;
+  --bg-selected: #2b2b28;
+  --bg-overlay: rgba(8, 8, 7, 0.66);
+  --bg-inset: #131312;
+
+  /* Never pure white — #fff on a dark field haloes. */
+  --text-heading: #f8f7f4;
+  --text-primary: #e8e7e3;
+  --text-secondary: #a3a19b;
+  --text-muted: #77756f;
+  --text-faint: #575651;
+  --text-on-accent: #171716; /* on the near-white accent fill */
+  --text-on-solid: #171716;
+
+  --border-strong: #3d3d38;
+  --border: #2d2d2a;
+  --border-subtle: #232321;
+
+  /* Accent = paper here, for the same reason it is ink in light mode: the
+     primary action is whatever contrasts hardest with the canvas. */
+  --accent: #eceae5;
+  --accent-hover: #ffffff;
+  --accent-active: #d8d6d1;
+  --accent-quiet: rgba(236, 234, 229, 0.10);
+  --accent-fg: #e8e7e3; /* accent AS text — pair with an underline */
+  --accent-border: rgba(236, 234, 229, 0.24);
+
+  --success: #6fa980;
+  --success-quiet: rgba(111, 169, 128, 0.15);
+  --success-fg: #8cc09c;
+
+  --warning: #c9a24a;
+  --warning-quiet: rgba(201, 162, 74, 0.15);
+  --warning-fg: #d9b767;
+
+  --danger: #c96f62;
+  --danger-hover: #d58175;
+  --danger-quiet: rgba(201, 111, 98, 0.15);
+  --danger-fg: #dd8b7f;
+  --danger-border: rgba(221, 139, 127, 0.34);
+
+  /* Neutral solid fill — paper in dark mode, so a "secondary" button keeps
+     the same WEIGHT it has in light mode. */
+  --solid: #e8e7e3;
+  --solid-hover: #f5f4f0;
+
+  /* On a dark canvas a shadow mostly reads as a subtle border, so the top
+     highlight does more work than the drop shadow. */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.44), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.32);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+
+  --ring: rgba(236, 234, 229, 0.42);
+
+  --scrollbar-thumb: #35352f;
+  --scrollbar-thumb-hover: #45453e;
+  --scrollbar-track: transparent;
+
+  /* The rail is NOT defined per theme — see "THE RAIL (THEME-INVARIANT)". */
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   LEGACY ALIASES
+   ───────────────────────────────────────────────────────────────────────────
+   The previous token names, re-pointed at the roles above. This is what makes
+   the migration incremental and safe: existing CSS keeps working untouched
+   and picks up the new palette immediately, instead of every surface having
+   to be rewritten in one unreviewable change.
+
+   These are a migration aid, not API. New CSS should use the role tokens
+   directly. Defined once, outside the theme blocks, because they forward to
+   tokens that are already theme-aware — so an alias can never be the thing
+   that breaks parity. */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   THE RAIL (THEME-INVARIANT)
+   ───────────────────────────────────────────────────────────────────────────
+   The sidebar is ALWAYS black with white text and icons, in light mode and
+   dark mode alike (product decision, 2026-08-08). It is chrome, not content:
+   a fixed dark spine means the navigation never re-anchors when the theme
+   changes, and it is the app's constant frame around a canvas that does
+   change.
+
+   Defined ONCE here, deliberately outside and AFTER both theme blocks, so a
+   per-theme rail value cannot be reintroduced without deleting this block —
+   the previous arrangement duplicated all fifteen tokens in both blocks and
+   they had already drifted (light: #f7f7f5 on #1f1f1d, i.e. a white rail).
+
+   #0b0b0a rather than #000: it is the same black the pre-React splash in
+   index.html and LoadingScreen.css already paint, so boot → app has no
+   visible seam. Text is near-white rather than #ffffff because pure white on
+   pure black haloes at small sizes; it reads as white while staying legible.
+   The steps below (hover → active → selected) are the tuned dark scale,
+   deepened to sit on this darker base. */
+:root {
+  --rail-bg: #0b0b0a;
+  --rail-bg-raised: #191917;      /* popups/menus floating above the rail */
+  --rail-hover: #1c1c1a;
+  --rail-active: #242422;
+  --rail-selected: #2a2a27;
+  --rail-text: #f2f1ed;           /* primary label + icon colour */
+  --rail-text-dim: #a8a69f;       /* secondary labels, inactive icons */
+  --rail-text-faint: #7a7872;     /* placeholders, section headings */
+  --rail-border: #232321;
+  --rail-accent: #ffffff;         /* active/selected emphasis */
+  --rail-ring: rgba(255, 255, 255, 0.42);
+
+  /* Status and fill colours safe to use ON the rail surface — tuned for a
+     dark ground in both themes, for the same reason as everything above. */
+  --rail-warning: #d9b767;
+  --rail-danger: #dd8b7f;
+  --rail-accent-solid: #f2f1ed;
+  --rail-accent-solid-hover: #ffffff;
+}
+
+:root {
+  --bg-primary: var(--bg-surface);
+  --bg-secondary: var(--bg-surface-alt);
+  --bg-tertiary: var(--bg-inset);
+  --bg-chat: var(--bg-canvas);
+  --bg-input: var(--bg-field);
+  --bg-bubble-user: var(--bg-inset);
+  --bg-bubble-assistant: transparent;
+  --bg-code: var(--bg-inset);
+  --bg-code-header: var(--bg-surface-alt);
+  --bg-modal: var(--bg-surface);
+  --bg-dropdown: var(--bg-raised);
+  --border-primary: var(--border);
+  --text-on-primary: var(--text-primary);
+  --shadow: var(--shadow-md);
+  --danger-bg: var(--danger-quiet);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   REDUCED MOTION
+   Durations collapse to ~0 rather than animations being disabled, so nothing
+   depends on a transitionend that never fires — an animation-suppressing
+   reset can leave an element stuck mid-entrance.
+   ─────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 1ms;
+    --dur-2: 1ms;
+    --dur-3: 1ms;
+    --dur-4: 1ms;
+    --ease-entrance: linear;
+  }
+}

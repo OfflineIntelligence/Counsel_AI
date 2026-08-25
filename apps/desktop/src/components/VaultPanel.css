@@ -1,0 +1,495 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   VAULT — the document library surface
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Replaces a plain indented tree whose every rule was an inline style object.
+   Three things drive the new layout:
+
+   1. EXTRACTION STATE IS THE POINT. This library exists so documents can be
+      referenced from any chat, and that only works for documents the backend
+      managed to READ. Previously nothing in this surface said whether a file
+      had been extracted — a scanned PDF that yielded nothing looked identical
+      to a clean contract, and the user found out only when the model answered
+      without it. There is now a status column, populated by joining /documents
+      onto the file rows by local_file_id.
+
+   2. A TABLE, NOT A TREE OF PILLS. Filename, status, size and date are four
+      facts per row that want to align in columns; the old layout pushed size
+      to a ragged right edge and had nowhere to put the other two.
+
+   3. NO ROW CHROME UNTIL HOVER. Action buttons appearing on hover was already
+      the behaviour and is kept — it is right for a dense list.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.vault {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background: var(--bg-canvas);
+  position: relative;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.vault-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vault-header__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.vault-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.vault-title > svg {
+  color: var(--text-muted);
+}
+
+.vault-subtitle {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-subtitle code {
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+}
+
+.vault-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+.vault-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-6);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vault-search {
+  position: relative;
+  flex: 1;
+  max-width: 340px;
+}
+
+.vault-search > svg {
+  position: absolute;
+  left: var(--sp-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.vault-search .ui-input {
+  padding-left: 32px;
+}
+
+/* Selection-mode bar. Replaces the toolbar contents rather than sitting beside
+   them, so the actions on screen always apply to the current mode. */
+.vault-toolbar.is-selecting {
+  background: var(--accent-quiet);
+}
+
+.vault-selection-count {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Table ──────────────────────────────────────────────────────────────── */
+.vault-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 var(--sp-6) var(--sp-6);
+}
+
+.vault-table {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.vault-row {
+  display: grid;
+  /* name | status | size | date | actions */
+  grid-template-columns: minmax(0, 1fr) 132px 88px 116px 68px;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+}
+
+.vault-row--head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 34px;
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.vault-row--head > span {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.vault-row--file {
+  height: 40px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+.vault-row--file:hover {
+  background: var(--bg-hover);
+}
+
+.vault-row--file.is-selected {
+  background: var(--bg-selected);
+  border-color: var(--accent-border);
+}
+
+.vault-row--file:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Name cell: checkbox, disclosure, glyph, label. */
+.vault-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.vault-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+.vault-disclosure:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+/* Rotate one chevron rather than swapping two icons — the transition is free
+   and it reads as the same control changing state. */
+.vault-disclosure.is-open > svg {
+  transform: rotate(90deg);
+}
+.vault-disclosure > svg {
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.vault-spacer {
+  width: 18px;
+  flex-shrink: 0;
+}
+
+.vault-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.vault-glyph--folder {
+  background: transparent;
+  color: var(--accent-fg);
+}
+
+.vault-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  letter-spacing: var(--ls-normal);
+}
+
+.vault-row--file.is-folder .vault-label {
+  font-weight: var(--fw-medium);
+}
+
+/* Reference count — how often a document has been pulled into a chat. Real
+   signal about which documents matter, and it was already in the API. */
+.vault-refs {
+  flex-shrink: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-cell {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-cell--num {
+  text-align: right;
+}
+
+/* Row actions, revealed on hover. `visibility` rather than display so the
+   column never changes width and rows do not shift as the pointer moves. */
+.vault-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.vault-row--file:hover .vault-actions,
+.vault-row--file:focus-within .vault-actions {
+  opacity: 1;
+}
+
+.vault-checkbox {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ── Status pill ────────────────────────────────────────────────────────────
+   The column that did not exist before. Four states, and the distinction that
+   matters most is "indexed" vs "not readable" — a file can be safely stored
+   and still be useless to the model. */
+.vault-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  white-space: nowrap;
+}
+.vault-status__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: currentColor;
+  flex-shrink: 0;
+}
+.vault-status--indexed {
+  color: var(--success-fg);
+}
+.vault-status--pending {
+  color: var(--text-faint);
+}
+.vault-status--failed {
+  color: var(--danger-fg);
+}
+.vault-status--unknown {
+  color: var(--text-faint);
+}
+
+/* ── Empty & loading ────────────────────────────────────────────────────── */
+.vault-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-16) var(--sp-5);
+  text-align: center;
+}
+
+.vault-empty__icon {
+  color: var(--text-faint);
+  margin-bottom: var(--sp-2);
+}
+
+.vault-empty__title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.vault-empty__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  max-width: 42ch;
+  line-height: var(--lh-normal);
+}
+
+.vault-empty__actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.vault-skeleton-row {
+  height: 40px;
+  margin-top: var(--sp-1);
+}
+
+/* ── Inline folder creation ─────────────────────────────────────────────── */
+.vault-newfolder {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-6);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface-alt);
+  flex-shrink: 0;
+}
+
+.vault-newfolder .ui-input {
+  max-width: 320px;
+}
+
+.vault-newfolder__scope {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ── Context menu ───────────────────────────────────────────────────────── */
+.vault-menu {
+  position: fixed;
+  z-index: var(--z-popover);
+  min-width: 188px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  animation: vault-menu-in var(--dur-1) var(--ease-out) both;
+}
+
+@keyframes vault-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.vault-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.vault-menu__item:hover {
+  background: var(--bg-hover);
+}
+.vault-menu__item--danger {
+  color: var(--danger-fg);
+}
+.vault-menu__item--danger:hover {
+  background: var(--danger-quiet);
+}
+.vault-menu__sep {
+  height: 1px;
+  margin: var(--sp-1) 0;
+  background: var(--border-subtle);
+}
+
+/* ── Drop overlay ───────────────────────────────────────────────────────── */
+.vault-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.vault-dropzone.is-active {
+  opacity: 1;
+}
+.vault-dropzone__scrim {
+  position: absolute;
+  inset: var(--sp-3);
+  border: 1.5px dashed var(--accent-border);
+  border-radius: var(--r-xl);
+  background: var(--bg-overlay);
+}
+.vault-dropzone__label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  text-align: center;
+}
+.vault-dropzone__title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  color: var(--text-heading);
+}
+.vault-dropzone__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}

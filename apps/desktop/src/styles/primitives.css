@@ -1,0 +1,750 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   PRIMITIVES — buttons, progress, fields, badges, toasts
+   ═══════════════════════════════════════════════════════════════════════════
+
+   One implementation per control, driven entirely by the tokens in
+   tokens.css. Nothing in this file names a colour, a duration, or a radius
+   literally, which is what guarantees a control looks correct in both themes
+   without a `[data-theme]` rule of its own.
+
+   What this replaces, and why each was a problem:
+
+   `.header-capsule-btn`  — light: grey fill → hover FULL BLACK fill.
+                            dark:  #2d3748  → hover FULL WHITE fill.
+                            A complete inversion on hover is the loudest
+                            possible response to the cheapest interaction, and
+                            it was a different inversion per theme.
+
+   `.capsule-btn-gray`    — its `[data-theme="dark"]` override was byte-for-byte
+                            identical to the base rule. Eight lines that could
+                            only ever mislead the next reader into thinking the
+                            themes differed here.
+
+   `.modal-glass`         — light variant was rgba(255,255,255,0.15) over a
+                            white surface: invisible.
+
+   Interaction model, applied uniformly: hover shifts the fill by one step and
+   nothing else; press adds a 1px optical depress; focus-visible draws a ring
+   and never moves anything. No control changes its foreground colour on
+   hover, so text never flashes.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Shared focus treatment. `:focus-visible` only, so a mouse click never
+   leaves a ring behind, but keyboard traversal always shows one.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-btn:focus-visible,
+.ui-input:focus-visible,
+.ui-iconbtn:focus-visible,
+.ui-chip:focus-visible,
+.ui-tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTON
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-btn {
+  /* Sizing knobs a modifier can retune without restating the whole rule. */
+  --btn-h: 34px;
+  --btn-px: var(--sp-4);
+  --btn-fs: var(--fs-md);
+  --btn-radius: var(--r-md);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: var(--btn-h);
+  padding: 0 var(--btn-px);
+  border: 1px solid transparent;
+  border-radius: var(--btn-radius);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--btn-fs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+/* 1px depress on press. Cheap, and it is most of what makes a button feel
+   physical; applied on the base so every variant inherits it. */
+.ui-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.ui-btn:disabled,
+.ui-btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Icons inside buttons must not stretch when the label wraps. */
+.ui-btn > svg {
+  flex: 0 0 auto;
+}
+
+/* ── Variants ──────────────────────────────────────────────────────────── */
+
+/* Primary: the one accented action on a surface. */
+.ui-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+  box-shadow: var(--shadow-xs), var(--highlight-top);
+}
+.ui-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.ui-btn--primary:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+  box-shadow: none;
+}
+
+/* Solid: high-contrast neutral. Replaces `.capsule-btn-gray`.
+   `--solid` is paper in dark mode and ink in light mode, so this reads as the
+   same WEIGHT of button in both — which the old version did not: it was a
+   light-grey pill in both themes, invisible on a light card. */
+.ui-btn--solid {
+  background: var(--solid);
+  border-color: var(--solid);
+  color: var(--text-on-solid);
+  box-shadow: var(--shadow-xs);
+}
+.ui-btn--solid:hover:not(:disabled) {
+  background: var(--solid-hover);
+  border-color: var(--solid-hover);
+}
+
+/* Secondary: bordered, transparent fill. The default for most actions. */
+.ui-btn--secondary {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+.ui-btn--secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.ui-btn--secondary:active:not(:disabled) {
+  background: var(--bg-active);
+  box-shadow: none;
+}
+
+/* Ghost: no chrome until touched. For toolbars and dense rows. */
+.ui-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.ui-btn--ghost:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+/* Danger: destructive confirmation only. Quiet until hovered, because a
+   permanently red button trains people to ignore red. */
+.ui-btn--danger {
+  background: var(--danger-quiet);
+  border-color: transparent;
+  color: var(--danger-fg);
+}
+.ui-btn--danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--text-on-accent);
+}
+
+/* ── Size modifiers ────────────────────────────────────────────────────── */
+.ui-btn--sm {
+  --btn-h: 28px;
+  --btn-px: var(--sp-3);
+  --btn-fs: var(--fs-sm);
+  --btn-radius: var(--r-sm);
+}
+.ui-btn--lg {
+  --btn-h: 42px;
+  --btn-px: var(--sp-5);
+  --btn-fs: var(--fs-lg);
+  --btn-radius: var(--r-lg);
+}
+
+/* ── Shape modifiers ───────────────────────────────────────────────────── */
+.ui-btn--pill {
+  --btn-radius: var(--r-pill);
+  --btn-px: var(--sp-4);
+}
+.ui-btn--block {
+  width: 100%;
+}
+
+/* ── Icon-only button ──────────────────────────────────────────────────── */
+.ui-iconbtn {
+  --icon-size: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.ui-iconbtn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.ui-iconbtn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.ui-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ui-iconbtn--sm {
+  --icon-size: 26px;
+  border-radius: var(--r-sm);
+}
+.ui-iconbtn--lg {
+  --icon-size: 38px;
+}
+.ui-iconbtn--danger:hover:not(:disabled) {
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROGRESS
+   ═══════════════════════════════════════════════════════════════════════════
+   Driven by a `--progress` custom property (0–100) rather than an inline
+   width, so a caller sets one number and the component owns everything
+   visual. The fill transition is deliberately long: a download bar that
+   snaps between poll results reads as broken, whereas an eased fill reads as
+   continuous even at a 3-second poll interval.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-progress {
+  --progress: 0;
+  --progress-h: 6px;
+  --progress-color: var(--accent);
+
+  position: relative;
+  width: 100%;
+  height: var(--progress-h);
+  border-radius: var(--r-pill);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.ui-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: clamp(0%, calc(var(--progress) * 1%), 100%);
+  border-radius: inherit;
+  background: var(--progress-color);
+  transition: width var(--dur-4) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+
+/* A moving sheen over the fill, so an active transfer looks alive even while
+   the percentage is between polls. Only on .is-active, so a paused or
+   completed bar is completely still — stillness is the signal. */
+.ui-progress.is-active .ui-progress__fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.22) 50%,
+    transparent 100%
+  );
+  animation: ui-progress-sheen 1.6s var(--ease-in-out) infinite;
+}
+
+@keyframes ui-progress-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Indeterminate: work is happening, duration unknown. A travelling segment
+   rather than a full-width pulse, because a pulse is easily mistaken for a
+   determinate bar sitting at 100%. */
+.ui-progress--indeterminate .ui-progress__fill {
+  width: 35%;
+  animation: ui-progress-slide 1.25s var(--ease-in-out) infinite;
+}
+
+@keyframes ui-progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(calc(100% / 0.35));
+  }
+}
+
+.ui-progress--thin {
+  --progress-h: 3px;
+}
+.ui-progress--thick {
+  --progress-h: 10px;
+}
+.ui-progress--success {
+  --progress-color: var(--success);
+}
+.ui-progress--warning {
+  --progress-color: var(--warning);
+}
+.ui-progress--danger {
+  --progress-color: var(--danger);
+}
+
+/* Metric meter: a progress bar used to show a LEVEL rather than completion.
+   Squarer ends and no sheen, so it never reads as an in-flight transfer. */
+.ui-meter {
+  --progress: 0;
+  --progress-h: 8px;
+  --progress-color: var(--accent);
+  position: relative;
+  width: 100%;
+  height: var(--progress-h);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.ui-meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: clamp(0%, calc(var(--progress) * 1%), 100%);
+  border-radius: inherit;
+  background: var(--progress-color);
+  transition: width var(--dur-3) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FIELDS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  letter-spacing: var(--ls-normal);
+  transition: border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+}
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+.ui-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.ui-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  background: var(--bg-field-focus);
+}
+.ui-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BADGE
+   ═══════════════════════════════════════════════════════════════════════════
+   Small status marker. Tinted fill + coloured text, never a saturated block:
+   a badge sits inside dense content and a solid fill would out-shout the
+   content it annotates.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 20px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ui-badge--accent {
+  background: var(--accent-quiet);
+  border-color: var(--accent-border);
+  color: var(--accent-fg);
+}
+.ui-badge--success {
+  background: var(--success-quiet);
+  color: var(--success-fg);
+}
+.ui-badge--warning {
+  background: var(--warning-quiet);
+  color: var(--warning-fg);
+}
+.ui-badge--danger {
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+
+/* Leading status dot, for badges that describe a live state. */
+.ui-badge__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.ui-badge__dot--pulse {
+  animation: ui-dot-pulse 1.8s var(--ease-in-out) infinite;
+}
+@keyframes ui-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TYPOGRAPHY HELPERS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Serif display, for page and section titles. */
+.ui-display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+
+/* Small-caps overline, for section labels above content. */
+.ui-overline {
+  font-family: var(--font-sans);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Tabular numerals. Essential anywhere a number updates in place — a
+   proportional digit set makes a live counter jitter as glyph widths change,
+   which is most of why the current metrics page feels unsteady. */
+.ui-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Large numerals for metric tiles: the sans display cut, tight tracking. */
+.ui-stat {
+  font-family: var(--font-display-sans);
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tighter);
+  line-height: 1;
+  color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SURFACES
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-xs);
+}
+
+/* A divider that disappears on the last item without needing :last-child
+   plumbing at every call site. */
+.ui-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  border: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SKELETON
+   ═══════════════════════════════════════════════════════════════════════════
+   For content that is loading and whose shape is known. Preferred over a
+   spinner wherever the layout is predictable, because it does not reflow when
+   the real content lands.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+.ui-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--bg-hover) 50%,
+    transparent
+  );
+  animation: ui-progress-sheen 1.4s var(--ease-in-out) infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLLBARS
+   ═══════════════════════════════════════════════════════════════════════════
+   Thin, and only visible over content that scrolls. Themed via tokens so the
+   light theme does not inherit a dark scrollbar.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+.ui-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.ui-scroll::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.ui-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.ui-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOAST
+   ═══════════════════════════════════════════════════════════════════════════
+   What this replaces: a 340px card with a 20px backdrop-blur, a saturated
+   gradient icon tile, a coloured gradient glow, and a hardcoded
+   `rgba(47,47,47,0.75)` background — i.e. a dark toast in BOTH themes, so in
+   light mode it was a dark slab with --text-primary (near-black) text on it.
+
+   The status colour now appears in exactly two places: a 3px left rule and the
+   icon. Everything else is the neutral surface, so a stack of toasts reads as
+   one family instead of five competing gradients.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-toast-region {
+  position: fixed;
+  bottom: var(--sp-6);
+  right: var(--sp-6);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  max-height: calc(100vh - var(--sp-12));
+  /* The region spans a large empty area; it must not eat clicks meant for the
+     app behind it. Individual toasts re-enable pointer events. */
+  pointer-events: none;
+}
+
+.ui-toast {
+  --toast-accent: var(--accent);
+  --toast-tint: var(--accent-quiet);
+  --toast-fg: var(--accent-fg);
+
+  position: relative;
+  width: 348px;
+  max-width: calc(100vw - var(--sp-12));
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  pointer-events: auto;
+  animation: ui-toast-in var(--dur-3) var(--ease-entrance) both;
+}
+
+/* The status rule. An inset shadow rather than a child element, so it hugs the
+   border radius without needing its own corner maths. */
+.ui-toast::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--toast-accent);
+}
+
+.ui-toast.is-exiting {
+  animation: ui-toast-out var(--dur-2) var(--ease-out) both;
+}
+
+@keyframes ui-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes ui-toast-out {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px) scale(0.97);
+  }
+}
+
+.ui-toast__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  background: var(--toast-tint);
+  color: var(--toast-fg);
+}
+
+.ui-toast__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-toast__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-snug);
+  color: var(--text-heading);
+}
+
+.ui-toast__message {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  /* Long messages clamp rather than growing the toast without bound. The
+     `title` attribute on the element carries the full text. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.ui-toast__meta {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Auto-dismiss countdown.
+   Driven by a CSS animation reading --toast-duration, NOT by React state. The
+   previous implementation ran a 50ms setInterval per toast and called
+   setProgress on every tick — 20 React renders per second per visible toast,
+   on hardware where this app is already budgeting for CPU inference. */
+.ui-toast__timer {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: var(--bg-inset);
+}
+
+.ui-toast__timer-fill {
+  height: 100%;
+  transform-origin: left center;
+  background: var(--toast-accent);
+  animation: ui-toast-timer linear forwards;
+  animation-duration: var(--toast-duration, 5000ms);
+}
+
+/* Pausing on hover is the point of a countdown being visible at all: a toast
+   that vanishes while it is being read is worse than one with no timer. */
+.ui-toast:hover .ui-toast__timer-fill,
+.ui-toast:focus-within .ui-toast__timer-fill {
+  animation-play-state: paused;
+}
+
+@keyframes ui-toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* Status variants — each sets three custom properties, nothing else. */
+.ui-toast--success {
+  --toast-accent: var(--success);
+  --toast-tint: var(--success-quiet);
+  --toast-fg: var(--success-fg);
+}
+.ui-toast--error {
+  --toast-accent: var(--danger);
+  --toast-tint: var(--danger-quiet);
+  --toast-fg: var(--danger-fg);
+}
+.ui-toast--warning {
+  --toast-accent: var(--warning);
+  --toast-tint: var(--warning-quiet);
+  --toast-fg: var(--warning-fg);
+}
+.ui-toast--info,
+.ui-toast--download {
+  --toast-accent: var(--accent);
+  --toast-tint: var(--accent-quiet);
+  --toast-fg: var(--accent-fg);
+}

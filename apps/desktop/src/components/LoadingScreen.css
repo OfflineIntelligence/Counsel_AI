@@ -1,0 +1,242 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOADING SCREEN  (also styles EngineSetupGate, which imports this file)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Rebuilt on tokens. What was here belonged to a different product: a
+   #1a1a2e→#16213e navy gradient background, a #00d4aa teal gradient clipped
+   into the wordmark, three bouncing teal dots, and gradient-filled buttons with
+   coloured drop shadows. None of it was theme-aware, so a user on the light
+   theme got a navy splash that then snapped to cream.
+
+   It renders on the RAIL plane, via --rail-* tokens only. That rule has not
+   changed; what changed is what the rail means. The rail used to be black in
+   both themes, so this screen was too. It is now the same paper as the canvas,
+   one shade down, and tracks the theme with it.
+
+   This screen mounts BEFORE ThemeProvider does, so no data-theme attribute is
+   set yet and whatever :root carries is what the user sees. tokens.css puts
+   the LIGHT theme on :root for precisely this reason — the splash and the app
+   agree on first paint for the default theme, with no flash.
+
+   Still use --rail-* here and never the themed set. Keeping every colour on
+   one plane's vocabulary is what lets the splash be retuned in one place.
+
+   The wordmark uses --font-brand — now the display SERIF — at --fw-regular.
+   Body copy below it stays on --font-sans: the serif is the brand mark, not a
+   second UI typeface.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rail-bg);
+  color: var(--rail-text-dim);
+  z-index: var(--z-toast);
+}
+
+/* No separate error background. A failure is communicated by its message and
+   icon, not by tinting the whole viewport red — the old #2d1b1b→#1a1a2e
+   gradient made an ordinary "engine still initialising" read as a crash. */
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--sp-8);
+  max-width: 460px;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────────────
+   22px with a 1.5px stroke, down from 60px and 4px. A 60px ring is a
+   page-level progress indicator; this is a short boot step, and at that size it
+   dominated the screen more than the product name did. */
+.spinner {
+  width: 22px;
+  height: 22px;
+  margin: 0 auto var(--sp-5);
+  border: 1.5px solid var(--rail-border);
+  border-top-color: var(--rail-accent);
+  border-radius: var(--r-pill);
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Wordmark ───────────────────────────────────────────────────────────────
+   Display serif at regular weight. Previously 2.5rem/600 with a teal gradient
+   clipped through the glyphs via -webkit-background-clip — which also meant the
+   product name rendered as invisible text anywhere that clip failed. */
+.loading-content h2 {
+  font-family: var(--font-brand);
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+  color: var(--rail-text);
+  margin: 0 0 var(--sp-3);
+}
+
+.loading-text {
+  font-family: var(--font-sans);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-md);
+  color: var(--rail-text-dim);
+  margin: 0;
+}
+
+.loading-subtext {
+  font-family: var(--font-sans);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-sm);
+  color: var(--rail-text-faint);
+  margin-top: var(--sp-2);
+}
+
+.attempts-text {
+  font-size: var(--fs-xs);
+  color: var(--rail-text-faint);
+  margin-top: var(--sp-3);
+  /* Reserve the line so the layout does not jump when the first attempt count
+     appears — the element renders empty until then. */
+  min-height: 1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.debug-info {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--rail-text-faint);
+}
+
+/* ── Progress dots ──────────────────────────────────────────────────────────
+   Kept, but as a quiet opacity pulse rather than three teal balls scaling from
+   0 to 1. A scale animation beside a spinning ring is two competing indicators
+   of the same single fact. */
+.loading-dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+}
+
+.loading-dots span {
+  width: 4px;
+  height: 4px;
+  background: var(--rail-text-faint);
+  border-radius: var(--r-pill);
+  animation: loading-dot 1.4s var(--ease-in-out) infinite both;
+}
+
+.loading-dots span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+.loading-dots span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes loading-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* ── Error state ────────────────────────────────────────────────────────── */
+.error-icon {
+  font-size: var(--fs-3xl);
+  line-height: 1;
+  color: var(--rail-warning);
+  margin-bottom: var(--sp-4);
+}
+
+.error-message {
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--rail-text);
+  margin: var(--sp-3) 0 0;
+}
+
+.error-hint {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--rail-text-dim);
+  margin: var(--sp-3) auto 0;
+  max-width: 44ch;
+}
+
+.error-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: center;
+  margin-top: var(--sp-6);
+}
+
+/* Buttons follow the .ui-btn treatment rather than restating it. The old pair
+   were gradient fills with coloured drop shadows that lifted 2px on hover —
+   the most dated element in the file. */
+.retry-button,
+.online-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 34px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.retry-button.primary {
+  background: var(--rail-accent-solid);
+  border-color: var(--rail-accent-solid);
+  /* Was a literal #ffffff, which was safe only while --rail-accent-solid was
+     permanently dark. It now tracks the accent, so in the dark theme the fill
+     is near-WHITE and white-on-white would have been invisible.
+     --text-on-accent is defined against exactly that fill in both themes. */
+  color: var(--text-on-accent);
+}
+.retry-button.primary:hover {
+  background: var(--rail-accent-solid-hover);
+  border-color: var(--rail-accent-solid-hover);
+}
+
+.online-button.secondary {
+  background: transparent;
+  border-color: var(--rail-border);
+  color: var(--rail-text);
+}
+.online-button.secondary:hover {
+  background: var(--rail-hover);
+  border-color: var(--rail-active);
+}
+
+.retry-button:active,
+.online-button:active {
+  transform: translateY(1px);
+}
+
+.retry-button:focus-visible,
+.online-button:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: 2px;
+}

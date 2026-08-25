@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offline Counsel AI</title>
+    <script>
+      // Critical early error logging
+      window.onerror = function(msg, src, line, col, error) {
+        console.error('[FATAL] Window error:', msg, 'at', src, ':' + line);
+        document.write('<div style="color:red;padding:20px;background:#1a1a2e;min-height:100vh;"><h1>Startup Error</h1><pre>' + msg + '\n' + (error?.stack || '') + '</pre></div>');
+        return true;
+      };
+      window.onunhandledrejection = function(e) {
+        console.error('[FATAL] Unhandled promise rejection:', e.reason);
+      };
+      console.log('[index.html] Starting...');
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <div style="color:white;background:#1a1a2e;min-height:100vh;display:flex;align-items:center;justify-content:center;">
+        Loading...
+      </div>
+    </div>
+    <script src="/port-config.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

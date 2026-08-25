@@ -1,0 +1,418 @@
+/* ───────────────────────────────────────────────────────────────────────────
+   SETTINGS — grouped-list layout
+   ───────────────────────────────────────────────────────────────────────────
+   Modelled on the macOS/iOS System Settings pattern, because that pattern
+   solves the specific problem this page had: twelve unrelated controls in one
+   flat column, each styled inline, with no shared rhythm and every row a
+   different height.
+
+   The rules that produce the look, and why each one matters:
+
+   1. ONE COLUMN, ONE WIDTH. Everything sits in a single centred measure. The
+      eye tracks a single left edge from the top of the page to the bottom;
+      nothing is centred against a different axis.
+   2. GROUPS, NOT HEADINGS. Related rows share a bordered card and are divided
+      by hairlines. The card — not a bold heading — is what says "these belong
+      together", so the section label above it can be quiet.
+   3. ONE ROW SHAPE. Every row is label + description on the left, exactly one
+      control on the right, vertically centred, with the same minimum height
+      and the same horizontal padding. Symmetry here is the whole effect: when
+      every control's right edge aligns, the page reads as designed rather
+      than assembled.
+   4. THE CONTROL COLUMN NEVER MOVES. Controls are right-aligned and share a
+      minimum width, so a switch, a menu and a button all terminate on the
+      same line.
+   5. TYPE DOES THE HIERARCHY, NOT WEIGHT. Row titles sit at body size in
+      medium; descriptions drop one step and go muted. No bold shouting.
+
+   Everything below is token-driven, so both themes and the type scale stay
+   authoritative. */
+
+/* ── Page shell ─────────────────────────────────────────────────────────── */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background: var(--bg-canvas);
+}
+
+.settings-page__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-6) var(--sp-16);
+}
+
+/* The single measure. 760px keeps a two-line description comfortable while
+   still letting the metrics grid show three tiles across. */
+.settings-col {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+/* ── Section ────────────────────────────────────────────────────────────── */
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* Quiet, uppercase, letterspaced — the label defers to the card beneath it. */
+.settings-block__label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-inline: var(--sp-1);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.settings-block__label > svg {
+  opacity: 0.75;
+}
+
+/* ── Group card ─────────────────────────────────────────────────────────── */
+.settings-group {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+/* Hairlines BETWEEN rows only — never a trailing line against the card edge,
+   which is the detail that separates a designed group from a stack of divs. */
+.settings-row + .settings-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Row ────────────────────────────────────────────────────────────────── */
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-height: 56px;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+/* Rows whose control is a full-width form (the feedback composer) stack
+   instead, but keep the same padding so the left edge never shifts. */
+.settings-row--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-4);
+}
+
+.settings-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-snug);
+  color: var(--text-primary);
+}
+
+.settings-row__desc {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+/* The control column. `justify-content: flex-end` plus a shared minimum is
+   what keeps a switch, a menu and a button terminating on one line. */
+.settings-row__control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-width: 132px;
+}
+
+/* Status line beneath a description — usage figures, eviction notes, errors. */
+.settings-note {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+.settings-note--danger {
+  color: var(--danger-fg);
+}
+
+/* ── Controls ───────────────────────────────────────────────────────────── */
+/* One button shape for the whole page, so no row invents its own. */
+.settings-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+.settings-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.settings-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.settings-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Filled variant for the one primary action per group. */
+.settings-btn--primary {
+  background: var(--solid);
+  border-color: var(--solid);
+  color: var(--text-on-solid);
+}
+
+.settings-btn--primary:hover {
+  background: var(--solid-hover);
+  border-color: var(--solid-hover);
+}
+
+.settings-btn--danger {
+  color: var(--danger-fg);
+  border-color: var(--danger-border);
+}
+
+.settings-btn--danger:hover {
+  background: var(--danger-quiet);
+  border-color: var(--danger);
+}
+
+/* Native menu, restyled to the same 32px shell as the buttons. */
+.settings-select {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.settings-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Switch. Sized off the row height so it optically matches a 32px button. */
+.settings-switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
+}
+
+.settings-switch[aria-checked='true'] {
+  background: var(--solid);
+  border-color: var(--solid);
+}
+
+.settings-switch:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.settings-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.settings-switch[aria-checked='true'] .settings-switch__thumb {
+  transform: translateX(18px);
+  background: var(--text-on-solid);
+}
+
+/* ── Status pill (API key configured / not set) ─────────────────────────── */
+.settings-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+}
+
+.settings-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: currentColor;
+}
+
+.settings-pill--ok {
+  background: var(--success-quiet);
+  color: var(--success-fg);
+}
+
+.settings-pill--off {
+  background: var(--warning-quiet);
+  color: var(--warning-fg);
+}
+
+/* ── Feedback form ──────────────────────────────────────────────────────── */
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.settings-field__label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+}
+
+.settings-input,
+.settings-textarea {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  transition: border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+}
+
+.settings-input:focus,
+.settings-textarea:focus {
+  outline: none;
+  background: var(--bg-field-focus);
+  border-color: var(--border-strong);
+}
+
+.settings-textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.settings-input--invalid,
+.settings-textarea--invalid {
+  border-color: var(--danger);
+}
+
+/* Success state after sending feedback. */
+.settings-sent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6) 0;
+  text-align: center;
+}
+
+.settings-sent__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-pill);
+  background: var(--success-quiet);
+  color: var(--success-fg);
+}
+
+.settings-sent__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+
+.settings-sent__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* ── About ──────────────────────────────────────────────────────────────── */
+.settings-about {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-4) var(--sp-5);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.settings-about__name {
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+}
+
+/* ── Narrow windows ─────────────────────────────────────────────────────── */
+@media (max-width: 620px) {
+  .settings-page__body {
+    padding: var(--sp-5) var(--sp-4) var(--sp-12);
+  }
+
+  /* Below this width the control no longer fits beside the text, so the row
+     stacks — deliberately keeping the same padding and left edge. */
+  .settings-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+  }
+
+  .settings-row__control {
+    justify-content: flex-start;
+    min-width: 0;
+  }
+}

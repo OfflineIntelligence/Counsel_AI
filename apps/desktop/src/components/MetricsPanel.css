@@ -1,0 +1,394 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   METRICS
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The old page polled every 3 seconds and threw each sample away, so a bar
+   would jump from 10% to 62% with nothing on screen explaining why. A single
+   instantaneous number is also the least useful reading of a metric: what
+   matters when a model is loading or a document is being OCR'd is the SHAPE of
+   the last minute.
+
+   So each headline metric now keeps a rolling window and draws it. That is
+   what makes the page dynamic — not more animation, but actual history.
+
+   Two supporting fixes:
+   · Numbers are tabular. Proportional digits change width as they change
+     value, which made every live figure on the old page jitter horizontally.
+   · Threshold colours come from tokens, not the hardcoded #ef4444 / #f59e0b /
+     #10b981 hex triplets that appeared a dozen times and were tuned for dark
+     mode only.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.metrics {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background: var(--bg-canvas);
+}
+
+.metrics-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.metrics-header__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.metrics-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+.metrics-title > svg {
+  color: var(--text-muted);
+}
+
+.metrics-subtitle {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.metrics-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* Live indicator. Replaces a bare checkbox labelled "Auto-refresh" — a pulsing
+   dot says the same thing and doubles as feedback that samples are arriving. */
+.metrics-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--ls-normal);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.metrics-live:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.metrics-live.is-live {
+  border-color: var(--success-quiet);
+  color: var(--success-fg);
+}
+.metrics-live__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+.metrics-live.is-live .metrics-live__dot {
+  background: var(--success);
+  animation: metrics-pulse 2s var(--ease-in-out) infinite;
+}
+@keyframes metrics-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+}
+
+.metrics-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-6) var(--sp-8);
+}
+
+.metrics-grid {
+  max-width: 1080px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: var(--sp-3);
+}
+
+/* A card spanning the full grid width, for the inference story and details. */
+.metrics-grid__full {
+  grid-column: 1 / -1;
+}
+
+/* ── Embedded mode ──────────────────────────────────────────────────────────
+   The same component rendered as the first section of the Settings page. It
+   must NOT own the viewport: no 100vh, no scroll container of its own (the
+   Settings page scrolls), no page background, and no outer padding — Settings
+   supplies the column and the rhythm. Only the chrome changes; every metric,
+   the polling and the rolling history are identical. */
+.metrics.is-embedded {
+  height: auto;
+  background: transparent;
+}
+
+.metrics.is-embedded .metrics-header {
+  padding: 0 0 var(--sp-3);
+  border-bottom: none;
+}
+
+.metrics.is-embedded .metrics-body {
+  flex: none;
+  overflow: visible;
+  padding: 0;
+}
+
+.metrics.is-embedded .metrics-grid {
+  max-width: none;
+  /* Narrower minimum than the standalone page: this grid now lives in the
+     Settings column, where 232px tiles would drop to a single column. */
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+}
+
+/* ── Stat tile ──────────────────────────────────────────────────────────────
+   Headline number, unit, sparkline, meter. The sparkline sits BEHIND nothing
+   and above the meter, so the tile reads top-to-bottom as: what it is, what it
+   is now, where it has been, how full it is. */
+.metric-tile {
+  --tile-accent: var(--accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+
+.metric-tile--ok {
+  --tile-accent: var(--accent);
+}
+.metric-tile--warn {
+  --tile-accent: var(--warning);
+}
+.metric-tile--crit {
+  --tile-accent: var(--danger);
+}
+
+.metric-tile__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.metric-tile__label {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.metric-tile__head > svg {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.metric-tile__value {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-family: var(--font-display-sans);
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-tighter);
+  line-height: 1;
+  color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.metric-tile__unit {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  letter-spacing: var(--ls-normal);
+}
+
+.metric-tile__detail {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Sparkline ────────────────────────────────────────────────────────────── */
+.spark {
+  display: block;
+  width: 100%;
+  height: 34px;
+  overflow: visible;
+}
+.spark__fill {
+  fill: var(--tile-accent);
+  opacity: 0.14;
+}
+.spark__line {
+  fill: none;
+  stroke: var(--tile-accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+/* Leading dot marks the most recent sample — the eye needs an anchor on a
+   line that scrolls. */
+.spark__head {
+  fill: var(--tile-accent);
+}
+.spark__empty {
+  font-size: var(--fs-2xs);
+  fill: var(--text-faint);
+}
+
+/* ── Detail card ────────────────────────────────────────────────────────── */
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+}
+
+.metric-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.metric-card__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-heading);
+}
+
+.metric-card__head > svg {
+  color: var(--text-muted);
+}
+
+.metric-card__note {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+/* Key/value rows for hardware facts. */
+.metric-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-2) var(--sp-5);
+}
+
+.metric-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.metric-fact__key {
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.metric-fact__val {
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Per-core heatmap ─────────────────────────────────────────────────────
+   A grid of cells whose FILL OPACITY tracks load, on a single hue, rather than
+   the old three-colour scheme (blue → amber → red) which read as three
+   unrelated categories instead of one continuous scale. Colour is reserved for
+   crossing a threshold. */
+.core-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16px, 1fr));
+  gap: 3px;
+}
+
+.core-cell {
+  position: relative;
+  height: 26px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.core-cell__fill {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: calc(var(--load, 0) * 1%);
+  background: var(--accent);
+  transition: height var(--dur-3) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+.core-cell.is-hot .core-cell__fill {
+  background: var(--warning);
+}
+.core-cell.is-max .core-cell__fill {
+  background: var(--danger);
+}
+
+/* ── Empty / loading ────────────────────────────────────────────────────── */
+.metrics-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-16) var(--sp-5);
+  text-align: center;
+}
+.metrics-empty__title {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  color: var(--text-heading);
+}
+.metrics-empty__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  max-width: 40ch;
+}
+.metrics-skeleton {
+  height: 128px;
+  border-radius: var(--r-lg);
+}
