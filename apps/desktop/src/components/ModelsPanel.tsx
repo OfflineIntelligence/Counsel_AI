@@ -1,6 +1,4 @@
 // Models Panel Component
-// Full-page model management view with source logos, inline download progress,
-// pause/stop/resume controls, sort/filter, and download notification bubble.
 
 import React, { useState, useEffect } from 'react';
 import { Search, Download, Trash2, HardDrive, Cpu, Database, ArrowLeft, RefreshCw, Pause, Play, Square, ChevronDown } from 'lucide-react';
@@ -2138,6 +2136,9 @@ const ModelCard: React.FC<{
   const { setApiKey } = useAuth();
   const modelIdClean = model.id;
   const isSelected = selectedModel?.id === modelIdClean;
+  // In-flight guard: prevents a second click firing another install between
+  // the click and the backend response populating `download`.
+  const [isInstalling, setIsInstalling] = useState(false);
 
   const isActiveModel = () => {
     return activeModelInfo && activeModelInfo.model_path && 
@@ -2366,17 +2367,26 @@ const ModelCard: React.FC<{
           <button
             type="button"
             className="ui-btn ui-btn--sm ui-btn--pill ui-btn--solid"
-            onClick={() => {
+            disabled={isInstalling}
+            onClick={async () => {
+              if (isInstalling) return;
               // A gated HuggingFace repo needs a token. Ask once, then continue
               // into the same install call whichever way it resolves.
               if (model.download_source === 'huggingface' && !getStoredHfToken()) {
-                showHuggingFaceApiKeyModal(() => onInstall(model), setApiKey, () => onInstall(model));
+                // Only wire the install to `onComplete` — `onHfTokenChange`
+                // also fires inside the modal's saveToken and would double the install.
+                showHuggingFaceApiKeyModal(undefined, setApiKey, () => onInstall(model));
               } else {
-                onInstall(model);
+                setIsInstalling(true);
+                try {
+                  await Promise.resolve(onInstall(model));
+                } finally {
+                  setIsInstalling(false);
+                }
               }
             }}
           >
-            <Download size={13} /> Install
+            <Download size={13} /> {isInstalling ? 'Starting…' : 'Install'}
           </button>
         )}
         {download && (

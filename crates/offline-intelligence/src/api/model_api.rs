@@ -22,6 +22,7 @@ use crate::{
         downloader::DownloadSource,
         registry::{ModelInfo, ModelStatus},
         recommendation::{ModelRecommender, UseCase, QualityPreference, SpeedPreference, CostSensitivity},
+        storage::sanitize_model_id,
         ModelManager,
     },
     shared_state::UnifiedAppState,
@@ -344,13 +345,23 @@ pub async fn install_model(
 
     info!("Installing model: {} ({})", payload.model_name, payload.model_id);
 
+    // Canonicalize the id to match the on-disk folder naming (sanitize_model_id).
+    // The catalog registers entries under the raw id (e.g. "author/repo"), but
+    // scan_storage on startup keys them by sanitized folder name (e.g.
+    // "author_repo") — so without this normalization, a single installed
+    // model ends up in the registry HashMap under both keys and renders as
+    // two cards after an app restart.
+    let canonical_id = sanitize_model_id(&payload.model_id);
+
     // VISION: the install request carries only id/name/size — the mmproj
     // pairing lives in the registry entry (curated catalog or HF refresh).
     // Look it up here so the downloader knows to fetch the projector too.
+    // Look under the raw id first (catalog form), then canonical (already migrated).
     let (registry_mmproj_filename, registry_mmproj_size) = {
         let registry = model_manager.registry.read().await;
         registry
             .get_model(&payload.model_id)
+            .or_else(|| registry.get_model(&canonical_id))
             .map(|m| (m.mmproj_filename.clone(), m.mmproj_size_bytes))
             .unwrap_or((None, 0))
     };
@@ -367,9 +378,22 @@ pub async fn install_model(
         );
     }
 
+    // Migrate any pre-existing raw-id catalog entry to the canonical key, so
+    // subsequent status updates and save_registry write under the canonical
+    // key that scan_storage will also produce on the next startup.
+    if canonical_id != payload.model_id {
+        let mut registry = model_manager.registry.write().await;
+        if let Some(existing) = registry.get_model(&payload.model_id).cloned() {
+            registry.remove_model(&payload.model_id);
+            let mut migrated = existing;
+            migrated.id = canonical_id.clone();
+            registry.add_model(migrated);
+        }
+    }
+
     // Create model info
     let model_info = ModelInfo {
-        id: payload.model_id.clone(),
+        id: canonical_id.clone(),
         name: payload.model_name.clone(),
         description: payload.description,
         author: None,
@@ -405,7 +429,7 @@ pub async fn install_model(
     // Pre-create the download tracking entry so the frontend can poll immediately
     let pre_download_id = model_manager.downloader.progress_tracker()
         .start_download(
-            payload.model_id.clone(),
+            canonical_id.clone(),
             payload.model_name.clone(),
             Some(payload.size_bytes),
         )
@@ -413,10 +437,10 @@ pub async fn install_model(
 
     let return_download_id = pre_download_id.clone();
 
-    // Update registry status to Downloading
+    // Update registry status to Downloading (keyed by canonical id)
     {
         let mut reg = model_manager.registry.write().await;
-        reg.update_model_status(&payload.model_id, ModelStatus::Downloading);
+        reg.update_model_status(&canonical_id, ModelStatus::Downloading);
     }
 
     // Start download in background

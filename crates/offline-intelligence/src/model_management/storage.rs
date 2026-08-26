@@ -13,7 +13,11 @@ use tracing::{debug, info};
 /// Sanitize a model ID for use as a filesystem directory/file name.
 /// Replaces characters invalid on Windows (: / \ < > " | ? *) with underscores.
 /// Also trims trailing periods and spaces, handles reserved names, and limits length.
-fn sanitize_model_id(model_id: &str) -> String {
+///
+/// Also the canonical registry key: the install path normalizes to this form
+/// so `scan_storage` on the next startup updates the same registry entry
+/// (folder names are already sanitized) instead of creating a second one.
+pub fn sanitize_model_id(model_id: &str) -> String {
     let mut sanitized = model_id
         .replace(':', "_")
         .replace('/', "_")
