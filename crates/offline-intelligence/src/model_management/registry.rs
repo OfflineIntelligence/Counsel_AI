@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::recommendation::{HardwareProfile, ModelRecommender};
 use reqwest::Client;
+use super::engine_compat::{fetch_remote_identity, read_local_identity, EngineCapabilities, GgufIdentity};
 
 /// Status of a model in the registry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,6 +75,11 @@ pub struct ModelInfo {
     /// totals and disk accounting alongside size_bytes.
     #[serde(default)]
     pub mmproj_size_bytes: u64,
+    /// Architecture and pre-tokenizer read from the GGUF header of `filename`
+    /// (see engine_compat). `None` = not read yet. Cleared whenever the file
+    /// to download changes, since another file may carry other names.
+    #[serde(default)]
+    pub gguf_identity: Option<GgufIdentity>,
 }
 
 impl ModelInfo {
@@ -121,6 +127,22 @@ struct HuggingFaceModel {
     siblings: Vec<HuggingFaceSibling>,
 }
 
+/// One file in a repository tree, as returned by `/api/models/{repo}/tree/main`.
+/// `size` is the pointer size for LFS files; the real size is under `lfs`.
+#[derive(Debug, Deserialize)]
+struct HubTreeEntry {
+    path: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    lfs: Option<HubLfs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HubLfs {
+    size: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct HuggingFaceSibling {
     rfilename: String,
@@ -151,13 +173,56 @@ impl ModelRegistry {
         Ok(registry)
     }
 
+    /// A detached copy of the registry, for refreshing the online catalog
+    /// without holding the shared lock across network calls.
+    pub fn catalog_copy(&self) -> ModelRegistry {
+        ModelRegistry {
+            storage: self.storage.clone(),
+            models: self.models.clone(),
+            known_sources: self.known_sources.clone(),
+        }
+    }
+
+    /// Ids currently in the registry.
+    pub fn model_ids(&self) -> HashSet<String> {
+        self.models.keys().cloned().collect()
+    }
+
+    /// Apply a refreshed copy (from `catalog_copy`). Entries that are still
+    /// plain catalog entries here take the fresh data; anything that changed
+    /// state locally while the refresh ran (installed, downloading, failed,
+    /// or removed) keeps its live value. New catalog ids are added.
+    pub fn merge_catalog(&mut self, fresh: ModelRegistry, before: &HashSet<String>) {
+        for (id, model) in fresh.models {
+            match self.models.get_mut(&id) {
+                Some(live) if live.status == ModelStatus::Available => {
+                    let status = live.status.clone();
+                    *live = model;
+                    live.status = status;
+                }
+                Some(_) => {}
+                // Only ids the refresh discovered; an entry removed locally
+                // during the refresh stays removed.
+                None if !before.contains(&id) => {
+                    self.models.insert(id, model);
+                }
+                None => {}
+            }
+        }
+    }
+
     /// Refresh the Hugging Face GGUF/GGML model catalog from the HF Hub API.
     /// Fetches top models by downloads and extracts available quantized files.
     pub async fn refresh_huggingface_catalog_from_api(
         &mut self,
         limit: usize,
     ) -> Result<()> {
-        let client = Client::new();
+        // Bounded: a slow connection must not hold the registry lock for minutes.
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .context("Failed to build HTTP client")?;
 
         // Fetch GGUF models sorted by downloads
         let url = format!(
@@ -298,6 +363,7 @@ impl ModelRegistry {
                         // path has no projector handling — not detected here.
                         mmproj_filename: None,
                         mmproj_size_bytes: 0,
+                        gguf_identity: None,
                     });
                     break; // Found sharded model, no need to check other files
                 }
@@ -399,6 +465,7 @@ impl ModelRegistry {
                     downloads: m.downloads.unwrap_or(0),
                     mmproj_filename: mmproj.map(|f| f.rfilename.clone()),
                     mmproj_size_bytes: mmproj.and_then(|f| f.size).unwrap_or(0),
+                    gguf_identity: None,
                 }
             };
 
@@ -414,6 +481,9 @@ impl ModelRegistry {
                         existing.size_bytes = model_info.size_bytes;
                         existing.format = model_info.format.clone();
                         existing.download_source = model_info.download_source.clone();
+                        if existing.filename != model_info.filename {
+                            existing.gguf_identity = None;
+                        }
                         existing.filename = model_info.filename.clone();
                         existing.tags = model_info.tags.clone();
                         existing.total_shards = model_info.total_shards;
@@ -425,12 +495,142 @@ impl ModelRegistry {
                 .or_insert(model_info);
         }
 
+        self.fill_missing_sizes(&client).await;
+        self.fill_gguf_identities(&client).await;
+
         info!(
             "Refreshed Hugging Face catalog, now tracking {} GGUF/GGML models",
             hf_ids.len()
         );
 
         Ok(())
+    }
+
+    /// The Hub's model listing does not include file sizes, so every catalogue
+    /// entry arrived with `size_bytes: 0` and the UI could not show a download
+    /// size or judge whether a model fits this computer. Ask each repository's
+    /// file tree for the sizes of the files we would actually download.
+    async fn fill_missing_sizes(&mut self, client: &Client) {
+        use futures::stream::{self, StreamExt};
+
+        let wanted: Vec<(String, Vec<String>, Option<String>)> = self
+            .models
+            .values()
+            .filter(|m| m.size_bytes == 0 && m.download_source.as_deref() == Some("huggingface"))
+            .filter_map(|m| {
+                let files = if m.shard_filenames.is_empty() {
+                    vec![m.filename.clone()?]
+                } else {
+                    m.shard_filenames.clone()
+                };
+                Some((m.id.clone(), files, m.mmproj_filename.clone()))
+            })
+            .collect();
+
+        let results: Vec<(String, u64, u64)> = stream::iter(wanted)
+            .map(|(repo_id, files, mmproj)| async move {
+                let url = format!("https://huggingface.co/api/models/{}/tree/main?recursive=true", repo_id);
+                let sizes: HashMap<String, u64> = match client
+                    .get(&url)
+                    .header("User-Agent", "Offline_Intelligence-Desktop/1.0")
+                    .send()
+                    .await
+                    .and_then(|r| r.error_for_status())
+                {
+                    Ok(resp) => match resp.json::<Vec<HubTreeEntry>>().await {
+                        Ok(entries) => entries
+                            .into_iter()
+                            .map(|e| (e.path, e.lfs.map(|l| l.size).unwrap_or(e.size)))
+                            .collect(),
+                        Err(e) => {
+                            debug!("Could not read file sizes for {}: {}", repo_id, e);
+                            HashMap::new()
+                        }
+                    },
+                    Err(e) => {
+                        debug!("Could not fetch file sizes for {}: {}", repo_id, e);
+                        HashMap::new()
+                    }
+                };
+                let main: u64 = files.iter().filter_map(|f| sizes.get(f)).sum();
+                let projector = mmproj.and_then(|f| sizes.get(&f).copied()).unwrap_or(0);
+                (repo_id, main, projector)
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+
+        for (repo_id, main, projector) in results {
+            if let Some(model) = self.models.get_mut(&repo_id) {
+                if main > 0 {
+                    model.size_bytes = main;
+                }
+                if projector > 0 && model.mmproj_size_bytes == 0 {
+                    model.mmproj_size_bytes = projector;
+                }
+            }
+        }
+    }
+
+    /// Read the GGUF header of every catalogue entry not read yet, so the
+    /// catalogue can hide models the installed engine cannot load. Results
+    /// persist in the registry, so each file is only fetched once.
+    async fn fill_gguf_identities(&mut self, client: &Client) {
+        use futures::stream::{self, StreamExt};
+
+        let wanted: Vec<(String, String)> = self
+            .models
+            .values()
+            .filter(|m| {
+                m.gguf_identity.is_none()
+                    && m.status != ModelStatus::Installed
+                    && m.download_source.as_deref() == Some("huggingface")
+                    && m.format.eq_ignore_ascii_case("gguf")
+            })
+            // For sharded models the first shard carries the header.
+            .filter_map(|m| Some((m.id.clone(), m.filename.clone()?)))
+            .collect();
+
+        let results: Vec<(String, Option<GgufIdentity>)> = stream::iter(wanted)
+            .map(|(repo_id, file)| async move {
+                let id = fetch_remote_identity(client, &repo_id, &file).await;
+                (repo_id, id)
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+
+        for (repo_id, id) in results {
+            if let (Some(model), Some(id)) = (self.models.get_mut(&repo_id), id) {
+                model.gguf_identity = Some(id);
+            }
+        }
+    }
+
+    /// Read the GGUF header of installed models from disk where it is not
+    /// known yet (installed entries are rebuilt from metadata at each scan).
+    pub fn fill_local_gguf_identities(&mut self) {
+        let ids: Vec<String> = self
+            .models
+            .values()
+            .filter(|m| m.status == ModelStatus::Installed && m.gguf_identity.is_none())
+            .map(|m| m.id.clone())
+            .collect();
+        for id in ids {
+            let identity = self
+                .get_installed_model_path(&id)
+                .filter(|p| p.extension().map_or(false, |e| e.eq_ignore_ascii_case("gguf")))
+                .and_then(|p| read_local_identity(&p));
+            if let Some(model) = self.models.get_mut(&id) {
+                model.gguf_identity = identity;
+            }
+        }
+    }
+
+    /// Whether the engine described by `caps` can load this model. Models
+    /// whose header has not been read are given the benefit of the doubt.
+    pub fn engine_can_load(model: &ModelInfo, caps: &EngineCapabilities) -> bool {
+        model.gguf_identity.as_ref().map_or(true, |id| caps.supports(id))
     }
 
     /// Choose which multimodal projector file to pair with a vision model.
@@ -529,12 +729,14 @@ impl ModelRegistry {
                     downloads: 0,
                     mmproj_filename: metadata.mmproj_filename,
                     mmproj_size_bytes: metadata.mmproj_size_bytes,
+                    gguf_identity: None,
                 };
                 
                 self.models.insert(model_id, model_info);
             }
         }
         
+        self.fill_local_gguf_identities();
         info!("Scanned storage and found {} models", self.models.len());
         Ok(())
     }
@@ -858,6 +1060,7 @@ impl ModelRegistry {
             downloads: 0,
             mmproj_filename: Some(mmproj_file.to_string()),
             mmproj_size_bytes: mmproj_size,
+            gguf_identity: None,
         };
 
         vec![
@@ -1019,6 +1222,7 @@ mod tests {
             downloads: 0,
             mmproj_filename: None,
             mmproj_size_bytes: 0,
+            gguf_identity: None,
         };
 
         registry.add_model(model_info);

@@ -3,16 +3,36 @@
 use crate::memory::Message;
 use crate::memory_db::MemoryDatabase;
 use crate::context_engine::{
-    retrieval_planner::RetrievalPlan,
     retrieval_planner::RetrievalPlanner,
     tier_manager::{TierManager, TierManagerConfig},
 };
 
 use std::sync::Arc;
-use tracing::{info, debug};
+use tracing::info;
 use tokio::sync::RwLock;
 
 /// Main orchestrator for the context engine
+/// History passes this share of the budget: compact.
+const COMPACT_AT_PCT: usize = 80;
+/// After compacting, history plus memory fits in this share, leaving room
+/// for many more turns before the next compaction.
+const COMPACT_TO_PCT: usize = 45;
+/// Budget share for the extractive summary of compacted turns.
+const SUMMARY_PCT: usize = 10;
+/// Budget share for recalled question-and-answer pairs.
+const RECALL_PCT: usize = 15;
+/// Floors so small context windows still get a usable summary and at least
+/// one full recalled exchange; the engine token check trims if needed.
+const MIN_SUMMARY_CHARS: usize = 900;
+const MIN_RECALL_CHARS: usize = 1_400;
+
+/// A conversation fitted into the prompt, plus the memory blocks that were
+/// added (for the echo guard and the citation check).
+pub struct ConversationAssembly {
+    pub messages: Vec<Message>,
+    pub memory_blocks: Vec<String>,
+}
+
 pub struct ContextOrchestrator {
     database: Arc<MemoryDatabase>,
     retrieval_planner: Arc<RwLock<RetrievalPlanner>>,
@@ -22,6 +42,18 @@ pub struct ContextOrchestrator {
     /// with hysteresis - keeps the prompt prefix byte-identical across turns
     /// so llama-server's prompt cache keeps hitting.
     stable_starts: std::sync::RwLock<std::collections::HashMap<String, usize>>,
+    /// Per conversation: the form in which each newest message was sent
+    /// (question plus retrieved material), resent unchanged on later turns.
+    sent_forms: std::sync::RwLock<std::collections::HashMap<String, SentForms>>,
+}
+
+/// What a conversation's newest messages looked like when sent, valid while
+/// the condensed boundary (`start`) stays where it was.
+#[derive(Debug, Clone, Default)]
+struct SentForms {
+    start: usize,
+    /// (message index, its text as stored, its text as sent)
+    items: Vec<(usize, String, String)>,
 }
 
 /// Configuration for the orchestrator
@@ -69,6 +101,7 @@ impl ContextOrchestrator {
             tier_manager,
             config,
             stable_starts: std::sync::RwLock::new(std::collections::HashMap::new()),
+            sent_forms: std::sync::RwLock::new(std::collections::HashMap::new()),
         };
 
         info!("Context orchestrator initialized successfully");
@@ -81,7 +114,8 @@ impl ContextOrchestrator {
         &self.database
     }
     
-    /// Process conversation and return optimized context
+    /// Fit a conversation into the prompt budget, backed by the database.
+    /// Returns only the messages; see `process_conversation_with_memory`.
     pub async fn process_conversation(
         &self,
         session_id: &str,
@@ -89,131 +123,207 @@ impl ContextOrchestrator {
         user_query: Option<&str>,
         max_context_tokens: usize,
     ) -> anyhow::Result<Vec<Message>> {
+        Ok(self
+            .process_conversation_with_memory(session_id, messages, user_query, max_context_tokens)
+            .await?
+            .messages)
+    }
+
+    /// Fit a conversation into `budget_tokens`, using the database as memory
+    /// (context_engine::conversation_memory):
+    ///
+    /// 1. While history fits under 80% of the budget, every turn is sent as is.
+    /// 2. When it passes 80%, the oldest turns leave the prompt (down to 45%,
+    ///    cut at a user message) and are condensed, without the LLM, into the
+    ///    conversation's stored summary. The cut point is persisted, so the
+    ///    prompt's prefix stays identical between compactions and the engine
+    ///    keeps reusing its KV cache.
+    /// 3. Every turn, dropped turns relevant to the question (by keyword and
+    ///    meaning, or by position for "my first question") are recalled as
+    ///    question-and-answer pairs and attached to the current message.
+    pub async fn process_conversation_with_memory(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        user_query: Option<&str>,
+        budget_tokens: usize,
+    ) -> anyhow::Result<ConversationAssembly> {
+        use super::conversation_memory as memory;
+
         if !self.config.enabled || messages.is_empty() {
-            debug!("Context engine disabled or no messages");
-            return Ok(messages.to_vec());
+            return Ok(ConversationAssembly { messages: messages.to_vec(), memory_blocks: Vec::new() });
         }
-        
-        info!("Processing conversation for session {} ({} messages)", session_id, messages.len());
-        
-        // Update current messages in Tier 1
         {
             let tier_manager = self.tier_manager.write().await;
             tier_manager.store_tier1_content(session_id, messages).await;
         }
-        
-        // User message persistence is handled by stream_api.rs before this is called.
-        // Do NOT persist here — the tokio::spawn in stream_api races with this function,
-        // causing duplicate user messages in the database.
-        
-        // Create retrieval plan
-        let mut plan = {
-            let retrieval_planner = self.retrieval_planner.read().await;
-            
-            // --- UPDATED CALL ---
-            // Detect if the user is referring to past conversations
-            let has_past_refs = if let Some(query) = user_query {
-                retrieval_planner.has_past_references_in_text(query)
-            } else {
-                false
-            };
-            
-            // Now create the plan using the detected references and the user query
-            retrieval_planner.create_plan(
-                session_id,
-                messages,
-                max_context_tokens,
-                user_query,
-                has_past_refs, // Passing the reference check to the planner
-            ).await?
-        };
-        
-        // A document injected into the CURRENT conversation is the thing
-        // being asked about - trawling past sessions for it costs extra
-        // keyword queries against the message store and can only add noise.
-        // Only an explicit past-reference in the query overrides this.
-        let doc_in_context = messages.iter().any(|m| {
-            m.content.contains("--- Document:")
-                || m.content.contains("[ATTACHED DOCUMENTS - THE AUTHORITATIVE SOURCE FOR THIS ANSWER]")
-        });
-        if doc_in_context && plan.cross_session_search {
-            let query_has_past_refs = match user_query {
-                Some(q) => {
-                    let planner = self.retrieval_planner.read().await;
-                    planner.has_past_references_in_text(q)
-                }
-                None => false,
-            };
-            if !query_has_past_refs {
-                info!(
-                    "Attached document already in context and query has no past \
-                     references - skipping cross-session search"
-                );
-                plan.cross_session_search = false;
+
+        let n = messages.len();
+        let last = n - 1;
+        let sys_end = if messages[0].role == "system" { 1 } else { 0 };
+        let budget = budget_tokens.max(512);
+        let summary_cap = budget * SUMMARY_PCT / 100;
+        let recall_cap = budget * RECALL_PCT / 100;
+        let fixed: usize = messages[..sys_end].iter().map(Self::estimate_msg_tokens).sum();
+        let tail = |s: usize| -> usize { messages[s..].iter().map(Self::estimate_msg_tokens).sum() };
+        let reserve = |s: usize| -> usize { if s > sys_end { summary_cap + recall_cap } else { 0 } };
+
+        // Where the previous compaction left the window. Positions in the
+        // request list are message indices in the database.
+        let (mut covered, mut entries) = memory::load_entries(&self.database, session_id);
+        if covered > last {
+            // The conversation is shorter than the stored cut (edited or
+            // restored); start again from the top.
+            covered = 0;
+            entries.clear();
+        }
+        let mut start = Self::snap_to_user_boundary(messages, covered.max(sys_end));
+
+        // Compact at 80%: condense the oldest turns and move the window.
+        if fixed + reserve(start) + tail(start) > budget * COMPACT_AT_PCT / 100 {
+            let target = budget * COMPACT_TO_PCT / 100;
+            let mut s = start;
+            while s + 2 < n && fixed + summary_cap + recall_cap + tail(s) > target {
+                s += 1;
+            }
+            s = Self::snap_to_user_boundary(messages, s);
+            if s > start {
+                let new_entries = memory::extract_entries(messages, start, s);
+                entries = memory::merge_entries(entries, new_entries);
+                memory::save_entries(&self.database, session_id, s, &entries);
+                start = s;
             }
         }
 
-        if !plan.needs_retrieval {
-            debug!("No retrieval needed, returning current messages");
-            return Ok(messages.to_vec());
+        let truncated = start > sys_end;
+        let summary_block = if truncated {
+            memory::render_summary(&entries, (summary_cap * 4).max(MIN_SUMMARY_CHARS))
+        } else {
+            None
+        };
+        let recall_chars = Self::recall_budget_chars(
+            budget,
+            recall_cap,
+            fixed + summary_block.as_ref().map_or(0, |s| s.len() / 4 + 8) + tail(start),
+        );
+        let recall_block = match user_query {
+            Some(q) if !q.trim().is_empty() => {
+                memory::recall_dropped(
+                    &self.database,
+                    &crate::rag::runtime(),
+                    session_id,
+                    q,
+                    start as i32,
+                    last as i32,
+                    recall_chars,
+                )
+                .await
+            }
+            _ => None,
+        };
+
+        let mut out: Vec<Message> = Vec::with_capacity(n - start + 2);
+        let mut system = if sys_end == 1 { messages[0].content.clone() } else { String::new() };
+        if let Some(ref s) = summary_block {
+            // In the system message, which only changes at a compaction, so
+            // the cached prefix survives every turn in between.
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str(s);
         }
-        
-        // Execute retrieval plan across the memory tiers.
-        let retrieved_content = self.execute_retrieval_plan(session_id, &plan).await?;
+        if truncated && summary_block.is_none() {
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str("[Note: earlier parts of this conversation are not shown; they are retrieved from the saved record when a question needs them.]");
+        }
+        if !system.is_empty() {
+            out.push(Message { role: "system".to_string(), content: system });
+        }
+        if start < last {
+            out.extend_from_slice(&messages[start..last]);
+        }
+        let mut last_msg = messages[last].clone();
+        if let Some(ref r) = recall_block {
+            super::document_memory::fold_into_latest_message(std::slice::from_mut(&mut last_msg), r);
+        }
+        out.push(last_msg);
 
-        // === STABLE-PREFIX ASSEMBLY ===
-        // The prompt prefix sent to llama-server must stay byte-identical
-        // across turns, or the server's prompt cache misses and the ENTIRE
-        // context (including any attached document) re-prefills before the
-        // first token. Three rules:
-        //   1. Original messages keep their order - nothing is reordered.
-        //   2. Retrieved memory goes into ONE block positioned just before
-        //      the latest user message (the tail - cheap to prefill).
-        //   3. Front-truncation, when unavoidable, uses a sticky per-session
-        //      boundary with hysteresis so the prefix holds until the next
-        //      overflow.
-        let retrieved_texts = Self::flatten_retrieved(&retrieved_content, messages);
-        let optimized_context = self.assemble_stable_context(
-            session_id,
-            messages,
-            retrieved_texts,
-            max_context_tokens,
-        );
+        self.resend_as_sent(session_id, messages, start, last, budget, &mut out);
 
-        info!(
-            "Context optimization complete: {} -> {} messages (stable-prefix assembly)",
-            messages.len(),
-            optimized_context.len()
-        );
-
-        Ok(optimized_context)
+        if truncated || recall_block.is_some() {
+            info!(
+                "Conversation {}: {} of {} messages in view, summary {} chars, recall {} chars",
+                session_id,
+                n - start,
+                n,
+                summary_block.as_ref().map_or(0, |s| s.len()),
+                recall_block.as_ref().map_or(0, |s| s.len())
+            );
+        }
+        let memory_blocks = [summary_block, recall_block].into_iter().flatten().collect();
+        Ok(ConversationAssembly { messages: out, memory_blocks })
     }
-    
-    /// Rough token estimate (chars/4 plus per-message overhead).
+
+    /// Resend earlier newest-messages exactly as they were sent, so the
+    /// engine's cached prefix covers them instead of breaking at the previous
+    /// question; then remember how this turn's newest message was sent.
+    ///
+    /// The remembered forms are dropped when the condensed boundary moves (a
+    /// compaction already changes the prefix) and, all at once, when resending
+    /// them would push the prompt past the budget.
+    fn resend_as_sent(&self, session_id: &str, messages: &[Message], start: usize, last: usize, budget: usize, out: &mut [Message]) {
+        let Ok(mut all) = self.sent_forms.write() else { return };
+        let forms = all.entry(session_id.to_string()).or_default();
+        if forms.start != start {
+            forms.items.clear();
+            forms.start = start;
+        }
+        // Where messages[start..] begin in `out` (after the system message, if any).
+        let offset = out.len().saturating_sub(last + 1 - start);
+        let replace: Vec<(usize, &String)> = forms
+            .items
+            .iter()
+            .filter(|(i, raw, _)| *i >= start && *i < last && messages.get(*i).map(|m| &m.content) == Some(raw))
+            .map(|(i, _, sent)| (offset + i - start, sent))
+            .collect();
+        let used: usize = out.iter().map(Self::estimate_msg_tokens).sum();
+        let extra: usize = replace
+            .iter()
+            .map(|(pos, sent)| (sent.len() / 4).saturating_sub(out[*pos].content.len() / 4))
+            .sum();
+        if used + extra <= budget {
+            let swaps: Vec<(usize, String)> = replace.into_iter().map(|(p, s)| (p, s.clone())).collect();
+            for (pos, sent) in swaps {
+                out[pos].content = sent;
+            }
+        } else {
+            forms.items.clear();
+        }
+        forms.items.retain(|(i, _, _)| *i < last);
+        if let Some(sent) = out.last() {
+            if sent.content != messages[last].content {
+                forms.items.push((last, messages[last].content.clone(), sent.content.clone()));
+            }
+        }
+    }
+
+    /// Characters for recalled exchanges: the budget the prompt leaves unused
+    /// (less a tenth for estimation error), never below the reserved share.
+    /// Recall sits in the newest message, so a larger block never disturbs
+    /// the cached prefix; the reserve used for compaction stays fixed.
+    fn recall_budget_chars(budget: usize, reserved_tokens: usize, used_tokens: usize) -> usize {
+        let free = budget.saturating_sub(used_tokens) * 9 / 10;
+        (reserved_tokens.max(free) * 4).max(MIN_RECALL_CHARS)
+    }
+
     fn estimate_msg_tokens(m: &Message) -> usize {
         m.content.len() / 4 + 8
     }
 
-    /// Move a front-truncation boundary forward to the next user message.
-    ///
-    /// # Why this is a correctness requirement, not a tidy-up
-    ///
-    /// The assembled prompt is `[system] + messages[start..]`, so whatever
-    /// `start` points at becomes the FIRST turn after the system message. Chat
-    /// templates with strict role alternation — gemma-3, mistral and qwen all
-    /// qualify — reject a prompt whose first turn is an assistant message with
-    /// a hard HTTP 500 ("Conversation roles must alternate ..."). The request
-    /// fails outright; it is not a degraded answer.
-    ///
-    /// The budget loop that produces `start` stops wherever the token
-    /// arithmetic happens to land, and has no reason to prefer a user message.
-    /// Before this existed the invariant held only by luck of message sizes,
-    /// which is exactly the kind of bug that survives testing and then appears
-    /// three or four turns into a real conversation.
-    ///
-    /// Never advances past the final message: the last message is always kept,
-    /// so a conversation with no user message after `start` still produces a
-    /// valid `[system] + [last]` prompt.
+    /// Move `start` forward to the next user message, so the window never
+    /// opens on an answer without its question (keeps roles alternating).
     fn snap_to_user_boundary(messages: &[Message], start: usize) -> usize {
         let Some(last) = messages.len().checked_sub(1) else {
             return start;
@@ -225,219 +335,6 @@ impl ContextOrchestrator {
         s
     }
 
-    /// Flatten retrieved tiers into deduplicated text blocks, skipping
-    /// anything already present verbatim in the current conversation.
-    /// Tier 1 is deliberately ignored - it IS the current conversation.
-    fn flatten_retrieved(retrieved: &RetrievedContent, current: &[Message]) -> Vec<String> {
-        let in_current: std::collections::HashSet<&str> =
-            current.iter().map(|m| m.content.as_str()).collect();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut texts: Vec<String> = Vec::new();
-
-        for (stored, label) in [
-            (&retrieved.tier3, "earlier in this conversation"),
-            (&retrieved.cross_session, "from another conversation"),
-        ] {
-            if let Some(msgs) = stored {
-                for m in msgs {
-                    let t = m.content.trim();
-                    if t.is_empty() || in_current.contains(t) || !seen.insert(t.to_string()) {
-                        continue;
-                    }
-                    texts.push(format!("[{} - {}]: {}", label, m.role, t));
-                }
-            }
-        }
-
-        texts
-    }
-
-    /// Prompt-cache-friendly context assembly (see process_conversation for
-    /// the rules). The per-session truncation boundary is sticky: it only
-    /// moves forward, with hysteresis to 70% of budget, so the byte prefix
-    /// llama-server sees stays identical across turns.
-    fn assemble_stable_context(
-        &self,
-        session_id: &str,
-        messages: &[Message],
-        retrieved_texts: Vec<String>,
-        budget: usize,
-    ) -> Vec<Message> {
-        // Retrieved-memory block, capped at ~25% of the token budget
-        // (budget/4 tokens = budget chars at ~4 chars/token).
-        let cap_chars = budget;
-        let mut retrieved_block = String::new();
-        for t in retrieved_texts {
-            if retrieved_block.len() + t.len() + 1 > cap_chars {
-                retrieved_block
-                    .push_str("[Further retrieved context omitted to fit the context window.]\n");
-                break;
-            }
-            retrieved_block.push_str(&t);
-            retrieved_block.push('\n');
-        }
-        let retrieved_tokens = retrieved_block.len() / 4 + 16;
-
-        let n = messages.len();
-        if n == 0 {
-            return Vec::new();
-        }
-        let sys_end = if messages[0].role == "system" { 1 } else { 0 };
-        let fixed_tokens: usize = messages[..sys_end]
-            .iter()
-            .map(Self::estimate_msg_tokens)
-            .sum::<usize>()
-            + retrieved_tokens;
-        let tail_tokens =
-            |s: usize| -> usize { messages[s..].iter().map(Self::estimate_msg_tokens).sum() };
-
-        let mut start = self
-            .stable_starts
-            .read()
-            .unwrap()
-            .get(session_id)
-            .copied()
-            .unwrap_or(sys_end);
-        if start < sys_end || start >= n {
-            start = sys_end;
-        }
-        // A boundary restored from a previous turn is re-checked, not trusted.
-        start = Self::snap_to_user_boundary(messages, start);
-
-        if fixed_tokens + tail_tokens(start) > budget {
-            // Advance to ~70% of budget so the boundary then holds for many
-            // turns (hysteresis); always keep at least the last two messages.
-            let target = budget.saturating_mul(7) / 10;
-            let mut s = start;
-            while s + 2 < n && fixed_tokens + tail_tokens(s) > target {
-                s += 1;
-            }
-            // The budget loop stops wherever the arithmetic lands, which may be
-            // an assistant message. Snapping forward to the next user message
-            // is what keeps the emitted prompt alternating; see
-            // `snap_to_user_boundary` for why that is a hard requirement and
-            // not a nicety. Moving forward only ever removes tokens, so it
-            // cannot push the prompt back over budget.
-            s = Self::snap_to_user_boundary(messages, s);
-            if s != start {
-                info!(
-                    "Context window exceeded - front-truncation boundary moved {} -> {} \
-                     (sticky; prefix stays cacheable until the next overflow)",
-                    start, s
-                );
-                start = s;
-                self.stable_starts
-                    .write()
-                    .unwrap()
-                    .insert(session_id.to_string(), start);
-            }
-        }
-
-        let truncated = start > sys_end;
-        let last = n - 1;
-        let mut out: Vec<Message> = Vec::with_capacity(n);
-
-        // Fold the truncation note into the system message's own TEXT rather
-        // than inserting an extra system-role message. Verified live against
-        // gemma-3's chat template (b8037): a second system-role message, or
-        // any break in strict user/assistant alternation, throws a Jinja
-        // "Conversation roles must alternate" error and the request fails
-        // outright - not a degraded response, a hard 500. Folding into
-        // existing message content changes no role, ever.
-        if sys_end == 1 {
-            let mut sys_content = messages[0].content.clone();
-            if truncated {
-                sys_content.push_str(
-                    "\n\n[Note: earlier parts of this conversation were omitted to fit the context window.]",
-                );
-            }
-            out.push(Message { role: "system".to_string(), content: sys_content });
-        } else if truncated {
-            // No system message existed - create exactly one so the note has
-            // a safe home without touching the user/assistant sequence.
-            out.push(Message {
-                role: "system".to_string(),
-                content: "[Note: earlier parts of this conversation were omitted to fit the context window.]".to_string(),
-            });
-        }
-
-        if start < last {
-            out.extend_from_slice(&messages[start..last]);
-        }
-
-        // Fold retrieved memory into the LATEST message's own text (the same
-        // convention attachments already use) instead of a new message.
-        let mut last_msg = messages[last].clone();
-        if !retrieved_block.trim().is_empty() {
-            last_msg.content = format!(
-                "{}\n\n[Context retrieved from memory - earlier or related conversations:]\n{}",
-                last_msg.content, retrieved_block
-            );
-        }
-        out.push(last_msg);
-        out
-    }
-
-    /// Execute retrieval plan across all tiers.
-    ///
-    /// Tier 3 retrieval is KEYWORD-based (tier_manager's SQL search over the
-    /// message store). There is no vector/semantic path - this system has no
-    /// embedding model - so `keyword_search` alone selects how tier 3 is
-    /// queried.
-    async fn execute_retrieval_plan(
-        &self,
-        session_id: &str,
-        plan: &RetrievalPlan,
-    ) -> anyhow::Result<RetrievedContent> {
-        let mut retrieved = RetrievedContent::default();
-
-        // Retrieve from Tier 1 (current context — hot KV cache)
-        if plan.use_tier1 {
-            let tier_manager = self.tier_manager.read().await;
-            retrieved.tier1 = tier_manager.get_tier1_content(session_id).await;
-        }
-
-        // Retrieve from Tier 3 (full database) — keyword search over the
-        // message store, or the most recent slice when there are no topics to
-        // search for.
-        if plan.use_tier3 {
-            let tier_manager = self.tier_manager.read().await;
-            if plan.keyword_search && !plan.search_topics.is_empty() {
-                for topic in &plan.search_topics {
-                    let limit_per_topic = plan.max_messages / plan.search_topics.len().max(1);
-
-                    if let Ok(results) = tier_manager.search_tier3_content(
-                        session_id,
-                        topic,
-                        limit_per_topic,
-                    ).await {
-                        retrieved.tier3 = Some(results);
-                        break;
-                    }
-                }
-            } else {
-                retrieved.tier3 = tier_manager.get_tier3_content(
-                    session_id,
-                    Some((plan.max_messages as i64).min(i32::MAX as i64) as i32),
-                    Some(0),
-                ).await.ok();
-            }
-        }
-
-        // Add cross-session search if needed
-        if plan.cross_session_search && !plan.search_topics.is_empty() {
-            let tier_manager = self.tier_manager.read().await;
-            if let Ok(cross_session_results) = tier_manager.search_cross_session_content(
-                session_id,
-                &plan.search_topics.join(" "),
-                10,
-            ).await {
-                retrieved.cross_session = Some(cross_session_results);
-            }
-        }
-
-        Ok(retrieved)
-    }
     
     pub async fn get_session_stats(&self, session_id: &str) -> anyhow::Result<SessionStats> {
         let tier_manager = self.tier_manager.read().await;
@@ -511,20 +408,27 @@ impl Clone for ContextOrchestrator {
             stable_starts: std::sync::RwLock::new(
                 self.stable_starts.read().unwrap().clone(),
             ),
+            sent_forms: std::sync::RwLock::new(self.sent_forms.read().map(|g| g.clone()).unwrap_or_default()),
         }
     }
 }
 
-#[derive(Debug, Default)]
-struct RetrievedContent {
-    tier1: Option<Vec<Message>>,
-    tier3: Option<Vec<crate::memory_db::StoredMessage>>,
-    cross_session: Option<Vec<crate::memory_db::StoredMessage>>,
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_engine::conversation_memory::{RECALL_HEADING, SUMMARY_HEADING};
+
+    #[test]
+    fn recall_gets_the_budget_the_prompt_leaves_unused() {
+        // 4,096-token budget, 1,300 used: recall may use 90% of the 2,796 left.
+        assert_eq!(ContextOrchestrator::recall_budget_chars(4096, 614, 1300), (2796 * 9 / 10) * 4);
+        // A full prompt still keeps the reserved share.
+        assert_eq!(ContextOrchestrator::recall_budget_chars(4096, 614, 4000), 614 * 4);
+        assert_eq!(ContextOrchestrator::recall_budget_chars(4096, 614, 9000), 614 * 4);
+        // Never below the floor.
+        assert_eq!(ContextOrchestrator::recall_budget_chars(512, 10, 512), MIN_RECALL_CHARS);
+    }
 
     fn msg(role: &str, content: &str) -> Message {
         Message {
@@ -533,198 +437,226 @@ mod tests {
         }
     }
 
-    async fn test_orchestrator(budget: usize) -> ContextOrchestrator {
+    async fn test_orchestrator() -> ContextOrchestrator {
         let db = Arc::new(crate::memory_db::MemoryDatabase::new_in_memory().unwrap());
-        let mut cfg = OrchestratorConfig::default();
-        cfg.max_context_tokens = budget;
-        ContextOrchestrator::new(db, cfg).await.unwrap()
+        ContextOrchestrator::new(db, OrchestratorConfig::default()).await.unwrap()
     }
 
-    /// Stand-in for whatever base prompt the client sent.
-    ///
-    /// Deliberately not phrased as a real prompt: the backend does not own the
-    /// base system prompt (the frontend's `systemPrompt.ts` does), and a
-    /// realistic-looking literal here reads like a second, competing one.
-    /// Every assertion below cares only about POSITION and whether the content
-    /// was modified - never about what it says.
     const BASE_PROMPT: &str = "<base system prompt supplied by the client>";
+    const FILLER: &str = "with enough words in it to take up a realistic share of the estimate tokens.";
 
-    #[tokio::test]
-    async fn stable_assembly_preserves_order_and_prefix_across_turns() {
-        let orch = test_orchestrator(200).await; // tiny budget forces truncation
-        let mut messages = vec![msg("system", BASE_PROMPT)];
-        for i in 0..20 {
-            messages.push(msg(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("Message number {} with enough words to consume estimate tokens.", i),
-            ));
-        }
-
-        let out1 = orch.assemble_stable_context("s1", &messages, vec![], 200);
-        assert!(out1.len() < messages.len(), "must truncate under tiny budget");
-        assert_eq!(
-            out1.last().unwrap().content,
-            messages.last().unwrap().content,
-            "latest user message must always survive"
-        );
-        assert!(
-            out1.iter().any(|m| m.content.contains("omitted to fit")),
-            "truncation must be announced with the constant marker"
-        );
-
-        // Next turn: two short messages appended. The previously emitted
-        // prefix (everything except out1's final message) must reappear
-        // byte-identically at the start of the new assembly.
-        let mut messages2 = messages.clone();
-        messages2.push(msg("assistant", "reply"));
-        messages2.push(msg("user", "next question"));
-        let out2 = orch.assemble_stable_context("s1", &messages2, vec![], 200);
-
-        let prefix1: Vec<&str> = out1[..out1.len() - 1].iter().map(|m| m.content.as_str()).collect();
-        let prefix2: Vec<&str> = out2[..prefix1.len()].iter().map(|m| m.content.as_str()).collect();
-        assert_eq!(prefix1, prefix2, "prefix must stay identical across turns (prompt cache)");
+    /// Save a conversation the way generate_stream does (message_index =
+    /// position in the request list).
+    fn save(orch: &ContextOrchestrator, session: &str, messages: &[Message]) {
+        let db = orch.database();
+        let _ = db.conversations.delete_session(session);
+        let _ = db.conversations.create_session_with_id(session, None);
+        let rows: Vec<(String, String, i32, i32, f32)> = messages
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(i, m)| (m.role.clone(), m.content.clone(), i as i32, 0, 0.5))
+            .collect();
+        db.conversations.store_messages_batch(session, &rows).unwrap();
     }
 
-    #[tokio::test]
-    async fn retrieved_block_folds_into_latest_message_not_a_new_message() {
-        // Verified live against gemma-3's chat template (b8037): an extra
-        // system-role message anywhere but position 0 throws a hard Jinja
-        // "roles must alternate" error. Retrieved memory must therefore be
-        // folded into an EXISTING message's text, never a new array entry -
-        // this test locks in that no message count is added.
-        let orch = test_orchestrator(10_000).await;
-        let messages = vec![
-            msg("system", BASE_PROMPT),
-            msg("user", "first question"),
-            msg("assistant", "first answer"),
-            msg("user", "what did the contract say?"),
-        ];
-        let out = orch.assemble_stable_context(
-            "s2",
-            &messages,
-            vec!["[Summary]: the contract caps liability at 1M".to_string()],
-            10_000,
-        );
-        assert_eq!(out.len(), messages.len(), "no truncation/retrieval may ever add a message entry");
-        assert!(
-            out.iter().all(|m| m.role == "system" || m.role == "user" || m.role == "assistant"),
-            "role sequence must be preserved exactly"
-        );
-        assert_eq!(out[0].content, BASE_PROMPT, "system message untouched (no truncation)");
-        assert_eq!(out[1].content, "first question");
-        assert_eq!(out[2].content, "first answer");
-        assert_eq!(out.last().unwrap().role, "user");
-        assert!(out.last().unwrap().content.starts_with("what did the contract say?"),
-            "original question text must lead the folded message: {}", out.last().unwrap().content);
-        assert!(out.last().unwrap().content.contains("Context retrieved from memory"));
-        assert!(out.last().unwrap().content.contains("liability at 1M"));
+    fn conversation(turns: usize) -> Vec<Message> {
+        let mut messages = vec![msg("system", BASE_PROMPT)];
+        for i in 0..turns {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            messages.push(msg(role, &format!("Message {} {}", i, FILLER)));
+        }
+        messages
     }
 
-    #[tokio::test]
-    async fn truncation_note_folds_into_system_message_never_a_new_role() {
-        let orch = test_orchestrator(200).await; // tiny budget forces truncation
-        let mut messages = vec![msg("system", BASE_PROMPT)];
-        for i in 0..20 {
-            messages.push(msg(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("Message number {} with enough words to consume estimate tokens.", i),
-            ));
-        }
-        let out = orch.assemble_stable_context("s3", &messages, vec![], 200);
-        assert!(out.len() < messages.len(), "must actually truncate under this budget");
-
-        // The exact defect this guards: llama-server's gemma-3 chat template
-        // (live-verified against b8037) throws a hard 500 "Conversation
-        // roles must alternate user/assistant" if any non-alternating or
-        // extra system-role message appears after position 0.
-        assert_eq!(out[0].role, "system");
-        for (i, m) in out[1..].iter().enumerate() {
-            assert_ne!(m.role, "system", "no system-role message may appear after position 0");
+    fn assert_shape(out: &[Message], ctx: &str) {
+        assert!(!out.is_empty(), "empty prompt ({})", ctx);
+        let body_start = if out[0].role == "system" { 1 } else { 0 };
+        for (i, m) in out[body_start..].iter().enumerate() {
+            assert_ne!(m.role, "system", "system role after position 0 ({})", ctx);
             let expected = if i % 2 == 0 { "user" } else { "assistant" };
-            assert_eq!(m.role, expected, "role alternation must hold at position {}", i + 1);
+            assert_eq!(m.role, expected, "role alternation broke at {} ({})", i + body_start, ctx);
         }
-        assert!(out[0].content.contains("omitted to fit"), "truncation note must be folded into the system message");
+        assert_eq!(out.last().unwrap().role, "user", "latest question missing ({})", ctx);
     }
 
-    /// The regression test for the live 502.
-    ///
-    /// The single-shape test above passed while the invariant was broken,
-    /// because whether the boundary landed on a user or an assistant message
-    /// depended entirely on message sizes. This sweeps conversation lengths,
-    /// budgets and message sizes — including one enormous assistant turn,
-    /// which is what a "print the whole document" answer looks like and is
-    /// precisely the shape that pushed the boundary onto an assistant message
-    /// in production.
     #[tokio::test]
-    async fn truncation_never_starts_the_prompt_on_an_assistant_message() {
-        // Odd turn counts only: a real request always ends with the user's new
-        // question, so an even count (ending on an assistant reply) is a shape
-        // this function is never given.
+    async fn a_short_conversation_is_sent_whole() {
+        let orch = test_orchestrator().await;
+        let messages = conversation(5);
+        save(&orch, "short", &messages);
+        let out = orch.process_conversation_with_memory("short", &messages, Some("next"), 4_000).await.unwrap();
+        assert_eq!(out.messages.len(), messages.len());
+        assert!(out.memory_blocks.is_empty());
+        assert_eq!(out.messages[0].content, BASE_PROMPT);
+    }
+
+    #[tokio::test]
+    async fn passing_80_percent_compacts_into_a_stored_summary() {
+        let orch = test_orchestrator().await;
+        let messages = conversation(121);
+        save(&orch, "long", &messages);
+        let out = orch.process_conversation_with_memory("long", &messages, Some("anything"), 2_000).await.unwrap();
+        assert!(out.messages.len() < messages.len(), "must compact");
+        assert_shape(&out.messages, "compacted");
+        assert!(out.messages[0].content.starts_with(BASE_PROMPT));
+        assert!(out.messages[0].content.contains(SUMMARY_HEADING), "summary goes in the system message");
+        // The shown summary is capped (oldest lines fold into a count, and are
+        // recalled on demand); the stored record keeps every compacted turn.
+        let (covered, json) = orch.database().conversations.get_memory("long").unwrap().expect("summary stored");
+        assert!(covered > 1);
+        assert!(json.contains("\"turn\":1,"), "stored summary starts at turn 1");
+        let summary_len = out.memory_blocks.first().map_or(0, |s| s.len());
+        assert!(summary_len <= 900, "shown summary respects its cap ({} chars)", summary_len);
+    }
+
+    #[tokio::test]
+    async fn the_prefix_stays_identical_between_compactions() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(121);
+        save(&orch, "stable", &messages);
+        let out1 = orch.process_conversation_with_memory("stable", &messages, Some("x"), 2_000).await.unwrap();
+        messages.push(msg("assistant", "short reply"));
+        messages.push(msg("user", "short follow up"));
+        let out2 = orch.process_conversation_with_memory("stable", &messages, Some("y"), 2_000).await.unwrap();
+        let p1: Vec<&str> = out1.messages[..out1.messages.len() - 1].iter().map(|m| m.content.as_str()).collect();
+        let p2: Vec<&str> = out2.messages[..p1.len()].iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(p1, p2, "prefix must not change between compactions (KV cache reuse)");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_turn_is_recalled_as_a_question_and_answer_pair() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(121);
+        messages[1].content = "What is the notice period in the Lisbon warehouse lease?".into();
+        messages[2].content = "The Lisbon warehouse lease requires ninety days written notice.".into();
+        messages.push(msg("assistant", "ok"));
+        let question = "Remind me about the Lisbon warehouse notice period";
+        messages.push(msg("user", question));
+        save(&orch, "recall", &messages);
+        let out = orch.process_conversation_with_memory("recall", &messages, Some(question), 2_000).await.unwrap();
+        let last = &out.messages.last().unwrap().content;
+        assert!(last.contains(RECALL_HEADING), "recall block attached to the question: {}", last);
+        assert!(last.contains("ninety days"), "the answer comes back with its question");
+        assert!(last.contains("Turn 1"));
+        assert_shape(&out.messages, "recall");
+    }
+
+    #[tokio::test]
+    async fn recalled_material_comes_before_the_question_oldest_first_with_dates() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(121);
+        // Two exchanges about the same subject, the later one updating the earlier.
+        messages[1].content = "Where is the Lisbon warehouse lease signed?".into();
+        messages[2].content = "The Lisbon warehouse lease is signed in Porto.".into();
+        messages[9].content = "Update on the Lisbon warehouse lease signing location?".into();
+        messages[10].content = "The Lisbon warehouse lease is now signed in Faro instead.".into();
+        messages.push(msg("assistant", "ok"));
+        let question = "Where is the Lisbon warehouse lease signed now?";
+        messages.push(msg("user", question));
+        save(&orch, "order", &messages);
+        let out = orch.process_conversation_with_memory("order", &messages, Some(question), 2_000).await.unwrap();
+        let last = &out.messages.last().unwrap().content;
+        assert!(last.ends_with(question), "the question is the last thing the model reads: {}", last);
+        let porto = last.find("Porto").expect("earlier exchange recalled");
+        let faro = last.find("Faro").expect("later exchange recalled");
+        assert!(porto < faro, "exchanges are listed oldest first");
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        assert!(last.contains(&format!("Turn 1, {}", today)), "each exchange carries its date: {}", last);
+        assert!(last.contains("the most recent one is current"));
+        assert_shape(&out.messages, "order");
+    }
+
+    #[tokio::test]
+    async fn earlier_turns_are_resent_exactly_as_they_were_sent() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(121);
+        messages[1].content = "Where is the Lisbon warehouse lease signed?".into();
+        messages[2].content = "The Lisbon warehouse lease is signed in Porto.".into();
+        messages.push(msg("assistant", "ok"));
+        let q1 = "Remind me where the Lisbon warehouse lease is signed";
+        messages.push(msg("user", q1));
+        save(&orch, "resend", &messages);
+        let turn1 = orch.process_conversation_with_memory("resend", &messages, Some(q1), 2_000).await.unwrap();
+        let sent1 = turn1.messages.last().unwrap().content.clone();
+        assert!(sent1.len() > q1.len(), "turn 1 carried recalled material");
+
+        messages.push(msg("assistant", "It is signed in Porto."));
+        let q2 = "thanks";
+        messages.push(msg("user", q2));
+        save(&orch, "resend", &messages);
+        let turn2 = orch.process_conversation_with_memory("resend", &messages, Some(q2), 2_000).await.unwrap();
+        let n = turn2.messages.len();
+        assert_eq!(turn2.messages[n - 3].content, sent1, "the previous question is resent as it was sent");
+        assert!(turn2.messages[n - 1].content.ends_with(q2), "the new question still ends the prompt");
+        assert_shape(&turn2.messages, "resend");
+    }
+
+    #[tokio::test]
+    async fn resent_forms_never_push_the_prompt_over_budget() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(121);
+        messages[1].content = "Where is the Lisbon warehouse lease signed?".into();
+        messages[2].content = "The Lisbon warehouse lease is signed in Porto.".into();
+        messages.push(msg("assistant", "ok"));
+        let q1 = "Remind me where the Lisbon warehouse lease is signed";
+        messages.push(msg("user", q1));
+        save(&orch, "tight", &messages);
+        orch.process_conversation_with_memory("tight", &messages, Some(q1), 2_000).await.unwrap();
+
+        messages.push(msg("assistant", "It is signed in Porto."));
+        messages.push(msg("user", "thanks"));
+        save(&orch, "tight", &messages);
+        // A budget the resent form cannot fit in: the plain text is sent instead.
+        let out = orch.process_conversation_with_memory("tight", &messages, Some("thanks"), 512).await.unwrap();
+        let est: usize = out.messages.iter().map(ContextOrchestrator::estimate_msg_tokens).sum();
+        let resent = out.messages.iter().any(|m| m.content.starts_with("[EARLIER IN THIS CONVERSATION"));
+        assert!(!resent || est <= 512, "resending must stay within the budget ({} tokens)", est);
+        assert_shape(&out.messages, "tight");
+    }
+
+    #[tokio::test]
+    async fn my_first_question_is_answered_at_any_length() {
+        let orch = test_orchestrator().await;
+        let mut messages = conversation(399);
+        messages.push(msg("assistant", "ok"));
+        messages.push(msg("user", "What was my first question?"));
+        save(&orch, "first", &messages);
+        let out = orch
+            .process_conversation_with_memory("first", &messages, Some("What was my first question?"), 2_000)
+            .await
+            .unwrap();
+        let last = &out.messages.last().unwrap().content;
+        assert!(last.contains("Turn 1, ") && last.contains("(your 1st question, the one asked about)"), "{}", last);
+        assert!(last.contains("Message 0 "), "the first question's text is present");
+        assert_shape(&out.messages, "ordinal");
+    }
+
+    /// Sweep of lengths, budgets and one enormous turn: the prompt never
+    /// opens on an answer and the question always survives (a broken
+    /// alternation is a hard 500 from strict chat templates).
+    #[tokio::test]
+    async fn assembly_keeps_roles_alternating_under_any_shape() {
         for turns in (3..25usize).step_by(2) {
-            for budget in [80usize, 120, 200, 400, 800, 1500] {
-                for giant_at in [usize::MAX, 1, 2, 3, 6] {
-                    let orch = test_orchestrator(budget).await;
-
-                    let mut messages = vec![msg("system", BASE_PROMPT)];
-                    for i in 0..turns {
-                        let role = if i % 2 == 0 { "user" } else { "assistant" };
-                        // One turn is enormous, mimicking an answer that dumped
-                        // an entire document back into the conversation.
-                        let body = if i == giant_at {
-                            "A very long recital of the whole agreement. ".repeat(120)
-                        } else {
-                            format!("Message {} with a moderate amount of text in it.", i)
-                        };
-                        messages.push(msg(role, &body));
+            for budget in [80usize, 200, 400, 800, 1500] {
+                for giant_at in [usize::MAX, 1, 2, 6] {
+                    let orch = test_orchestrator().await;
+                    let session = format!("s-{}-{}-{}", turns, budget, giant_at);
+                    let mut messages = conversation(turns);
+                    if giant_at < messages.len() - 1 {
+                        messages[giant_at + 1].content = "A very long recital of the whole agreement. ".repeat(120);
                     }
-
-                    let out = orch.assemble_stable_context(
-                        &format!("s-{}-{}-{}", turns, budget, giant_at),
-                        &messages,
-                        vec![],
-                        budget,
-                    );
-
-                    assert!(!out.is_empty(), "assembly must never produce an empty prompt");
-
-                    // Exactly the invariant gemma-3's template enforces, and
-                    // the one whose violation is a hard 500 rather than a
-                    // degraded reply.
-                    let body_start = if out[0].role == "system" { 1 } else { 0 };
-                    for (i, m) in out[body_start..].iter().enumerate() {
-                        assert_ne!(
-                            m.role, "system",
-                            "no system-role message may appear after position 0 \
-                             (turns={}, budget={}, giant_at={})",
-                            turns, budget, giant_at
-                        );
-                        let expected = if i % 2 == 0 { "user" } else { "assistant" };
-                        assert_eq!(
-                            m.role, expected,
-                            "role alternation broke at position {} \
-                             (turns={}, budget={}, giant_at={}); full sequence: {:?}",
-                            i + body_start,
-                            turns,
-                            budget,
-                            giant_at,
-                            out.iter().map(|m| m.role.as_str()).collect::<Vec<_>>()
-                        );
-                    }
-
-                    // The user's actual question must always survive.
-                    assert_eq!(
-                        out.last().unwrap().role,
-                        "user",
-                        "the latest user message must always be present \
-                         (turns={}, budget={}, giant_at={})",
-                        turns, budget, giant_at
-                    );
+                    save(&orch, &session, &messages);
+                    let out = orch
+                        .process_conversation_with_memory(&session, &messages, Some("question"), budget)
+                        .await
+                        .unwrap();
+                    assert_shape(&out.messages, &session);
                 }
             }
         }
     }
 
-    /// The boundary helper itself, in isolation.
     #[test]
     fn snapping_moves_forward_to_a_user_message_and_never_past_the_last() {
         let messages = vec![
@@ -734,33 +666,9 @@ mod tests {
             msg("user", "u2"),
             msg("assistant", "a2"),
         ];
-        // Already on a user message: unchanged.
         assert_eq!(ContextOrchestrator::snap_to_user_boundary(&messages, 1), 1);
-        // On an assistant message: moves forward to the next user.
         assert_eq!(ContextOrchestrator::snap_to_user_boundary(&messages, 2), 3);
-        // No user message left: clamps to the last index rather than running off.
         assert_eq!(ContextOrchestrator::snap_to_user_boundary(&messages, 4), 4);
-    }
-
-    #[tokio::test]
-    async fn flatten_skips_content_already_in_conversation() {
-        let current = vec![msg("user", "duplicate content here")];
-        let retrieved = RetrievedContent {
-            tier1: None,
-            tier3: Some(vec![crate::memory_db::StoredMessage {
-                id: 1,
-                session_id: "s".into(),
-                message_index: 0,
-                role: "user".into(),
-                content: "duplicate content here".into(),
-                tokens: 5,
-                timestamp: chrono::Utc::now(),
-                importance_score: 0.5,
-            }]),
-            cross_session: None,
-        };
-        let texts = ContextOrchestrator::flatten_retrieved(&retrieved, &current);
-        assert!(texts.is_empty(), "in-context content must not be re-injected: {:?}", texts);
     }
 }
 

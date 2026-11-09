@@ -7,13 +7,21 @@ pub mod conversation_api;
 pub mod settings_api;
 pub mod stream_api;
 pub mod model_api;
+pub mod model_prefs_api;
 pub mod files_api;
 pub mod feedback_api;
 pub mod login_notification_api;
 pub mod api_keys_api;
+pub mod cloud_api;
+pub mod oauth_api;
+pub mod authz;
+pub mod age_gate;
 pub mod auth_api;
+pub mod account_api;
 pub mod documents_api;
 pub mod drafts_api;
+pub mod announcements_api;
+pub mod rag_api;
 
 // Re-export API handlers
 pub use memory_api::{memory_optimize, memory_stats, memory_cleanup};

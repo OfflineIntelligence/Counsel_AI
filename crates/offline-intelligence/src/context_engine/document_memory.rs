@@ -80,19 +80,22 @@ fn file_type_label(filename: &str) -> &'static str {
 const DOCUMENT_INSTRUCTIONS: &str = "\
 [ATTACHED DOCUMENTS - THE AUTHORITATIVE SOURCE FOR THIS ANSWER]\n\
 The file(s) below are attached to this conversation and stay available for \
-all of it; they never need re-attaching. Each is labelled with its type - \
-trust that label rather than guessing from how the text looks.\n\
-Serve the request the user actually made:\n\
+all of it. Each is labelled with its type - trust that label rather than \
+guessing from how the text looks.\n\
+Use these files only when the user's message is about them. A greeting, small talk \
+or a question on another subject is NOT about them: answer it normally from your own \
+knowledge, and do not mention, cite or force the files into that answer.\n\
+When the message is about the files, serve the request the user actually made:\n\
 - Show / display / quote / \"exact wording\" / \"full text\" -> reproduce the \
 text below exactly as written, word for word, preserving its order. Do not \
 paraphrase, condense, tidy, or swap any part of it for a description or a \
 summary. This is an explicitly supported request, not something to decline.\n\
 - Summarise / outline / key points -> summarise.\n\
 - A specific question -> answer it directly, then cite where it came from.\n\
-Always:\n\
+When answering about the files:\n\
 - Answer only from the content below. Not from general knowledge, not from \
 what a file with that name usually contains, not from earlier topics in this \
-conversation. If a file was just attached, treat it as the subject.\n\
+conversation. If a file was just attached and the message is about it, treat it as the subject.\n\
 - Never invent document content. If what the user asked for is not below, \
 say so plainly and state what you do have.\n\
 - Cite the tag that opens an excerpt, e.g. [p.12, Section 4.2(b)] or \
@@ -332,10 +335,22 @@ pub fn fold_into_latest_message(messages: &mut [crate::memory::Message], block: 
         return;
     }
     if let Some(last) = messages.last_mut() {
-        last.content.push_str("\n\n");
-        last.content.push_str(block);
+        // Context first, the question last: small models answer the question
+        // nearest the end and lose one that is followed by pages of excerpts.
+        // Every later block goes in before the question too.
+        match last.content.rfind(QUESTION_SEPARATOR) {
+            Some(at) => last.content.insert_str(at, &format!("\n\n{}", block)),
+            None => {
+                let question = std::mem::take(&mut last.content);
+                last.content = format!("{}{}{}", block, QUESTION_SEPARATOR, question);
+            }
+        }
     }
 }
+
+/// Divides material folded into the newest message from the user's own words,
+/// which always come last.
+pub const QUESTION_SEPARATOR: &str = "\n\n[QUESTION]\n";
 
 #[cfg(test)]
 mod tests {
@@ -362,6 +377,19 @@ mod tests {
         assert_eq!(messages.len(), 2, "must not add a message when one already exists");
         assert!(messages[0].content.starts_with("base prompt"));
         assert!(messages[0].content.contains("doc content"));
+    }
+
+    #[test]
+    fn folded_blocks_go_before_the_question_in_the_order_they_arrive() {
+        let mut messages = vec![Message { role: "user".to_string(), content: "What is the deposit?".to_string() }];
+        fold_into_latest_message(&mut messages, "BLOCK A");
+        fold_into_latest_message(&mut messages, "BLOCK B");
+        fold_into_latest_message(&mut messages, "   ");
+        let c = &messages[0].content;
+        assert!(c.ends_with("What is the deposit?"), "{}", c);
+        let (a, b, q) = (c.find("BLOCK A").unwrap(), c.find("BLOCK B").unwrap(), c.find("What is the deposit?").unwrap());
+        assert!(a < b && b < q, "{}", c);
+        assert_eq!(c.matches(QUESTION_SEPARATOR).count(), 1, "one separator however many blocks");
     }
 
     #[test]

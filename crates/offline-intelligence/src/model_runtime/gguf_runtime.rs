@@ -122,7 +122,8 @@ impl GGUFRuntime {
                         Ok(child) => {
                             *process.lock().await = Some(child);
                             // Wait for health
-                            for attempt in 1..=60 {
+                            let restart_wait = crate::tuning::parse_or("HEALTH_CHECK_TIMEOUT_SECONDS", 120u64).max(10);
+                            for attempt in 1..=(restart_wait / 2).max(1) {
                                 sleep(Duration::from_secs(2)).await;
                                 let health_url = format!("{}/health", base_url);
                                 if let Ok(resp) = http_client.get(&health_url).send().await {
@@ -145,7 +146,7 @@ impl GGUFRuntime {
                                     }
                                 }
                             }
-                            error!("llama-server restart timed out after 120 seconds");
+                            error!("llama-server restart timed out after {} seconds (HEALTH_CHECK_TIMEOUT_SECONDS)", restart_wait);
                             restarting.store(false, Ordering::SeqCst);
                         }
                         Err(e) => {
@@ -164,6 +165,27 @@ impl GGUFRuntime {
 
     /// Spawn the llama-server process with the given config. Factored out so
     /// both `start_server` and the auto-restart path can use the same logic.
+    /// With the projector loaded and placed on the GPU: the chat layers it
+    /// leaves room for. None: no projector, or it runs on the CPU.
+    fn projector_layers(config: &RuntimeConfig) -> Option<u32> {
+        let mmproj = config.mmproj_path.as_ref().filter(|_| config.projector_loaded)?;
+        let bytes = std::fs::metadata(mmproj).map(|m| m.len()).unwrap_or(0);
+        super::machine::projector_gpu_layers(bytes, super::machine::current().as_ref())
+    }
+
+    fn gpu_layers_for(config: &RuntimeConfig) -> u32 {
+        match Self::projector_layers(config) {
+            Some(layers) if layers < config.gpu_layers => {
+                info!(
+                    "Vision projector on the GPU: {} of {} chat layers stay there while images are read",
+                    layers, config.gpu_layers
+                );
+                layers
+            }
+            _ => config.gpu_layers,
+        }
+    }
+
     fn spawn_server_process(config: &RuntimeConfig) -> anyhow::Result<Child> {
         let binary_path = config.runtime_binary.as_ref()
             .ok_or_else(|| anyhow::anyhow!("GGUF runtime requires runtime_binary path"))?;
@@ -174,7 +196,7 @@ impl GGUFRuntime {
             .arg("--port").arg(config.port.to_string())
             .arg("--ctx-size").arg(config.context_size.to_string())
             .arg("--threads").arg(config.threads.to_string())
-            .arg("--n-gpu-layers").arg(config.gpu_layers.to_string());
+            .arg("--n-gpu-layers").arg(Self::gpu_layers_for(config).to_string());
 
         if config.batch_size > 0 {
             cmd.arg("--batch-size").arg(config.batch_size.to_string());
@@ -185,12 +207,24 @@ impl GGUFRuntime {
         if config.cache_reuse > 0 {
             cmd.arg("--cache-reuse").arg(config.cache_reuse.to_string());
         }
-        if let Some(ref mmproj) = config.mmproj_path {
+        if let Some(mmproj) = config.mmproj_path.as_ref().filter(|_| config.projector_loaded) {
             // Vision model: load the multimodal projector. The path was
             // verified to exist by whoever built this config (model switch /
             // auto-load / dev override) — a missing file here is a hard spawn
             // failure by design, never a silent text-only start.
             cmd.arg("--mmproj").arg(mmproj);
+            if Self::projector_layers(config).is_none() {
+                info!("Vision projector on the CPU");
+                cmd.arg("--no-mmproj-offload");
+            }
+        }
+        if let Some(kv) = config.kv_cache_type.as_deref().filter(|t| *t != "f16") {
+            // A quantized V cache requires flash attention; "auto" lets the
+            // engine use it where the backend supports it (LLAMA_FLASH_ATTN).
+            cmd.arg("--cache-type-k").arg(kv).arg("--cache-type-v").arg(kv);
+        }
+        if let Some(mb) = config.cache_ram_mb {
+            cmd.arg("--cache-ram").arg(mb.to_string());
         }
         if let Some(ref slot_path) = config.slot_save_path {
             // Created here rather than at save time: llama-server resolves
@@ -208,23 +242,39 @@ impl GGUFRuntime {
                 );
             }
         }
-        if let Some(ref slot_path) = config.slot_save_path.as_ref().filter(|p| p.exists()) {
-            // --parallel 1 is not optional alongside this: the save/restore
-            // endpoints address a slot by index, and llama-server assigns
-            // slots by prompt similarity rather than by client, so with
-            // several slots "slot 0" is not a stable target.
+        // ── Slots, and how --ctx-size is divided between them ──────────────
+        //
+        // These branches are mutually exclusive by construction:
+        // build_runtime_config clears slot_save_path whenever more than one
+        // slot is requested, because slot save/restore needs a stable slot
+        // index and llama-server assigns slots by prompt similarity rather
+        // than by client.
+        if config.parallel_slots > 1 {
+            cmd.arg("--parallel").arg(config.parallel_slots.to_string());
+
+            // --kv-unified is NOT optional alongside --parallel > 1 here, and
+            // is the single flag that makes a 75/25 split possible at all.
             //
-            // It also removes an ambiguity about context. How --ctx-size
-            // relates to per-slot context depends on the KV-cache mode
-            // (unified treats it as a shared budget across sequences;
-            // --no-kv-unified partitions it), and this build defaults
-            // --parallel to -1 = auto, so the slot count was not previously
-            // known. With one slot the question does not arise: --ctx-size is
-            // that slot's context. This is a single-user desktop app, so
-            // nothing is given up by pinning it.
+            // Without it llama.cpp partitions the context evenly, so two slots
+            // would mean each gets --ctx-size / 2. The assistant would receive
+            // 50% of a window it is not allowed to fill and - far worse - the
+            // main discussion would lose half the room its documents need,
+            // silently, as a side effect of a concurrency change.
+            //
+            // With it there is ONE KV buffer shared by both sequences. Neither
+            // client holds a reserved partition; each builds a prompt within
+            // the share shared_state::context_budget_for allows, and those
+            // shares are sized so two simultaneous requests at full budget sum
+            // to the window rather than overcommitting it.
+            cmd.arg("--kv-unified");
+        } else if let Some(ref slot_path) = config.slot_save_path.as_ref().filter(|p| p.exists()) {
+            // Single slot: "slot 0" is a stable target, so warm start works,
+            // and --ctx-size unambiguously belongs to that one slot.
             cmd.arg("--parallel").arg("1");
             cmd.arg("--slot-save-path").arg(slot_path);
         }
+        // Performance flags from .env (LLAMA_*), see tuning.rs.
+        cmd.args(crate::tuning::chat_engine_args());
         if let Ok(extra) = std::env::var("LLAMA_EXTRA_ARGS") {
             let extra = extra.trim();
             if !extra.is_empty() {
@@ -265,29 +315,62 @@ impl GGUFRuntime {
             ));
         }
 
-        let child = Self::spawn_server_process(config)?;
+        let mut config = config.clone();
+        let child = Self::spawn_server_process(&config)?;
 
         *self.server_process.lock().await = Some(child);
         self.base_url = format!("http://{}:{}", config.host, config.port);
 
         info!("llama-server process started, waiting for health check...");
 
-        // Wait for server to be ready (up to 120 seconds)
-        for attempt in 1..=60 {
-            sleep(Duration::from_secs(2)).await;
-            
-            if self.is_ready().await {
-                info!("✅ GGUF runtime ready after {} seconds", attempt * 2);
-                self.read_effective_context().await;
-                return Ok(());
+        // Poll every 250 ms (a wake from sleep should feel quick) for up to
+        // 120 s. Health is probed directly rather than through is_ready(),
+        // whose crash auto-restart would respawn a config that cannot start.
+        let started = std::time::Instant::now();
+        let health_url = format!("{}/health", self.base_url);
+        let start_wait = crate::tuning::parse_or("HEALTH_TIMEOUT_SECONDS", 120u64).max(10);
+        while started.elapsed() < Duration::from_secs(start_wait) {
+            sleep(Duration::from_millis(250)).await;
+
+            let exited = {
+                let mut guard = self.server_process.lock().await;
+                match guard.as_mut().map(|c| c.try_wait()) {
+                    Some(Ok(Some(status))) => {
+                        guard.take();
+                        Some(status)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(status) = exited {
+                // A quantized KV cache needs flash attention support in the
+                // backend; if the engine refuses it, start again on f16.
+                let quantized = config.kv_cache_type.as_deref().map_or(false, |t| t != "f16");
+                if quantized {
+                    warn!(
+                        "llama-server exited during startup ({}) with KV cache type {:?}; \
+                         retrying with the default f16 cache",
+                        status, config.kv_cache_type
+                    );
+                    config.kv_cache_type = None;
+                    self.config = Some(config.clone());
+                    let child = Self::spawn_server_process(&config)?;
+                    *self.server_process.lock().await = Some(child);
+                    continue;
+                }
+                return Err(anyhow::anyhow!("llama-server exited during startup ({})", status));
             }
-            
-            if attempt % 10 == 0 {
-                info!("Still waiting for llama-server... ({}/120s)", attempt * 2);
+
+            if let Ok(resp) = self.http_client.get(&health_url).timeout(Duration::from_secs(2)).send().await {
+                if resp.status().is_success() {
+                    info!("✅ GGUF runtime ready after {} ms", started.elapsed().as_millis());
+                    self.read_effective_context().await;
+                    return Ok(());
+                }
             }
         }
 
-        Err(anyhow::anyhow!("llama-server failed to start within 120 seconds"))
+        Err(anyhow::anyhow!("llama-server failed to start within {} seconds (HEALTH_TIMEOUT_SECONDS)", start_wait))
     }
 }
 

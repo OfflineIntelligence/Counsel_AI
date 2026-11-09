@@ -59,6 +59,8 @@
 //! missing, dropped, or emptied, the next startup rebuilds it instead of
 //! needing a new schema version. Version-gating a cache buys nothing.
 
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 use tracing::{info, warn};
 
@@ -111,7 +113,7 @@ const STOP_WORDS: &[&str] = &[
     "everything", "nothing", "someone", "anyone", "everyone",
 ];
 
-fn is_stop_word(token: &str) -> bool {
+pub(crate) fn is_stop_word(token: &str) -> bool {
     STOP_WORDS.contains(&token)
 }
 
@@ -122,13 +124,79 @@ fn is_stop_word(token: &str) -> bool {
 /// to decide that a question is asking about the conversation itself rather
 /// than about any subject, which needs a completely different kind of
 /// retrieval (recency, not relevance).
+///
+/// When the text has more content words than a query can hold, the ones that
+/// identify the subject are kept: first the words of the question itself, then
+/// names and numbers, then the rest in order. Taking the first words instead
+/// let an instruction preamble ("Based on the above conversations, write a
+/// short answer...") fill the whole query and drop the question.
 pub fn content_tokens(text: &str) -> Vec<String> {
+    let all = raw_content_tokens(text);
+    if all.len() <= MAX_QUERY_TOKENS {
+        return dedup_lower(all);
+    }
+    let focus: HashSet<String> = question_focus(text)
+        .map(|q| raw_content_tokens(q).into_iter().map(|t| t.to_lowercase()).collect())
+        .unwrap_or_default();
+    let tier = |t: &str| -> u8 {
+        if focus.contains(&t.to_lowercase()) {
+            0
+        } else if t.chars().any(|c| c.is_ascii_digit()) || t.chars().next().is_some_and(char::is_uppercase) {
+            1
+        } else {
+            2
+        }
+    };
+    let mut ranked: Vec<(u8, usize, String)> = all.iter().enumerate().map(|(i, t)| (tier(t), i, t.clone())).collect();
+    ranked.sort_by_key(|(tier, i, _)| (*tier, *i));
+    let mut out: Vec<String> = Vec::with_capacity(MAX_QUERY_TOKENS);
+    for (_, _, t) in ranked {
+        let t = t.to_lowercase();
+        if !out.contains(&t) {
+            out.push(t);
+            if out.len() == MAX_QUERY_TOKENS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Content words in original case and order, before any cap.
+fn raw_content_tokens(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.chars().count() >= MIN_TOKEN_CHARS)
-        .map(|t| t.to_lowercase())
-        .filter(|t| !is_stop_word(t))
-        .take(MAX_QUERY_TOKENS)
+        .filter(|t| !is_stop_word(&t.to_lowercase()))
+        .map(str::to_string)
         .collect()
+}
+
+fn dedup_lower(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        let t = t.to_lowercase();
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// The question inside a longer prompt: the text after the last
+/// "question:" label, else the last sentence that ends with '?'.
+fn question_focus(text: &str) -> Option<&str> {
+    let lower = text.to_lowercase();
+    if let Some(pos) = lower.rfind("question:") {
+        let rest = text[pos + "question:".len()..].trim();
+        if !rest.is_empty() {
+            return Some(rest);
+        }
+    }
+    let end = text.rfind('?')?;
+    let head = &text[..end];
+    let start = head.rfind(|c: char| matches!(c, '.' | '!' | '?' | '\n' | ':')).map(|i| i + 1).unwrap_or(0);
+    let q = text[start..=end].trim();
+    (!q.is_empty()).then_some(q)
 }
 
 /// Upper bound on synonym clauses added to one query.
@@ -251,47 +319,32 @@ END;
 /// unconditional rebuild on every launch would re-tokenize the entire library
 /// each time the app starts.
 pub fn ensure_fts_schema(conn: &Connection) -> anyhow::Result<()> {
-    // Base tables must exist first. In-memory pools built by a single store's
-    // initialize_schema legitimately have one and not the other, so each index
-    // is set up independently instead of failing the pair.
-    let documents_ready = table_exists(conn, "documents")?;
-    let messages_ready = table_exists(conn, "messages")?;
-    if !documents_ready && !messages_ready {
+    // Documents are searched through the chunk index (rag_chunks_fts), which
+    // answers "which page" rather than "which document". The old
+    // whole-document index duplicated every document's text in postings, so
+    // it is removed to reclaim that space.
+    if table_exists(conn, "documents_fts")? {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS documents_fts_ai;
+             DROP TRIGGER IF EXISTS documents_fts_ad;
+             DROP TRIGGER IF EXISTS documents_fts_au;
+             DROP TABLE IF EXISTS documents_fts;",
+        )?;
+        info!("Removed the legacy whole-document search index (superseded by the chunk index)");
+    }
+
+    if !table_exists(conn, "messages")? {
         return Ok(());
     }
-
-    // Checked BEFORE the DDL runs - afterwards it always exists and the
-    // distinction that decides backfill is gone.
-    let documents_index_existed = table_exists(conn, "documents_fts")?;
     let messages_index_existed = table_exists(conn, "messages_fts")?;
-
-    // execute_batch on the whole DDL would abort at the first statement whose
-    // base table is missing, taking the other index with it. Split so each
-    // half stands alone.
-    if documents_ready {
-        conn.execute_batch(documents_ddl())?;
-        if !documents_index_existed {
-            rebuild_index(conn, "documents_fts", "documents")?;
-        }
-    }
-    if messages_ready {
-        conn.execute_batch(&messages_ddl())?;
-        if !messages_index_existed {
-            rebuild_index(conn, "messages_fts", "messages")?;
-        }
+    conn.execute_batch(&messages_ddl())?;
+    if !messages_index_existed {
+        rebuild_index(conn, "messages_fts", "messages")?;
     }
     Ok(())
 }
 
-/// Rebuild both indexes from their base tables, unconditionally.
-///
-/// The explicit repair path for an index that exists but has lost content.
-/// Cost is proportional to the whole corpus, so this is never called
-/// automatically - see [`ensure_fts_schema`].
 pub fn rebuild_fts_indexes(conn: &Connection) -> anyhow::Result<()> {
-    if table_exists(conn, "documents_fts")? {
-        rebuild_index(conn, "documents_fts", "documents")?;
-    }
     if table_exists(conn, "messages_fts")? {
         rebuild_index(conn, "messages_fts", "messages")?;
     }
@@ -523,6 +576,29 @@ pub fn documents_bm25_weights() -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The query builder is exercised against a porter external-content
+    // document index equivalent to the one production used to keep; these
+    // wrappers add it on top of the production schema for the fixtures below.
+    fn ensure_fts_schema(conn: &Connection) -> anyhow::Result<()> {
+        super::ensure_fts_schema(conn)?;
+        if table_exists(conn, "documents")? {
+            let existed = table_exists(conn, "documents_fts")?;
+            conn.execute_batch(documents_ddl())?;
+            if !existed {
+                rebuild_index(conn, "documents_fts", "documents")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn rebuild_fts_indexes(conn: &Connection) -> anyhow::Result<()> {
+        super::rebuild_fts_indexes(conn)?;
+        if table_exists(conn, "documents_fts")? {
+            rebuild_index(conn, "documents_fts", "documents")?;
+        }
+        Ok(())
+    }
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -1095,5 +1171,53 @@ mod tests {
             "at most two clauses per token: {}",
             q
         );
+    }
+}
+
+#[cfg(test)]
+mod query_focus_tests {
+    use super::*;
+
+    const LOCOMO_PROMPT: &str = "\nBased on the above conversations, write a short answer for the following question in a few words. \
+Do not write complete and lengthy sentences. Answer with exact words from the conversations whenever possible.\n\n\
+Question: When did Caroline go to the LGBTQ support group?\n";
+
+    #[test]
+    fn a_short_query_keeps_every_content_word_in_order() {
+        assert_eq!(content_tokens("notice period for the lease termination"), vec!["notice", "period", "lease", "termination"]);
+    }
+
+    #[test]
+    fn an_instruction_preamble_cannot_crowd_out_the_question() {
+        let t = content_tokens(LOCOMO_PROMPT);
+        assert!(t.len() <= MAX_QUERY_TOKENS);
+        for w in ["caroline", "lgbtq", "support", "group"] {
+            assert!(t.contains(&w.to_string()), "{} missing from {:?}", w, t);
+        }
+        assert_eq!(&t[..4], &["caroline", "lgbtq", "support", "group"], "question words come first: {:?}", t);
+    }
+
+    #[test]
+    fn without_a_label_the_last_question_sentence_is_the_focus() {
+        let long = "I pasted a long contract above with many clauses about payment schedules, delivery windows, \
+warranties, liabilities, insurance, termination rights and dispute resolution venues. Which court hears disputes?";
+        let t = content_tokens(long);
+        assert!(t.contains(&"court".to_string()) && t.contains(&"hears".to_string()) && t.contains(&"disputes".to_string()), "{:?}", t);
+    }
+
+    #[test]
+    fn names_and_numbers_outrank_ordinary_words_when_there_is_no_question() {
+        let long = "notes notes notes about various general matters regarding several common everyday topics plus things \
+that happened when Melanie visited Seattle in 2022 together";
+        let t = content_tokens(long);
+        for w in ["melanie", "seattle", "2022"] {
+            assert!(t.contains(&w.to_string()), "{} missing from {:?}", w, t);
+        }
+    }
+
+    #[test]
+    fn the_query_built_from_the_prompt_searches_for_the_question() {
+        let q = fts_query_from_user_text(LOCOMO_PROMPT).unwrap();
+        assert!(q.contains("\"caroline\"") && q.contains("\"lgbtq\""), "{}", q);
     }
 }

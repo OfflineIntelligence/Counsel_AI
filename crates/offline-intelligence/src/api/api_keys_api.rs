@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::{
-    memory_db::{ApiKeyType, SimpleEncryption},
+    memory_db::{ApiKeyType, KeyEncryption},
     shared_state::UnifiedAppState,
 };
 
@@ -62,7 +62,10 @@ pub async fn save_api_key(
     info!("Saving API key for: {}", key_type.as_str());
 
     // Encrypt the value before storing
-    let encrypted = SimpleEncryption::encrypt(&payload.value);
+    let encrypted = KeyEncryption::encrypt(&payload.value).map_err(|e| {
+        error!("Failed to encrypt API key: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     match state.shared_state.database_pool.api_keys.save_key(key_type, encrypted) {
         Ok(_) => {
@@ -92,12 +95,14 @@ pub async fn get_api_key(
     match state.shared_state.database_pool.api_keys.get_key(key_type) {
         Ok(Some(record)) => {
             // Decrypt the value
-            let decrypted = SimpleEncryption::decrypt(&record.encrypted_value)
+            let decrypted = KeyEncryption::decrypt(&record.encrypted_value)
                 .unwrap_or_else(|_| String::from("[decryption_failed]"));
 
+            // Cloud provider keys are write-only (see get_all_api_keys).
+            let value = if matches!(key_type, ApiKeyType::Cloud(_)) { None } else { Some(decrypted) };
             Ok(Json(GetApiKeyResponse {
                 key_type: record.key_type,
-                value: Some(decrypted),
+                value,
                 created_at: Some(record.created_at.to_rfc3339()),
                 last_used_at: record.last_used_at.map(|dt| dt.to_rfc3339()),
                 last_mode: record.last_mode,
@@ -128,12 +133,15 @@ pub async fn get_all_api_keys(
     match state.shared_state.database_pool.api_keys.get_all_keys() {
         Ok(records) => {
             let keys: Vec<GetApiKeyResponse> = records.into_iter().map(|record| {
-                let decrypted = SimpleEncryption::decrypt(&record.encrypted_value)
+                let decrypted = KeyEncryption::decrypt(&record.encrypted_value)
                     .unwrap_or_else(|_| String::from("[decryption_failed]"));
 
+                // Cloud provider keys are write-only: they are used by the
+                // backend and never handed back to the page.
+                let value = if crate::cloud_providers::find(&record.key_type).is_some() { None } else { Some(decrypted) };
                 GetApiKeyResponse {
                     key_type: record.key_type,
-                    value: Some(decrypted),
+                    value,
                     created_at: Some(record.created_at.to_rfc3339()),
                     last_used_at: record.last_used_at.map(|dt| dt.to_rfc3339()),
                     last_mode: record.last_mode,
@@ -161,6 +169,12 @@ pub async fn delete_api_key(
     let key_type = ApiKeyType::from_str(key_type_str)
         .ok_or(StatusCode::BAD_REQUEST)?;
 
+    // Removing the key in use drops back to On Computer.
+    if let ApiKeyType::Cloud(id) = key_type {
+        if state.llm_worker.cloud().map(|c| c.provider.id == id).unwrap_or(false) {
+            state.llm_worker.set_cloud(None);
+        }
+    }
     match state.shared_state.database_pool.api_keys.delete_key(key_type) {
         Ok(true) => {
             info!("API key deleted for: {}", key_type_str);

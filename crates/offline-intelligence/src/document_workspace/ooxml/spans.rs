@@ -222,6 +222,11 @@ pub fn escape(text: &str) -> String {
     out
 }
 
+/// Escape text for a double-quoted attribute value.
+pub fn escape_attr(text: &str) -> String {
+    escape(text).replace('"', "&quot;")
+}
+
 /// Reverse of `escape`, for reading text back out of a part.
 pub fn unescape(text: &str) -> String {
     text.replace("&lt;", "<")

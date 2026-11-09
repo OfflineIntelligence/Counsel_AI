@@ -11,6 +11,9 @@ pub mod api_keys_store;
 pub mod users_store;
 pub mod documents_store;
 pub mod drafts_store;
+pub mod library_store;
+pub mod matters_store;
+pub mod search_store;
 pub mod fts;
 
 // Re-export commonly used types
@@ -20,10 +23,13 @@ pub use conversation_store::ConversationStore;
 pub use settings_store::SettingsStore;
 pub use local_files_store::{LocalFilesStore, LocalFile, LocalFileTree};
 pub use all_files_store::{AllFilesStore, AllFile, AllFileTree};
-pub use api_keys_store::{ApiKeysStore, ApiKeyType, ApiKeyRecord, SimpleEncryption};
+pub use api_keys_store::{ApiKeysStore, ApiKeyType, ApiKeyRecord, KeyEncryption};
 pub use users_store::{UsersStore, User};
 pub use documents_store::{DocumentsStore, DocumentRecord, DocumentChunkRecord, NewDocument};
 pub use drafts_store::{DraftsStore, DraftRecord, DraftVersionRecord, NewDraft};
+pub use library_store::{ClauseRecord, LibraryItemRecord, LibraryStore, NewLibraryItem};
+pub use matters_store::{MatterFields, MatterRecord, MattersStore};
+pub use search_store::{SearchHit, SearchStore};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -41,7 +47,13 @@ pub struct MemoryDatabase {
     pub users: UsersStore,
     pub documents: DocumentsStore,
     pub drafts: DraftsStore,
+    pub search: SearchStore,
+    pub matters: MattersStore,
+    pub library: LibraryStore,
+    pub rag: crate::rag::RagStore,
     pool: Arc<Pool<SqliteConnectionManager>>,
+    /// Holds the scratch database file of `new_in_memory` for its lifetime.
+    _scratch: Option<tempfile::TempDir>,
 }
 
 /// Transaction manager for atomic operations across stores
@@ -67,6 +79,46 @@ impl<'a> Transaction<'a> {
     pub fn connection(&mut self) -> &mut rusqlite::Connection {
         &mut self.conn
     }
+}
+
+/// Per-connection pragmas, tunable from .env:
+/// SQLITE_SYNCHRONOUS (NORMAL), SQLITE_CACHE_MB (16, page cache per
+/// connection), SQLITE_MMAP_MB (128, memory-mapped reads),
+/// SQLITE_BUSY_TIMEOUT_MS (5000), SQLITE_TEMP_STORE (MEMORY).
+fn connection_pragmas() -> String {
+    use crate::tuning::{parse_or, var};
+    let synchronous = var("SQLITE_SYNCHRONOUS")
+        .map(|s| s.to_ascii_uppercase())
+        .filter(|s| matches!(s.as_str(), "OFF" | "NORMAL" | "FULL" | "EXTRA"))
+        .unwrap_or_else(|| "NORMAL".to_string());
+    let temp_store = var("SQLITE_TEMP_STORE")
+        .map(|s| s.to_ascii_uppercase())
+        .filter(|s| matches!(s.as_str(), "DEFAULT" | "FILE" | "MEMORY"))
+        .unwrap_or_else(|| "MEMORY".to_string());
+    let cache_kib = parse_or("SQLITE_CACHE_MB", 16i64).clamp(1, 1024) * 1024;
+    let mmap_bytes = parse_or("SQLITE_MMAP_MB", 128i64).clamp(0, 4096) * 1024 * 1024;
+    let busy_ms = parse_or("SQLITE_BUSY_TIMEOUT_MS", 5000u64).clamp(100, 60_000);
+    format!(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = {synchronous};
+         PRAGMA busy_timeout = {busy_ms};
+         PRAGMA cache_size = -{cache_kib};
+         PRAGMA mmap_size = {mmap_bytes};
+         PRAGMA temp_store = {temp_store};"
+    )
+}
+
+/// Set up one connection: pragmas, and BEGIN IMMEDIATE for every
+/// transaction. A DEFERRED transaction that reads before it writes must
+/// upgrade its lock, and SQLite answers a contended upgrade with an instant
+/// SQLITE_BUSY ("database is locked") that busy_timeout never retries, since
+/// waiting could deadlock. IMMEDIATE takes the write lock at BEGIN, where the
+/// busy handler does wait, so concurrent writers queue instead of failing.
+pub(crate) fn prepare_connection(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(&connection_pragmas())?;
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+    Ok(())
 }
 
 impl MemoryDatabase {
@@ -104,89 +156,44 @@ impl MemoryDatabase {
             // journal_mode is the exception - WAL is recorded in the database
             // file itself and persists - but it is set here anyway so a fresh
             // file gets it on the very first connection.
-            .with_init(|conn| {
-                conn.execute_batch(
-                    "PRAGMA foreign_keys = ON;
-                     PRAGMA journal_mode = WAL;
-                     PRAGMA synchronous = NORMAL;
-                     PRAGMA busy_timeout = 5000;",
-                )
-            });
+            .with_init(prepare_connection);
 
         let pool = Pool::builder()
-            .max_size(10)
+            .max_size(crate::tuning::parse_or("DB_POOL_SIZE", 10u32).clamp(2, 64))
             .build(manager)
             .map_err(|e| anyhow::anyhow!("Failed to create connection pool: {}", e))?;
 
-        {
-            let mut conn = pool.get()?;
-            let mut migrator = migration::MigrationManager::new(&mut conn);
-            migrator.initialize_database()?;
-        }
-
-        let pool = Arc::new(pool);
-
-        // Get app data directories
-        let app_data_dir = crate::config::get_app_data_dir();
-        let files_dir = app_data_dir.join("files");
-
-        // Initialize API keys store
-        let api_keys = ApiKeysStore::new(Arc::clone(&pool));
-        if let Err(e) = api_keys.initialize_schema() {
-            tracing::warn!("Failed to initialize API keys schema: {}", e);
-        }
-
-        // Initialize users store
-        let users = UsersStore::new(Arc::clone(&pool));
-        if let Err(e) = users.initialize_schema() {
-            tracing::warn!("Failed to initialize users schema: {}", e);
-        }
-
-        // Initialize documents store (unified document intelligence)
-        let drafts = DraftsStore::new(Arc::clone(&pool));
-        if let Err(e) = drafts.initialize_schema() {
-            // Same reasoning as documents below: in-memory pools never run the
-            // migration chain, so each store creates its own tables idempotently.
-            tracing::warn!("Failed to initialize drafts schema: {}", e);
-        }
-        let documents = DocumentsStore::new(Arc::clone(&pool));
-        if let Err(e) = documents.initialize_schema() {
-            tracing::warn!("Failed to initialize documents schema: {}", e);
-        }
-
-
-        // Full-text indexes over documents + messages. Built here, on BOTH the
-        // on-disk and in-memory paths, from one definition - migrations only run
-        // on the on-disk path, so a numbered migration would need its DDL
-        // duplicated for tests and the two copies would drift. Non-fatal: search
-        // returning nothing is a degraded feature, not a reason to refuse to start.
-        {
-            match pool.get() {
-                Ok(conn) => {
-                    if let Err(e) = fts::ensure_fts_schema(&conn) {
-                        tracing::warn!(
-                            "Failed to initialize full-text search{}: {} - retrieval of                              past documents and messages will find nothing until this succeeds",
-                            "", e
-                        );
-                    }
-                }
-                Err(e) => tracing::warn!("Could not initialize full-text search{}: {}", "", e),
-            }
-        }
-
+        migration::ensure_schema(&pool)?;
         info!("Memory database initialized successfully");
+        let db = Self::from_pool(Arc::new(pool), None);
+        if let Err(e) = db.api_keys.upgrade_legacy_encryption() {
+            tracing::warn!("API key re-encryption skipped: {}", e);
+        }
+        Ok(db)
+    }
 
-        Ok(Self {
+    /// Wire every store onto a pool whose schema is already current.
+    fn from_pool(
+        pool: Arc<Pool<SqliteConnectionManager>>,
+        scratch: Option<tempfile::TempDir>,
+    ) -> Self {
+        let files_dir = crate::config::get_app_data_dir().join("files");
+        Self {
             conversations: ConversationStore::new(Arc::clone(&pool)),
             settings: SettingsStore::new(Arc::clone(&pool)),
             local_files: LocalFilesStore::new(Arc::clone(&pool), files_dir.clone()),
             all_files: AllFilesStore::new(Arc::clone(&pool), files_dir),
-            api_keys,
-            users,
-            documents,
-            drafts,
+            api_keys: ApiKeysStore::new(Arc::clone(&pool)),
+            users: UsersStore::new(Arc::clone(&pool)),
+            documents: DocumentsStore::new(Arc::clone(&pool)),
+            drafts: DraftsStore::new(Arc::clone(&pool)),
+            search: SearchStore::new(Arc::clone(&pool)),
+            matters: MattersStore::new(Arc::clone(&pool)),
+            library: LibraryStore::new(Arc::clone(&pool)),
+            rag: crate::rag::RagStore::new(Arc::clone(&pool)),
             pool,
-        })
+            _scratch: scratch,
+        }
     }
 
     /// Create an in-memory database (useful for testing)
@@ -196,90 +203,20 @@ impl MemoryDatabase {
         // with foreign_keys OFF - meaning FK-violation behaviour under test did
         // not match production, and busy_timeout 0 made concurrent writes fail
         // instantly rather than wait.
-        let manager = SqliteConnectionManager::memory().with_init(|conn| {
-            conn.execute_batch(
-                "PRAGMA foreign_keys = ON;
-                 PRAGMA busy_timeout = 5000;",
-            )
-        });
+        // A private scratch file in WAL mode rather than a shared-cache memory
+        // database: shared cache fails a second concurrent writer immediately
+        // (SQLITE_LOCKED) where the real database waits, so background writes
+        // (document indexing after a save) broke unrelated writes only in tests.
+        let scratch = tempfile::tempdir()?;
+        let manager = SqliteConnectionManager::file(scratch.path().join("memory.db"))
+            .with_init(prepare_connection);
         let pool = Pool::builder()
             .max_size(5)
             .build(manager)?;
 
-        {
-            let conn = pool.get()?;
-            conn.execute_batch(schema::SCHEMA_SQL)?;
-        }
-
-        let pool = Arc::new(pool);
-
-        // Get app data directories
-        let app_data_dir = crate::config::get_app_data_dir();
-        let files_dir = app_data_dir.join("files");
-
-        // Initialize API keys store
-        let api_keys = ApiKeysStore::new(Arc::clone(&pool));
-        if let Err(e) = api_keys.initialize_schema() {
-            tracing::warn!("Failed to initialize API keys schema (in-memory): {}", e);
-        }
-
-        // Initialize users store
-        let users = UsersStore::new(Arc::clone(&pool));
-        if let Err(e) = users.initialize_schema() {
-            tracing::warn!("Failed to initialize users schema (in-memory): {}", e);
-        }
-
-        let drafts = DraftsStore::new(Arc::clone(&pool));
-        if let Err(e) = drafts.initialize_schema() {
-            // Same reasoning as documents below: in-memory pools never run the
-            // migration chain, so each store creates its own tables idempotently.
-            tracing::warn!("Failed to initialize drafts schema: {}", e);
-        }
-        let documents = DocumentsStore::new(Arc::clone(&pool));
-        if let Err(e) = documents.initialize_schema() {
-            tracing::warn!("Failed to initialize documents schema (in-memory): {}", e);
-        }
-
-        let local_files = LocalFilesStore::new(Arc::clone(&pool), files_dir.clone());
-        if let Err(e) = local_files.initialize_schema() {
-            tracing::warn!("Failed to initialize local_files schema (in-memory): {}", e);
-        }
-
-        let settings = SettingsStore::new(Arc::clone(&pool));
-        if let Err(e) = settings.initialize_schema() {
-            tracing::warn!("Failed to initialize app_settings schema (in-memory): {}", e);
-        }
-
-        // Full-text indexes over documents + messages. Built here, on BOTH the
-        // on-disk and in-memory paths, from one definition - migrations only run
-        // on the on-disk path, so a numbered migration would need its DDL
-        // duplicated for tests and the two copies would drift. Non-fatal: search
-        // returning nothing is a degraded feature, not a reason to refuse to start.
-        {
-            match pool.get() {
-                Ok(conn) => {
-                    if let Err(e) = fts::ensure_fts_schema(&conn) {
-                        tracing::warn!(
-                            "Failed to initialize full-text search{}: {} - retrieval of                              past documents and messages will find nothing until this succeeds",
-                            " (in-memory)", e
-                        );
-                    }
-                }
-                Err(e) => tracing::warn!("Could not initialize full-text search{}: {}", " (in-memory)", e),
-            }
-        }
-
-        Ok(Self {
-            conversations: ConversationStore::new(Arc::clone(&pool)),
-            settings,
-            local_files,
-            all_files: AllFilesStore::new(Arc::clone(&pool), files_dir),
-            api_keys,
-            users,
-            documents,
-            drafts,
-            pool,
-        })
+        // Same migration chain as the on-disk database: one schema route.
+        migration::ensure_schema(&pool)?;
+        Ok(Self::from_pool(Arc::new(pool), Some(scratch)))
     }
 
     /// Begin a transaction for atomic operations
@@ -682,5 +619,63 @@ mod fts_integration_tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod locking_tests {
+    use super::*;
+
+    /// "database is locked" came from DEFERRED transactions that read and
+    /// then write: SQLite refuses a contended lock upgrade at once, without
+    /// consulting busy_timeout. Every pooled connection now begins IMMEDIATE,
+    /// so many writers doing exactly that must all succeed.
+    #[test]
+    fn concurrent_read_then_write_transactions_never_hit_database_is_locked() {
+        let db = Arc::new(MemoryDatabase::new_in_memory().unwrap());
+        db.conversations.create_session_with_id("s", None).unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let db = Arc::clone(&db);
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        let mut conn = db.conversations.get_conn_public().unwrap();
+                        let tx = conn.transaction().unwrap();
+                        let _seen: i64 = tx
+                            .query_row("SELECT COUNT(*) FROM messages WHERE session_id = 's'", [], |r| r.get(0))
+                            .unwrap();
+                        tx.execute(
+                            "INSERT INTO messages (session_id, message_index, role, content, tokens, timestamp)
+                             VALUES ('s', ?1, 'user', 'x', 1, '2026-01-01T00:00:00Z')",
+                            [t * 1000 + i],
+                        )
+                        .unwrap();
+                        tx.commit().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("a writer failed");
+        }
+        let conn = db.conversations.get_conn_public().unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 200);
+    }
+
+    /// One schema route: the in-memory database runs the same migration chain
+    /// as the on-disk one and ends at the same version with the RAG tables.
+    #[test]
+    fn every_database_is_built_by_the_migration_chain() {
+        let db = MemoryDatabase::new_in_memory().unwrap();
+        let conn = db.conversations.get_conn_public().unwrap();
+        let v: i64 = conn.query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 22);
+        for table in ["rag_chunks", "rag_vectors", "conversation_memory", "api_keys", "users", "drafts", "library_items"] {
+            let found: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1", [table], |r| r.get(0))
+                .unwrap();
+            assert_eq!(found, 1, "{} missing", table);
+        }
     }
 }

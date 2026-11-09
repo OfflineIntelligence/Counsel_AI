@@ -15,6 +15,39 @@ use tracing::{error, info};
 use super::registry::{AccelerationType, EngineInfo, EngineStatus};
 use super::download_progress::{EngineDownloadProgressTracker, EngineDownloadProgress, EngineDownloadStatus};
 
+/// The engine downloaded and extracted correctly, but never self-reported
+/// loading its acceleration backend when launched.
+///
+/// A *typed* error rather than a plain message because the caller has to act on
+/// it specifically: this is the one failure that means "these bytes are fine,
+/// this machine cannot use them", and therefore the one that should record a
+/// demotion (see `verification_log`). Every other install failure — network,
+/// hash mismatch, extraction, missing cudart — says nothing about the machine's
+/// capabilities and must NOT demote it. Matching on message text would be
+/// fragile enough to eventually blur that distinction.
+#[derive(Debug, Clone)]
+pub struct BackendVerificationFailure {
+    pub engine_id: String,
+    pub engine_version: String,
+    pub acceleration: AccelerationType,
+    /// Full captured stdout+stderr from the `--version` launch, so the reason
+    /// shown to the user names what actually happened.
+    pub raw_output: String,
+}
+
+impl std::fmt::Display for BackendVerificationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Engine '{}' installed but never self-reported loading its {} backend on launch — \
+             the download is unusable on this machine.\nLaunch output:\n{}",
+            self.engine_id, self.acceleration, self.raw_output
+        )
+    }
+}
+
+impl std::error::Error for BackendVerificationFailure {}
+
 /// Source for engine downloads
 #[derive(Debug, Clone)]
 pub enum EngineSource {
@@ -160,11 +193,12 @@ impl EngineDownloader {
         //    scan performs, so install-time success guarantees boot-time success.
         let backend = super::dll_manager::DllManager::verify_backend_loads(install_path, engine_info).await?;
         if !backend.backend_loaded() {
-            return Err(anyhow::anyhow!(
-                "Engine '{}' installed but never self-reported loading its {} backend \
-                 on launch — the download is unusable on this machine.\nLaunch output:\n{}",
-                engine_info.id, engine_info.acceleration, backend.raw_output
-            ));
+            return Err(anyhow::Error::new(BackendVerificationFailure {
+                engine_id: engine_info.id.clone(),
+                engine_version: engine_info.version.clone(),
+                acceleration: engine_info.acceleration.clone(),
+                raw_output: backend.raw_output,
+            }));
         }
 
         // 7. LAST step: metadata.json — presence of this file is the marker that
@@ -587,6 +621,20 @@ impl EngineDownloader {
                          On macOS this is usually Gatekeeper quarantine — try:\n\
                            xattr -r -d com.apple.quarantine {:?}",
                         e, binary_path
+                    )
+                } else if cfg!(target_os = "windows") {
+                    // llama-server.exe hard-imports VCRUNTIME140.dll and
+                    // MSVCP140.dll (verified from the b8037 PE import
+                    // directory), so a missing VC++ runtime makes the OS refuse
+                    // to start the process at all — which surfaces here as an
+                    // opaque "the specified module could not be found".
+                    format!(
+                        "Failed to execute engine binary: {}.\n\
+                         On Windows this is usually a missing Microsoft Visual C++ 2015-2022 \
+                         Redistributable (x64) — the engine imports VCRUNTIME140.dll and \
+                         MSVCP140.dll, and its GPU backends additionally need \
+                         VCRUNTIME140_1.dll. Install the redistributable and try again.",
+                        e
                     )
                 } else {
                     format!("Failed to execute engine binary: {}", e)

@@ -132,6 +132,34 @@ impl ProgressTracker {
         download_id
     }
 
+    /// Pause every download that is running or about to. Used when the app
+    /// closes: each download loop sees the pause at its next chunk, flushes
+    /// what it has to disk and stops, leaving a partial file that the next
+    /// launch resumes. Returns how many were paused.
+    pub async fn pause_all_active(&self) -> usize {
+        let mut downloads = self.downloads.write().await;
+        let mut paused = 0;
+        for progress in downloads.values_mut() {
+            if progress.status.is_active() {
+                progress.status = DownloadStatus::Paused;
+                paused += 1;
+            }
+        }
+        paused
+    }
+
+    /// Record bytes received by a running download.
+    ///
+    /// Unlike `update_progress` it never overrides a Paused or Cancelled
+    /// status: the download loop checks for those at the top of each chunk
+    /// and records bytes at the bottom, and a pause or cancel that landed in
+    /// between used to be overwritten back to Downloading and silently lost.
+    /// The decision is made under the same write lock as the update, so no
+    /// pause can slip in between.
+    pub async fn record_bytes(&self, download_id: &str, bytes_downloaded: u64) {
+        self.apply(download_id, bytes_downloaded, None, None).await;
+    }
+
     /// Update download progress
     pub async fn update_progress(
         &self,
@@ -140,12 +168,29 @@ impl ProgressTracker {
         status: DownloadStatus,
         error_message: Option<String>,
     ) {
+        self.apply(download_id, bytes_downloaded, Some(status), error_message).await;
+    }
+
+    /// `status: None` = Downloading, unless the download is Paused or Cancelled.
+    async fn apply(
+        &self,
+        download_id: &str,
+        bytes_downloaded: u64,
+        status: Option<DownloadStatus>,
+        error_message: Option<String>,
+    ) {
         let mut downloads = self.downloads.write().await;
         
         if let Some(progress) = downloads.get_mut(download_id) {
             let old_bytes = progress.bytes_downloaded;
             progress.bytes_downloaded = bytes_downloaded;
-            progress.status = status;
+            progress.status = match status {
+                Some(s) => s,
+                None if matches!(progress.status, DownloadStatus::Paused | DownloadStatus::Cancelled) => {
+                    progress.status.clone()
+                }
+                None => DownloadStatus::Downloading,
+            };
             progress.error_message = error_message;
 
             // Calculate percentage (guard against division by zero).

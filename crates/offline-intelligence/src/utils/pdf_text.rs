@@ -23,7 +23,17 @@ const PDFIUM_LIB_NAME: &str = "libpdfium.dylib";
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 const PDFIUM_LIB_NAME: &str = "libpdfium.so";
 
-#[cfg(target_os = "windows")]
+// Development-only vendor lookup (production gets pdfium.dll next to the exe,
+// placed there by the installer). Architecture-specific: an x64 pdfium.dll
+// cannot load into an ARM64 process or vice versa, so a single hardcoded
+// win-x64 path would silently break the ARM64 build on a developer machine.
+// Only win-x64 is vendored in-tree; on ARM64 the installer downloads the
+// matching build (see oci_EnsureArm64Pdfium in installer-hooks.nsi).
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const PDFIUM_VENDOR_DIR: &str = "vendor/pdfium/win-x64";
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const PDFIUM_VENDOR_DIR: &str = "vendor/pdfium/win-arm64";
+#[cfg(all(target_os = "windows", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 const PDFIUM_VENDOR_DIR: &str = "vendor/pdfium/win-x64";
 #[cfg(target_os = "macos")]
 const PDFIUM_VENDOR_DIR: &str = "vendor/pdfium/mac";

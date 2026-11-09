@@ -61,6 +61,28 @@ pub struct LLMWorker {
     backend_url: String,
     http_client: reqwest::Client,
     runtime_manager: RwLock<Option<Arc<RuntimeManager>>>,
+    /// On Cloud: the provider, key and model every call goes to. `None` is
+    /// On Computer. The ONE switch: chat, agents, drafting and document
+    /// intelligence all generate through this worker, so all follow it.
+    cloud: RwLock<Option<ActiveCloud>>,
+}
+
+/// The cloud model in use while On Cloud.
+#[derive(Debug, Clone)]
+pub struct ActiveCloud {
+    pub provider: &'static crate::cloud_providers::CloudProvider,
+    pub key: String,
+    pub model: String,
+}
+
+/// STREAM_TIMEOUT_SECONDS (600): the longest one streamed answer may take.
+fn stream_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(crate::tuning::parse_or("STREAM_TIMEOUT_SECONDS", 600u64).max(30))
+}
+
+/// GENERATE_TIMEOUT_SECONDS (300): the longest a non-streaming completion may take.
+fn generate_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(crate::tuning::parse_or("GENERATE_TIMEOUT_SECONDS", 300u64).max(10))
 }
 
 impl LLMWorker {
@@ -70,10 +92,11 @@ impl LLMWorker {
         Self {
             backend_url,
             http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
+                .timeout(stream_timeout())
                 .build()
                 .unwrap_or_default(),
             runtime_manager: RwLock::new(None),
+            cloud: RwLock::new(None),
         }
     }
 
@@ -83,11 +106,34 @@ impl LLMWorker {
         Self {
             backend_url,
             http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
+                .timeout(stream_timeout())
                 .build()
                 .unwrap_or_default(),
             runtime_manager: RwLock::new(None),
+            cloud: RwLock::new(None),
         }
+    }
+
+    /// Switch between On Computer (`None`) and On Cloud.
+    pub fn set_cloud(&self, cloud: Option<ActiveCloud>) {
+        if let Ok(mut g) = self.cloud.write() {
+            match &cloud {
+                Some(c) => info!("Answers now On Cloud: {} / {}", c.provider.name, c.model),
+                None => info!("Answers now On Computer"),
+            }
+            *g = cloud;
+        }
+    }
+
+    /// The active cloud model, or `None` when On Computer.
+    pub fn cloud(&self) -> Option<ActiveCloud> {
+        self.cloud.read().ok().and_then(|g| g.clone())
+    }
+
+    fn cloud_headers(c: &ActiveCloud) -> Vec<(&'static str, String)> {
+        let mut h = vec![("Authorization", format!("Bearer {}", c.key))];
+        h.extend(crate::cloud_providers::extra_headers(c.provider, &c.key));
+        h
     }
 
     /// Set the runtime manager
@@ -149,13 +195,34 @@ impl LLMWorker {
         _session_id: String,
         context: Vec<Message>,
     ) -> anyhow::Result<String> {
+        // Not a turn of a conversation: it takes the engine's single slot like
+        // any request, and replaces whatever the slot held, so the KV store
+        // must stop assuming it knows what that is. (Callers already inside a
+        // request's slot, such as the reading-notes step, use generate_with.)
+        let _slot = crate::model_runtime::kv_store::lock().await;
+        crate::model_runtime::kv_store::engine_reset();
+        self.generate_with(context, 2000, 0.7).await
+    }
+
+    /// Non-streaming completion with an explicit length and temperature. The
+    /// caller must hold the KV store slot (`kv_store::lock`).
+    pub async fn generate_with(
+        &self,
+        context: Vec<Message>,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> anyhow::Result<String> {
         debug!("LLM worker generating response (non-streaming)");
+
+        if let Some(c) = self.cloud() {
+            return self.complete_cloud(&c, context, max_tokens, temperature).await;
+        }
 
         let request = ChatCompletionRequest {
             model: "local-llm".to_string(),
             messages: Self::to_chat_messages(&context),
-            max_tokens: 2000,
-            temperature: 0.7,
+            max_tokens,
+            temperature,
             stream: false,
         };
 
@@ -186,6 +253,7 @@ impl LLMWorker {
         
         let response = self.http_client
             .post(&url)
+            .timeout(generate_timeout())
             .json(&request)
             .send()
             .await
@@ -217,8 +285,76 @@ impl LLMWorker {
         Ok(content)
     }
 
+    /// Non-streaming completion from the active cloud model.
+    async fn complete_cloud(
+        &self,
+        c: &ActiveCloud,
+        context: Vec<Message>,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> anyhow::Result<String> {
+        let body = Self::request_body(Some(c.provider), &c.model, &context, max_tokens, temperature, false);
+        let mut builder = self.http_client.post(format!("{}/chat/completions", c.provider.base_url)).json(&body);
+        for (k, v) in Self::cloud_headers(c) {
+            builder = builder.header(k, v);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Could not reach {}: {}", c.provider.name, e))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("{} returned {}: {}", c.provider.name, status, Self::provider_error(&text)));
+        }
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("Failed to parse {} response: {}", c.provider.name, e))?;
+        Ok(v.pointer("/choices/0/message/content").and_then(|c| c.as_str()).unwrap_or_default().to_string())
+    }
+
     /// Stream response tokens from the LLM as Server-Sent Events.
     /// Returns a stream of SSE-formatted strings ready to send to the client.
+    /// Exact prompt size as the engine will see it: rendered with the loaded
+    /// model's chat template and counted by its tokenizer. None when no model
+    /// is serving or the engine does not answer quickly.
+    pub async fn count_prompt_tokens(&self, messages: &[Message]) -> Option<usize> {
+        // A cloud model's tokenizer is not the local one; the budget's
+        // characters-per-token estimate stands instead.
+        if self.cloud().is_some() {
+            return None;
+        }
+        let rm = self.get_runtime_manager()?;
+        if !rm.is_ready().await {
+            return None;
+        }
+        let base_url = rm.get_base_url().await?;
+        let timeout = std::time::Duration::from_secs(10);
+        let rendered: serde_json::Value = self
+            .http_client
+            .post(format!("{}/apply-template", base_url))
+            .timeout(timeout)
+            .json(&serde_json::json!({ "messages": Self::to_chat_messages(messages) }))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let prompt = rendered.get("prompt")?.as_str()?.to_string();
+        let tokens: serde_json::Value = self
+            .http_client
+            .post(format!("{}/tokenize", base_url))
+            .timeout(timeout)
+            .json(&serde_json::json!({ "content": prompt, "add_special": true }))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        Some(tokens.get("tokens")?.as_array()?.len())
+    }
+
     pub async fn stream_response(
         &self,
         messages: Vec<Message>,
@@ -227,13 +363,10 @@ impl LLMWorker {
     ) -> anyhow::Result<impl futures_util::Stream<Item = Result<String, anyhow::Error>>> {
         debug!("LLM worker starting streaming response");
 
-        let request = ChatCompletionRequest {
-            model: "local-llm".to_string(),
-            messages: Self::to_chat_messages(&messages),
-            max_tokens,
-            temperature,
-            stream: true,
-        };
+        if let Some(c) = self.cloud() {
+            let url = format!("{}/chat/completions", c.provider.base_url);
+            return self.stream_chat_completions(&url, &c.model, &Self::cloud_headers(&c), messages, max_tokens, temperature, Some(c.provider)).await;
+        }
 
         // Determine the URL to use based on whether runtime manager is available AND ready
         let url = if let Some(ref rm) = self.get_runtime_manager() {
@@ -260,80 +393,212 @@ impl LLMWorker {
             ));
         };
         
-        let response = self.http_client
-            .post(&url)
-            .json(&request)
+        self.stream_chat_completions(&url, "local-llm", &[], messages, max_tokens, temperature, None).await
+    }
+
+    /// Stream from a cloud provider's OpenAI-compatible endpoint. Same SSE
+    /// shape back as the local engine, so callers cannot tell them apart.
+    pub async fn stream_cloud(
+        &self,
+        provider: &'static crate::cloud_providers::CloudProvider,
+        api_key: &str,
+        model: &str,
+        messages: Vec<Message>,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> anyhow::Result<impl futures_util::Stream<Item = Result<String, anyhow::Error>>> {
+        let url = format!("{}/chat/completions", provider.base_url);
+        let mut headers = vec![("Authorization", format!("Bearer {}", api_key))];
+        headers.extend(crate::cloud_providers::extra_headers(provider, api_key));
+        self.stream_chat_completions(&url, model, &headers, messages, max_tokens, temperature, Some(provider)).await
+    }
+
+    async fn stream_chat_completions(
+        &self,
+        url: &str,
+        model: &str,
+        headers: &[(&'static str, String)],
+        messages: Vec<Message>,
+        max_tokens: u32,
+        temperature: f32,
+        cloud: Option<&'static crate::cloud_providers::CloudProvider>,
+    ) -> anyhow::Result<impl futures_util::Stream<Item = Result<String, anyhow::Error>>> {
+        let body = Self::request_body(cloud, model, &messages, max_tokens, temperature, true);
+        let mut builder = self.http_client.post(url).json(&body);
+        for (k, v) in headers {
+            builder = builder.header(*k, v);
+        }
+        let who = cloud.map(|p| p.name).unwrap_or("the local engine");
+        let response = builder
             .send()
             .await
-            .map_err(|e| {
-                if e.is_connect() {
-                    anyhow::anyhow!(
-                        "Cannot connect to local LLM server. Please download and load a model from the Models panel."
-                    )
-                } else {
-                    anyhow::anyhow!("LLM backend request failed: {}", e)
-                }
+            .map_err(|e| match cloud {
+                None if e.is_connect() => anyhow::anyhow!(
+                    "Cannot connect to local LLM server. Please download and load a model from the Models panel."
+                ),
+                None => anyhow::anyhow!("LLM backend request failed: {}", e),
+                Some(p) => anyhow::anyhow!("Could not reach {}: {}", p.name, e),
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("LLM backend returned {}: {}", status, body));
+            return Err(match cloud {
+                Some(p) => anyhow::anyhow!("{} returned {}: {}", p.name, status, Self::provider_error(&body)),
+                None => anyhow::anyhow!("LLM backend returned {}: {}", status, body),
+            });
         }
 
         let byte_stream = response.bytes_stream();
+        let is_cloud = cloud.is_some();
+        let who = who.to_string();
 
         let sse_stream = async_stream::try_stream! {
-            let mut buffer = String::new();
+            // Bytes, not text: a multi-byte character split across two network
+            // chunks must be joined before it is decoded.
+            let mut buffer: Vec<u8> = Vec::new();
+            // Cloud reasoning arrives in its own field; it is shown as the
+            // <think>…</think> block the app already renders as Thoughts.
+            let mut in_think = false;
 
             futures_util::pin_mut!(byte_stream);
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result
                     .map_err(|e| anyhow::anyhow!("Stream read error: {}", e))?;
+                buffer.extend_from_slice(&chunk);
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(newline_pos) = buffer.iter().position(|b| *b == b'\n') {
+                    let raw: Vec<u8> = buffer.drain(..=newline_pos).collect();
+                    let line = String::from_utf8_lossy(&raw).trim().to_string();
+                    if line.is_empty() || line.starts_with(':') {
+                        continue; // blank, or an SSE comment (keep-alive)
+                    }
+                    let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
 
-                while let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer[..newline_pos].trim().to_string();
-                    buffer = buffer[newline_pos + 1..].to_string();
-
-                    if line.is_empty() {
-                        continue;
+                    if data == "[DONE]" {
+                        if in_think {
+                            yield Self::content_frame("</think>");
+                        }
+                        yield "data: [DONE]\n\n".to_string();
+                        return;
                     }
 
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
-
-                        if data == "[DONE]" {
-                            yield "data: [DONE]\n\n".to_string();
-                            return;
-                        }
-
+                    if !is_cloud {
                         match serde_json::from_str::<StreamChunk>(data) {
                             Ok(chunk) => {
-                                let finished = chunk.choices.iter()
-                                    .any(|c| c.finish_reason.is_some());
-
+                                let finished = chunk.choices.iter().any(|c| c.finish_reason.is_some());
                                 yield format!("data: {}\n\n", data);
-
                                 if finished {
                                     yield "data: [DONE]\n\n".to_string();
                                     return;
                                 }
                             }
-                            Err(_) => {
-                                yield format!("data: {}\n\n", data);
-                            }
+                            Err(_) => yield format!("data: {}\n\n", data),
                         }
+                        continue;
+                    }
+
+                    // Cloud: read the chunk, re-emit only what the app uses.
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+                    if let Some(err) = v.get("error") {
+                        let msg = err.get("message").and_then(|m| m.as_str()).map(str::to_string)
+                            .unwrap_or_else(|| err.to_string());
+                        Err(anyhow::anyhow!("{}: {}", who, msg))?;
+                    }
+                    let choice = v.get("choices").and_then(|c| c.get(0));
+                    let delta = choice.and_then(|c| c.get("delta"));
+                    let reasoning = delta.and_then(|d| {
+                        d.get("reasoning_content").and_then(|r| r.as_str())
+                            .or_else(|| d.get("reasoning").and_then(|r| r.as_str()))
+                    }).filter(|r| !r.is_empty());
+                    let content = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()).filter(|c| !c.is_empty());
+
+                    if let Some(r) = reasoning {
+                        if !in_think {
+                            in_think = true;
+                            yield Self::content_frame(&format!("<think>{}", r));
+                        } else {
+                            yield Self::content_frame(r);
+                        }
+                    }
+                    if let Some(c) = content {
+                        if in_think {
+                            in_think = false;
+                            yield Self::content_frame(&format!("</think>{}", c));
+                        } else {
+                            yield Self::content_frame(c);
+                        }
+                    }
+                    if choice.and_then(|c| c.get("finish_reason")).map(|f| !f.is_null()).unwrap_or(false) {
+                        if in_think {
+                            yield Self::content_frame("</think>");
+                        }
+                        yield "data: [DONE]\n\n".to_string();
+                        return;
                     }
                 }
             }
 
+            if in_think {
+                yield Self::content_frame("</think>");
+            }
             yield "data: [DONE]\n\n".to_string();
         };
 
         Ok(sse_stream)
+    }
+
+    /// One OpenAI-shaped content delta, as the app's stream expects.
+    fn content_frame(text: &str) -> String {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({ "choices": [{ "index": 0, "delta": { "content": text } }] })
+        )
+    }
+
+    /// The provider's own error message out of an error body, when it has one.
+    fn provider_error(body: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("message").and_then(|m| m.as_str()).map(str::to_string).or_else(|| e.as_str().map(str::to_string)))
+                    .or_else(|| v.get("message").and_then(|m| m.as_str()).map(str::to_string))
+            })
+            .unwrap_or_else(|| body.chars().take(400).collect())
+    }
+
+    /// The request body. The local engine and most providers take
+    /// `max_tokens` + `temperature`; OpenAI's current models take
+    /// `max_completion_tokens`, and its reasoning models (o-series, GPT-5)
+    /// accept only the default temperature.
+    fn request_body(
+        cloud: Option<&crate::cloud_providers::CloudProvider>,
+        model: &str,
+        messages: &[Message],
+        max_tokens: u32,
+        temperature: f32,
+        stream: bool,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": Self::to_chat_messages(messages),
+            "stream": stream,
+        });
+        let m = model.to_lowercase();
+        let openai = cloud.map(|p| p.id == "openai").unwrap_or(false);
+        let reasoning_family = ["o1", "o3", "o4", "gpt-5"].iter().any(|p| m.starts_with(p));
+        if openai {
+            body["max_completion_tokens"] = serde_json::json!(max_tokens);
+            if !reasoning_family {
+                body["temperature"] = serde_json::json!(temperature);
+            }
+        } else {
+            body["max_tokens"] = serde_json::json!(max_tokens);
+            body["temperature"] = serde_json::json!(temperature);
+        }
+        body
     }
 
     /// Transcribe all text in an image via the ACTIVE VISION runtime.
@@ -351,6 +616,11 @@ impl LLMWorker {
         image_bytes: &[u8],
         filename: &str,
     ) -> anyhow::Result<String> {
+        // On Cloud: the chosen cloud model reads the image (same request
+        // shape; every listed provider speaks OpenAI content parts).
+        if let Some(c) = self.cloud() {
+            return self.transcribe_image_cloud(&c, image_bytes, filename).await;
+        }
         let rm = self
             .get_runtime_manager()
             .ok_or_else(|| anyhow::anyhow!("No model runtime available for image transcription"))?;
@@ -435,6 +705,72 @@ impl LLMWorker {
             filename,
             content.len()
         );
+        Ok(content)
+    }
+
+    /// `transcribe_image` against the active cloud model. A model without
+    /// image input answers with an error, which the caller reports.
+    async fn transcribe_image_cloud(
+        &self,
+        c: &ActiveCloud,
+        image_bytes: &[u8],
+        filename: &str,
+    ) -> anyhow::Result<String> {
+        let ext = filename.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+        let mime = match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => "image/png",
+        };
+        use base64::Engine as _;
+        let data_url = format!(
+            "data:{};base64,{}",
+            mime,
+            base64::engine::general_purpose::STANDARD.encode(image_bytes)
+        );
+        let prompt = "Transcribe ALL text visible in this image exactly as written, including              handwritten text. Preserve the reading order and line breaks of the              original. Do not correct spelling or grammar. Where a word is genuinely              unreadable, write [illegible]. Output ONLY the transcribed text with no              commentary. If the image contains no readable text at all, reply with              exactly: NO_TEXT_FOUND followed by a one-sentence description of the image.";
+        let mut body = serde_json::json!({
+            "model": c.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": data_url } }
+                ]
+            }],
+            "stream": false
+        });
+        // OpenAI's newer models take max_completion_tokens; the rest max_tokens.
+        if c.provider.id == "openai" {
+            body["max_completion_tokens"] = serde_json::json!(4096);
+        } else {
+            body["max_tokens"] = serde_json::json!(4096);
+            body["temperature"] = serde_json::json!(0.0);
+        }
+        let mut builder = self
+            .http_client
+            .post(format!("{}/chat/completions", c.provider.base_url))
+            .json(&body);
+        for (k, v) in Self::cloud_headers(c) {
+            builder = builder.header(k, v);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Could not reach {}: {}", c.provider.name, e))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!(
+                "{} could not read image '{}' ({}): {}",
+                c.provider.name, filename, status, Self::provider_error(&text)
+            ));
+        }
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("Failed to parse {} response: {}", c.provider.name, e))?;
+        let content = v.pointer("/choices/0/message/content").and_then(|c| c.as_str()).unwrap_or_default().to_string();
+        info!("{} ({}) transcribed '{}': {} chars", c.provider.name, c.model, filename, content.len());
         Ok(content)
     }
 

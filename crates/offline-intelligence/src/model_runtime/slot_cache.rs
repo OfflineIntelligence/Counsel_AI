@@ -62,7 +62,7 @@ const SLOT_IO_TIMEOUT: Duration = Duration::from_secs(120);
 /// disk accounting and eviction see exactly the files written here - a second
 /// literal would let the two drift and leave blobs uncounted.
 pub fn slot_cache_dir() -> PathBuf {
-    crate::config::get_app_data_dir().join(crate::utils::storage_governor::KV_CACHE_DIR)
+    crate::utils::storage_governor::kv_dir(&crate::config::get_app_data_dir())
 }
 
 /// What produced the saved blob. Every field is part of the restore guard.
@@ -256,6 +256,34 @@ pub async fn save_active_slot(
 }
 
 /// Why a restore did not happen. Every variant is reported, never swallowed.
+/// Have the engine write slot 0 to `filename` (inside its --slot-save-path).
+/// Returns (tokens saved, bytes written).
+pub async fn engine_slot_save(base_url: &str, filename: &str) -> anyhow::Result<(u64, u64)> {
+    let r: SlotSaveResponse = slot_action(base_url, "save", filename).await?;
+    Ok((r.n_saved, r.n_written))
+}
+
+/// Have the engine load slot 0 from `filename`. Returns (tokens restored,
+/// bytes read). The engine keeps the restored tokens and, on the next
+/// request, computes only what follows the longest prefix they share with
+/// the new prompt, so a stale or mismatched file costs time, never output.
+pub async fn engine_slot_restore(base_url: &str, filename: &str) -> anyhow::Result<(u64, u64)> {
+    let r: SlotRestoreResponse = slot_action(base_url, "restore", filename).await?;
+    Ok((r.n_restored, r.n_read))
+}
+
+async fn slot_action<T: serde::de::DeserializeOwned>(base_url: &str, action: &str, filename: &str) -> anyhow::Result<T> {
+    let client = reqwest::Client::builder().timeout(SLOT_IO_TIMEOUT).build()?;
+    let url = format!("{}/slots/{}?action={}", base_url.trim_end_matches('/'), SLOT_ID, action);
+    let response = client.post(&url).json(&serde_json::json!({ "filename": filename })).send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("engine refused slot {} ({}): {}", action, status, body);
+    }
+    Ok(response.json().await?)
+}
+
 #[derive(Debug)]
 pub enum RestoreOutcome {
     Restored { session_id: String, n_tokens: u64 },

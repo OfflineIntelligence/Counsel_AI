@@ -19,6 +19,9 @@ pub struct DocumentSearchQuery {
     pub q: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Omit extracted text (lists and pickers do not need it).
+    #[serde(default)]
+    pub summary: Option<bool>,
 }
 
 /// POST /documents/attach — ingest a paperclip file the MOMENT it is picked.
@@ -259,7 +262,14 @@ pub async fn list_documents(
     };
 
     match result {
-        Ok(docs) => Ok(Json(docs)),
+        Ok(mut docs) => {
+            if query.summary.unwrap_or(false) {
+                for d in &mut docs {
+                    d.extracted_text = String::new();
+                }
+            }
+            Ok(Json(docs))
+        }
         Err(e) => {
             error!("Failed to list documents: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -273,8 +283,32 @@ pub async fn get_session_documents(
     State(state): State<UnifiedAppState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.shared_state.database_pool.documents.get_session_documents(&session_id) {
-        Ok(docs) => Ok(Json(docs)),
+    let documents = &state.shared_state.database_pool.documents;
+    match documents.get_session_documents(&session_id) {
+        Ok(docs) => {
+            // Each document is also told WHICH TURN it was attached to, so the
+            // transcript can put its chip on that message. Sent as an extra
+            // field on the existing shape rather than a second endpoint: every
+            // caller already fetches this list, and a chat with attachments
+            // would otherwise need two round trips to draw one message.
+            let turns: std::collections::HashMap<i64, Option<i32>> = documents
+                .session_document_turns(&session_id)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let enriched: Vec<serde_json::Value> = docs
+                .into_iter()
+                .map(|d| {
+                    let turn = turns.get(&d.id).copied().flatten();
+                    let mut v = serde_json::to_value(&d).unwrap_or(serde_json::Value::Null);
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("msg_index".to_string(), serde_json::json!(turn));
+                    }
+                    v
+                })
+                .collect();
+            Ok(Json(enriched))
+        }
         Err(e) => {
             error!("Failed to list documents for session {}: {}", session_id, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)

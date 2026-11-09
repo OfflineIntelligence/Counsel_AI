@@ -43,9 +43,36 @@ pub struct GgufModelInfo {
     /// coherently. 0 when the model doesn't declare it (rare; ctx_size is
     /// then left to RAM/VRAM-based auto-detection alone).
     pub trained_context_length: u64,
+    /// Sliding-window size ({arch}.attention.sliding_window); 0 = none.
+    pub sliding_window: u64,
+    /// Layers that use the sliding window (their KV cache holds at most
+    /// `sliding_window` + one micro-batch of tokens, not the whole context).
+    pub swa_layers: u64,
+    /// Vocabulary size; sizes the logits part of the compute buffer.
+    pub vocab_size: u64,
+    /// Per-head key and value sizes ({arch}.attention.key_length /
+    /// value_length); 0 when the model does not declare them. They differ
+    /// from embedding_length / head_count for some models (Gemma 2: 8 heads
+    /// of 256 against an embedding of 2,304).
+    pub key_length: u64,
+    pub value_length: u64,
 }
 
 impl GgufModelInfo {
+    /// KV cells llama.cpp keeps for one layer at `ctx`: the full context for
+    /// global-attention layers, the window plus one micro-batch for
+    /// sliding-window layers (unless LLAMA_SWA_FULL forces full caches).
+    /// Returned as the average over all layers.
+    pub fn effective_kv_cells(&self, ctx: u64, ubatch: u64, swa_full: bool) -> f64 {
+        let layers = self.block_count.max(1);
+        if self.sliding_window == 0 || self.swa_layers == 0 || swa_full {
+            return ctx as f64;
+        }
+        let swa = self.swa_layers.min(layers);
+        let swa_cells = ctx.min(self.sliding_window + ubatch);
+        ((layers - swa) * ctx + swa * swa_cells) as f64 / layers as f64
+    }
+
     /// Estimated bytes of model weights per transformer layer.
     /// file_size / block_count slightly over-counts (embeddings + output layer
     /// are smeared across blocks) which errs on the safe side for VRAM planning.
@@ -53,17 +80,27 @@ impl GgufModelInfo {
         self.file_size / self.block_count.max(1)
     }
 
+    /// Stored K plus V values per token per layer: head_count_kv x (key_length
+    /// + value_length) when the model declares its head sizes, otherwise
+    /// 2 x embedding_length x head_count_kv / head_count (GQA estimate), and
+    /// 2 x embedding_length when head counts are missing (upper bound).
+    pub fn kv_values_per_token_layer(&self) -> u64 {
+        if self.head_count_kv > 0 && self.key_length > 0 {
+            let v = if self.value_length > 0 { self.value_length } else { self.key_length };
+            return self.head_count_kv * (self.key_length + v);
+        }
+        if self.head_count > 0 && self.head_count_kv > 0 {
+            2 * self.embedding_length * self.head_count_kv / self.head_count
+        } else {
+            2 * self.embedding_length
+        }
+    }
+
     /// Estimated KV-cache bytes per layer at the given context size (f16 K+V).
     /// With GQA the KV dimension is embedding_length * head_count_kv / head_count.
     pub fn kv_bytes_per_layer(&self, ctx_size: u64) -> u64 {
-        let kv_dim = if self.head_count > 0 && self.head_count_kv > 0 {
-            self.embedding_length * self.head_count_kv / self.head_count
-        } else {
-            // Head counts not declared — assume full attention (upper bound).
-            self.embedding_length
-        };
-        // K + V, 2 bytes each (f16)
-        ctx_size * kv_dim * 2 * 2
+        // 2 bytes per value (f16)
+        ctx_size * self.kv_values_per_token_layer() * 2
     }
 }
 
@@ -140,10 +177,18 @@ pub fn read_model_info(path: &Path) -> Result<GgufModelInfo> {
         ".attention.head_count",
         ".attention.head_count_kv",
         ".context_length",
+        ".attention.sliding_window",
+        ".attention.sliding_window_pattern",
+        ".vocab_size",
+        ".attention.key_length",
+        ".attention.value_length",
     ];
 
     let mut architecture = String::new();
     let mut ints: HashMap<String, u64> = HashMap::new();
+    let mut vocab_tokens = 0u64;
+    // Per-layer sliding-window flags, when the model stores them as a bool array.
+    let mut swa_pattern: Option<Vec<bool>> = None;
 
     for _ in 0..kv_count {
         let key = read_string(&mut r, 1024)?; // metadata keys are short
@@ -151,6 +196,25 @@ pub fn read_model_info(path: &Path) -> Result<GgufModelInfo> {
 
         if key == "general.architecture" && value_type == 8 {
             architecture = read_string(&mut r, 256)?;
+            continue;
+        }
+
+        if key == "tokenizer.ggml.tokens" && value_type == 9 {
+            let elem_type = read_u32(&mut r)?;
+            vocab_tokens = read_u64(&mut r)?;
+            skip_array_elements(&mut r, elem_type, vocab_tokens)?;
+            continue;
+        }
+        if key.ends_with(".attention.sliding_window_pattern") && value_type == 9 {
+            let elem_type = read_u32(&mut r)?;
+            let count = read_u64(&mut r)?;
+            if elem_type == 7 && count <= 4096 {
+                let mut flags = vec![0u8; count as usize];
+                r.read_exact(&mut flags)?;
+                swa_pattern = Some(flags.into_iter().map(|b| b != 0).collect());
+            } else {
+                skip_array_elements(&mut r, elem_type, count)?;
+            }
             continue;
         }
 
@@ -189,6 +253,20 @@ pub fn read_model_info(path: &Path) -> Result<GgufModelInfo> {
     let head_count = get(".attention.head_count").unwrap_or(0);
     let head_count_kv = get(".attention.head_count_kv").unwrap_or(head_count);
     let trained_context_length = get(".context_length").unwrap_or(0);
+    let key_length = get(".attention.key_length").unwrap_or(0);
+    let value_length = get(".attention.value_length").unwrap_or(0);
+    let sliding_window = get(".attention.sliding_window").unwrap_or(0);
+    let vocab_size = get(".vocab_size").filter(|v| *v > 0).unwrap_or(vocab_tokens);
+    let swa_layers = if sliding_window == 0 {
+        0
+    } else if let Some(flags) = &swa_pattern {
+        flags.iter().take(block_count as usize).filter(|f| **f).count() as u64
+    } else if let Some(n) = get(".attention.sliding_window_pattern").filter(|n| *n > 1) {
+        // Every n-th layer is global, the rest slide.
+        block_count - block_count / n
+    } else {
+        swa_layers_by_architecture(&architecture, block_count)
+    };
 
     Ok(GgufModelInfo {
         architecture,
@@ -198,7 +276,27 @@ pub fn read_model_info(path: &Path) -> Result<GgufModelInfo> {
         head_count_kv,
         file_size,
         trained_context_length,
+        sliding_window,
+        swa_layers,
+        vocab_size,
+        key_length,
+        value_length,
     })
+}
+
+/// Sliding-window layer count for architectures whose GGUF declares the
+/// window but not the layout (the layout is fixed in llama.cpp's model code).
+fn swa_layers_by_architecture(arch: &str, layers: u64) -> u64 {
+    match arch {
+        // Alternating local/global.
+        "gemma2" => layers / 2,
+        // Five local layers to one global.
+        "gemma3" | "gemma3n" => layers - layers / 6,
+        // Three local to one global.
+        "cohere2" => layers - layers / 4,
+        // Unknown layout: assume every layer keeps the full context.
+        _ => 0,
+    }
 }
 
 // ── low-level readers ─────────────────────────────────────────────────────────
@@ -279,6 +377,20 @@ fn read_integer_value<R: Read + Seek>(r: &mut R, value_type: u32) -> Result<Opti
         }
     };
     Ok(v)
+}
+
+fn skip_array_elements<R: Read + Seek>(r: &mut R, elem_type: u32, count: u64) -> Result<()> {
+    if let Some(w) = scalar_width(elem_type) {
+        r.seek(SeekFrom::Current((w * count) as i64))?;
+    } else if elem_type == 8 {
+        for _ in 0..count {
+            let len = read_u64(r)?;
+            r.seek(SeekFrom::Current(len as i64))?;
+        }
+    } else {
+        bail!("GGUF nested arrays are not supported (elem_type {elem_type})");
+    }
+    Ok(())
 }
 
 /// Skip over a value of any GGUF type without materializing it.

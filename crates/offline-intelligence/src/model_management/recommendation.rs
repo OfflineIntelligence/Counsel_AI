@@ -494,6 +494,10 @@ mod tests {
             queue_size: 1000,
             queue_timeout_seconds: 300,
             backend_url: "http://127.0.0.1:9639".to_string(),
+            model_idle_seconds: 300,
+            model_idle_unfocused_seconds: 90,
+            kv_cache_type: "q8_0".to_string(),
+            cache_ram_mb: 1024,
         };
 
         let hardware = ModelRecommender::detect_hardware_profile(&config);

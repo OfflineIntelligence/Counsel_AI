@@ -11,6 +11,8 @@ pub struct FeedbackRequest {
     pub message: String,
     #[serde(default)]
     pub email: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,10 +66,14 @@ pub async fn submit_feedback(
 }
 
 fn save_feedback_locally(payload: &FeedbackRequest) -> Result<(), Box<dyn std::error::Error>> {
-    let db_path = std::path::Path::new("./data");
+    let db_path = dirs::data_local_dir()
+        .map(|d| d.join("Offline Counsel AI").join("data"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./data"));
+    let db_path = db_path.as_path();
     std::fs::create_dir_all(db_path)?;
 
-    let conn = rusqlite::Connection::open(db_path.join("feedback.db"))?;
+    let mut conn = rusqlite::Connection::open(db_path.join("feedback.db"))?;
+    crate::memory_db::prepare_connection(&mut conn)?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS feedback (
@@ -117,59 +123,34 @@ fn get_next_feedback_number() -> u64 {
 }
 
 async fn send_feedback_email(payload: &FeedbackRequest) -> Result<u64, Box<dyn std::error::Error>> {
-    use lettre::{
-        Message, SmtpTransport, Transport,
-        message::header::ContentType,
-        transport::smtp::authentication::Credentials,
-    };
+    use crate::api::account_api::{escape, send_mail_reply, smtp_configured};
 
-    let smtp_user = std::env::var("SMTP_USER").unwrap_or_default();
-    let smtp_pass = std::env::var("SMTP_PASS").unwrap_or_default();
-
-    if smtp_user.is_empty() || smtp_pass.is_empty() {
+    if !smtp_configured() {
         return Err("SMTP credentials not configured".into());
     }
-
-    let smtp_host = std::env::var("SMTP_HOST").unwrap_or_else(|_| "smtp.gmail.com".to_string());
-    let smtp_port: u16 = std::env::var("SMTP_PORT")
-        .unwrap_or_else(|_| "587".to_string())
-        .parse()
-        .unwrap_or(587);
-
-    // Get sequential feedback number
     let feedback_number = get_next_feedback_number();
-
-    // Always send FROM the authenticated SMTP user to avoid sender rejection
-    // Use Reply-To for the user's email so admin can respond directly
-    let from_address = format!("Offline_Intelligence Feedback <{}>", smtp_user);
-
-    let mut email_builder = Message::builder()
-        .from(from_address.parse()?)
-        .to("Product Team <product@offlineintelligence.io>".parse()?)
-        .subject(format!("FEEDBACK #{} - Offline_Intelligence User Feedback", feedback_number));
-    
-    // Add Reply-To header if user provided email
-    if !payload.email.is_empty() {
-        email_builder = email_builder.reply_to(payload.email.parse()?);
-    }
-    
-    let email = email_builder
-        .header(ContentType::TEXT_PLAIN)
-        .body(format!(
-            "FEEDBACK #{}\n\nNew feedback from Offline_Intelligence user:\n\n{}\n\n---\nUser email: {}",
-            feedback_number,
-            payload.message,
-            if payload.email.is_empty() { "Not provided" } else { &payload.email }
-        ))?;
-
-    let creds = Credentials::new(smtp_user, smtp_pass);
-
-    let mailer = SmtpTransport::starttls_relay(&smtp_host)?
-        .port(smtp_port)
-        .credentials(creds)
-        .build();
-
-    mailer.send(&email)?;
-
+    let who = if payload.name.trim().is_empty() { "A user".to_string() } else { payload.name.trim().to_string() };
+    let from_email = if payload.email.trim().is_empty() { "Not provided".to_string() } else { payload.email.trim().to_string() };
+    let html = format!(
+        r#"<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111">
+<h2 style="margin:0 0 4px">Feedback #{}</h2>
+<p style="margin:0 0 16px;color:#666">From {} ({})</p>
+<div style="white-space:pre-wrap;border:1px solid #e5e5e5;border-radius:12px;padding:16px">{}</div>
+</div>"#,
+        feedback_number,
+        escape(&who),
+        escape(&from_email),
+        escape(&payload.message)
+    );
+    let reply_to = if payload.email.trim().is_empty() { None } else { Some(payload.email.trim().to_string()) };
+    send_mail_reply(
+        "product@offlineintelligence.io",
+        "Product Team",
+        &format!("FEEDBACK #{} - Offline Counsel AI", feedback_number),
+        html,
+        reply_to,
+    )
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     Ok(feedback_number)
 }

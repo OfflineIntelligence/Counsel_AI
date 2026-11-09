@@ -74,9 +74,6 @@ pub struct ConversationHierarchy {
     /// Coarse-grained session-level locks
     pub sessions: DashMap<String, Arc<RwLock<SessionData>>>,
 
-    /// Fine-grained message-level queues for hot paths
-    pub message_queues: DashMap<String, Arc<crossbeam_queue::ArrayQueue<PendingMessage>>>,
-
     /// Lock-free counters for performance metrics
     pub counters: Arc<AtomicCounters>,
 }
@@ -88,13 +85,6 @@ pub struct SessionData {
     pub messages: Vec<crate::memory::Message>,
     pub last_accessed: std::time::Instant,
     pub pinned: bool,
-}
-
-/// Pending message for asynchronous processing
-#[derive(Debug, Clone)]
-pub struct PendingMessage {
-    pub message: crate::memory::Message,
-    pub timestamp: std::time::Instant,
 }
 
 /// Atomic counters for system metrics
@@ -134,13 +124,115 @@ impl AtomicCounters {
     }
 }
 
+/// Session-id prefix that marks a thread as belonging to the AI Assistant
+/// side panel rather than the main discussion.
+///
+/// This is an existing contract, not a new one: the frontend has always
+/// created assistant threads with this prefix and already relies on it to keep
+/// them out of the main discussion list. Reusing it here means the split needs
+/// no new request field, and therefore cannot break against a frontend that
+/// predates it — an older client simply keeps sending chat sessions, which
+/// classify as Chat and behave exactly as before.
+///
+/// Must stay byte-identical to DRAFT_ASSISTANT_SESSION_PREFIX in
+/// apps/desktop/src/api/chat.ts. A mismatch does not error; it silently gives
+/// the assistant the full chat budget, which is why the two tests at the
+/// bottom of this file pin the exact string.
+pub const ASSISTANT_SESSION_PREFIX: &str = "draft-assistant-";
+
+/// How the context window is divided between the two clients.
+///
+/// 75/25 rather than an even split, because the two are not symmetric:
+///
+/// - The main discussion is where documents are attached, where a contract's
+///   extracted text has to fit, and where long multi-turn work happens. It is
+///   the client that actually runs out of room.
+/// - The assistant answers about ONE page or ONE open document, and its own
+///   prompt builder already caps what it reads at CONTEXT_CHARS (12k) before
+///   any of this applies. Giving it half the window would reserve space it
+///   has no way to spend, at the direct expense of the client that can.
+///
+/// These are a share of the window each client may FILL. They are not slots
+/// and they do not create concurrency: with `--parallel 1` the engine still
+/// serves one request at a time, so two simultaneous requests queue rather
+/// than run together. Concurrency is a separate change (`--parallel 2`) with
+/// its own cost — it disables warm start. See gguf_runtime.rs.
+pub const CHAT_CONTEXT_PCT: usize = 75;
+pub const ASSISTANT_CONTEXT_PCT: usize = 25;
+
+/// Room kept inside each client's share for the model's own ANSWER.
+///
+/// Per-client rather than one shared figure, and that is a correctness
+/// requirement once `--parallel 2` is on, not a tuning preference.
+///
+/// With a unified KV buffer both sequences draw from ONE pool, so the worst
+/// case is both clients at full prompt AND generating at once. If the shares
+/// were taken from a window that had already had a single reserve removed,
+/// that worst case would exceed the pool: each client would be sized as though
+/// it alone needed room to answer. Splitting the WHOLE window and then having
+/// each client subtract its own reserve makes the two peaks sum to the window
+/// exactly — see `both_clients_at_full_budget_fit_the_window`.
+///
+/// The assistant's is smaller because its answers are: its system prompt
+/// instructs it to answer concisely, and it is a side panel, not the surface
+/// where long documents get drafted. Giving it a chat-sized reserve inside a
+/// quarter-window share would leave almost nothing for the document it is
+/// supposed to be reading.
+pub const CHAT_GENERATION_RESERVE: usize = 2048;
+pub const ASSISTANT_GENERATION_RESERVE: usize = 768;
+
+/// Smallest prompt budget worth serving. Below roughly this, retrieval returns
+/// nothing usable and the client silently stops being able to see the document
+/// it is answering about — which looks like a broken assistant, not a small
+/// window.
+pub const MIN_PROMPT_BUDGET: usize = 512;
+
+/// Which client a request came from, and therefore its share of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    /// The main discussion — the larger share.
+    Chat,
+    /// The side panel — the smaller share.
+    Assistant,
+}
+
+impl ClientKind {
+    /// Classify by session id. Anything not carrying the assistant prefix is
+    /// Chat, so an unrecognised or malformed id degrades to the full budget
+    /// and behaves as the app did before this split existed.
+    pub fn of_session(session_id: &str) -> Self {
+        if session_id.starts_with(ASSISTANT_SESSION_PREFIX) {
+            Self::Assistant
+        } else {
+            Self::Chat
+        }
+    }
+
+    pub fn context_pct(self) -> usize {
+        match self {
+            Self::Chat => CHAT_CONTEXT_PCT,
+            Self::Assistant => ASSISTANT_CONTEXT_PCT,
+        }
+    }
+
+    /// Room this client keeps for the model's answer, inside its own share.
+    pub fn generation_reserve(self) -> usize {
+        match self {
+            Self::Chat => CHAT_GENERATION_RESERVE,
+            Self::Assistant => ASSISTANT_GENERATION_RESERVE,
+        }
+    }
+}
+
+/// The context window used while answers come from a cloud model.
+pub const CLOUD_CONTEXT_TOKENS: usize = 32_768;
+
 impl SharedSystemState {
     pub fn new(config: Config, database: Arc<MemoryDatabase>) -> anyhow::Result<Self> {
         info!("Initializing shared system state");
 
         let conversations = Arc::new(ConversationHierarchy {
             sessions: DashMap::new(),
-            message_queues: DashMap::new(),
             counters: Arc::new(AtomicCounters::new()),
         });
 
@@ -206,13 +298,65 @@ impl SharedSystemState {
         model_format: crate::model_runtime::ModelFormat,
         engine_binary: Option<std::path::PathBuf>,
     ) -> crate::model_runtime::RuntimeConfig {
-        let gpu_layers = if self.config.gpu_layers_auto
+        // The embedding server runs on whichever engine the chat model uses.
+        if let Some(ref binary) = engine_binary {
+            crate::rag::embedder::set_engine_binary(binary.clone());
+        }
+        // One plan for this model on this machine (model_runtime::machine):
+        // GPU layers, window size and RAM prefix cache from measured GPU
+        // memory, RAM and storage and the model's own shape. Falls back to the
+        // per-part logic below when the model's header cannot be read.
+        let planned = if model_format == crate::model_runtime::ModelFormat::GGUF
+            && !model_path.as_os_str().is_empty()
+            && (self.config.gpu_layers_auto || self.config.ctx_size_auto)
+        {
+            match crate::model_runtime::gguf_metadata::read_model_info(&model_path) {
+                Ok(info) => {
+                    use crate::model_runtime::machine;
+                    let shape = machine::ModelShape::from_gguf(&info, &self.config.kv_cache_type);
+                    let trained = if shape.trained_ctx > 0 { shape.trained_ctx } else { self.config.ctx_size };
+                    let ceiling = crate::tuning::parse_or("CTX_CEILING", 32_768u32);
+                    let (want_ctx, ctx_fixed) = if self.config.ctx_size_auto {
+                        (trained.min(ceiling), false)
+                    } else {
+                        (self.config.ctx_size.min(trained), true)
+                    };
+                    let limits = machine::PlanLimits {
+                        want_ctx,
+                        ctx_fixed,
+                        min_ctx: 1024.min(want_ctx),
+                        cache_ram_cap_mb: self.config.cache_ram_mb.max(0) as u64,
+                        kv_store_cap_mb: crate::tuning::parse_or("KV_STORE_MAX_MB", 20_480u64),
+                        embed_gpu_mb: machine::embedder_gpu_need_mb(),
+                        embed_mode: machine::EmbedMode::from_env(),
+                    };
+                    let profile = machine::profile(&crate::model_runtime::slot_cache::slot_cache_dir());
+                    let plan = machine::plan(&profile, &shape, &limits);
+                    if !plan.fits {
+                        warn!("{} does not fit this machine's memory: {}", info.architecture, plan.summary);
+                    }
+                    machine::set_current(plan.clone());
+                    Some(plan)
+                }
+                Err(e) => {
+                    warn!("Could not read the model header for resource planning ({}); using per-part defaults", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let gpu_layers = if let (true, Some(p)) = (self.config.gpu_layers_auto, planned.as_ref()) {
+            p.gpu_layers
+        } else if self.config.gpu_layers_auto
             && model_format == crate::model_runtime::ModelFormat::GGUF
             && !model_path.as_os_str().is_empty()
         {
             match crate::model_runtime::gpu_offload::compute_gpu_layers_for_model(
                 &model_path,
                 self.config.ctx_size,
+                &self.config.kv_cache_type,
             ) {
                 Ok(plan) => plan.gpu_layers,
                 Err(e) => {
@@ -239,7 +383,9 @@ impl SharedSystemState {
         // any real machine for a large number. Clamp to the GGUF header's
         // own {arch}.context_length when the model declares one. Loud, never
         // silent: every clamp is logged with the exact reason.
-        let context_size = if model_format == crate::model_runtime::ModelFormat::GGUF
+        let context_size = if let (true, Some(p)) = (self.config.ctx_size_auto, planned.as_ref()) {
+            p.ctx
+        } else if model_format == crate::model_runtime::ModelFormat::GGUF
             && !model_path.as_os_str().is_empty()
         {
             match crate::model_runtime::gguf_metadata::read_model_info(&model_path) {
@@ -306,6 +452,11 @@ impl SharedSystemState {
             self.config.ctx_size
         };
 
+        // How many requests the engine serves at once: one (see
+        // DEFAULT_PARALLEL_SLOTS), which halves the KV cache and enables warm
+        // start.
+        let parallel_slots = crate::tuning::chat_parallel_slots();
+
         crate::model_runtime::RuntimeConfig {
             model_path,
             format: model_format,
@@ -317,13 +468,40 @@ impl SharedSystemState {
             threads_batch: self.config.threads_batch,
             gpu_layers,
             cache_reuse: self.config.cache_reuse,
-            slot_save_path: Some(crate::model_runtime::slot_cache::slot_cache_dir()),
+            // Warm start and multiple slots are mutually exclusive, and the
+            // choice is made HERE, once, rather than in the two places that
+            // consume it. Slot save/restore addresses a slot by index, and
+            // llama-server assigns slots by prompt similarity rather than by
+            // client, so with two slots "slot 0" is whichever conversation
+            // happened to look similar — restoring it would hand one thread's
+            // KV state to another.
+            //
+            // This is the real cost of --parallel 2: the first message after
+            // launch re-prefills instead of resuming a saved cache. It is paid
+            // on one message per run, against a collision between the chat and
+            // the assistant that otherwise blocks silently every time it
+            // happens.
+            slot_save_path: if parallel_slots > 1 {
+                None
+            } else {
+                Some(crate::model_runtime::slot_cache::slot_cache_dir())
+            },
+            parallel_slots,
             // Text-only by default. Callers that activate a VISION model set
             // this afterwards, from the model registry (production) or the
             // MMPROJ_PATH dev override (thread_server manual load) — the
             // mmproj belongs to a specific model, so it can never be derived
             // from static config here.
             mmproj_path: None,
+            projector_loaded: false,
+            kv_cache_type: Some(self.config.kv_cache_type.clone()).filter(|t| t != "f16"),
+            // The planned RAM prefix cache never exceeds the configured cap and
+            // shrinks on machines with little free RAM; 0 and -1 keep their
+            // engine meanings (off, unlimited).
+            cache_ram_mb: Some(match planned.as_ref() {
+                Some(p) if self.config.cache_ram_mb > 0 => (p.cache_ram_mb as i64).min(self.config.cache_ram_mb),
+                _ => self.config.cache_ram_mb,
+            }),
             runtime_binary: engine_binary,
             extra_config: serde_json::json!({}),
         }
@@ -350,22 +528,20 @@ impl SharedSystemState {
         new_session
     }
 
-    /// Queue message for asynchronous processing
-    pub fn queue_message(&self, session_id: &str, message: crate::memory::Message) -> bool {
-        let queue = self.conversations.message_queues
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(crossbeam_queue::ArrayQueue::new(1000)));
-
-        queue.push(PendingMessage {
-            message,
-            timestamp: std::time::Instant::now(),
-        }).is_ok()
-    }
-
     /// Whether the currently running runtime is VISION-capable and ready:
     /// started with a multimodal projector (--mmproj) and passing health.
     /// The single source of truth the extraction layer and /models/active
     /// both read — deterministic, never inferred from model names.
+    /// The chosen model is a vision model, whether it is loaded or asleep
+    /// (for display; an image wakes a sleeping one, see lifecycle.rs).
+    pub async fn vision_chosen(&self) -> bool {
+        let rt = self.runtime_manager.read().ok().and_then(|g| g.clone());
+        match rt {
+            Some(rt) => rt.get_current_config().await.map(|c| c.mmproj_path.is_some()).unwrap_or(false),
+            None => false,
+        }
+    }
+
     pub async fn vision_active(&self) -> bool {
         let rt = self.runtime_manager.read().ok().and_then(|g| g.clone());
         match rt {
@@ -375,7 +551,7 @@ impl SharedSystemState {
                 }
                 rt.get_current_config()
                     .await
-                    .map(|c| c.mmproj_path.is_some())
+                    .map(|c| c.mmproj_path.is_some() && c.projector_loaded)
                     .unwrap_or(false)
             }
             None => false,
@@ -391,12 +567,28 @@ impl SharedSystemState {
     ///   3. The static config value (no runtime active yet).
     /// A generation reserve is subtracted so retrieval/injection budgets
     /// never crowd out room for the model's own answer.
+    ///
+    /// This returns the WHOLE usable window. Callers serving a specific client
+    /// want `context_budget_for` instead, which applies that client's share.
     pub async fn current_context_budget(&self) -> usize {
-        const GENERATION_RESERVE: usize = 2048;
         const FLOOR: usize = 1024;
+        let raw = self.raw_context_window().await;
+        raw.saturating_sub(CHAT_GENERATION_RESERVE).max(FLOOR)
+    }
 
+    /// The full context window the engine is actually running with, before any
+    /// generation reserve is taken out. This is the number the 75/25 split is
+    /// applied to, because the shares have to cover each client's answer room
+    /// as well as its prompt.
+    pub async fn raw_context_window(&self) -> usize {
+        // On Cloud the local engine's window does not apply. Cloud models
+        // take 128k tokens or more; 32k keeps room for retrieval and history
+        // while holding cost and latency to a sensible size per answer.
+        if self.llm_worker.cloud().is_some() {
+            return CLOUD_CONTEXT_TOKENS;
+        }
         let rt = self.runtime_manager.read().ok().and_then(|g| g.clone());
-        let raw = if let Some(rt) = rt {
+        if let Some(rt) = rt {
             if let Some(live) = rt.get_effective_context().await {
                 live as usize
             } else if let Some(cfg) = rt.get_current_config().await {
@@ -406,22 +598,72 @@ impl SharedSystemState {
             }
         } else {
             self.config.ctx_size as usize
-        };
-
-        raw.saturating_sub(GENERATION_RESERVE).max(FLOOR)
+        }
     }
 
-    /// Process queued messages for a session
-    pub async fn process_queued_messages(&self, session_id: &str) -> Vec<PendingMessage> {
-        let mut messages = Vec::new();
+    /// The context budget one client may fill, in tokens.
+    ///
+    /// The share is applied to the window AFTER the generation reserve has
+    /// already been taken out by `current_context_budget`, not before. That
+    /// ordering matters: the reserve is room for the model's ANSWER and is not
+    /// divisible between clients — both need a full answer's worth of room,
+    /// and taking 25% of a budget that still contained it would quietly bill
+    /// the assistant for a reserve it cannot use.
+    ///
+    /// The floor is the same one `current_context_budget` applies. Without it,
+    /// 25% of an already-floored 1024-token window would be 256 tokens, which
+    /// is below the point where retrieval produces anything usable — the
+    /// assistant would silently stop being able to see the page it is
+    /// answering about, on exactly the low-spec machines this app targets.
+    pub async fn context_budget_for(&self, kind: ClientKind) -> usize {
+        let window = self.raw_context_window().await;
+        // The 75/25 shares are kept with one slot as well: they cap how much
+        // prompt each answer processes, which is where the compute goes.
+        Self::prompt_budget(window, kind)
+    }
 
-        if let Some(queue) = self.conversations.message_queues.get(session_id) {
-            while let Some(msg) = queue.pop() {
-                messages.push(msg);
+    /// The share arithmetic, split out so it can be tested without a live
+    /// runtime — and so the invariant that matters (two clients at full budget
+    /// fit one window) is asserted against the real function rather than a
+    /// copy of it in a test.
+    ///
+    /// # Why this is not simply `window * pct / 100 - reserve`
+    ///
+    /// That was the first version, and `both_clients_at_full_budget_fit_the_window`
+    /// caught it overcommitting by 256 tokens on a 4096 window. The cause is
+    /// the minimum prompt budget: on a small window the assistant's 25% share
+    /// cannot hold MIN_PROMPT_BUDGET plus its reserve, so raising it to the
+    /// floor pushed its peak past its own share — and with a shared KV buffer,
+    /// past the window.
+    ///
+    /// The floor is worth keeping (a 256-token prompt cannot retrieve anything
+    /// usable, so the assistant would appear broken rather than small), so the
+    /// resolution is to fund it from the client that has slack rather than
+    /// from nowhere: the assistant is sized first, and CHAT TAKES WHAT IS
+    /// LEFT. On any window roomy enough for the plain percentages this is
+    /// exactly 75/25 — at 8192 it still yields 4096 and 1280 — and it only
+    /// diverges where the arithmetic would otherwise have been unsafe.
+    pub fn prompt_budget(window: usize, kind: ClientKind) -> usize {
+        // The assistant is sized from its share, then floored.
+        let assistant_prompt = (window * ASSISTANT_CONTEXT_PCT / 100)
+            .saturating_sub(ASSISTANT_GENERATION_RESERVE)
+            .max(MIN_PROMPT_BUDGET);
+
+        match kind {
+            ClientKind::Assistant => assistant_prompt.min(window),
+            ClientKind::Chat => {
+                // Everything the assistant's worst case does not need. On a
+                // roomy window this equals chat's own 75% share; on a tight
+                // one it is what is genuinely left, which is the only figure
+                // that keeps the shared buffer safe.
+                let assistant_peak = assistant_prompt + ASSISTANT_GENERATION_RESERVE;
+                window
+                    .saturating_sub(assistant_peak)
+                    .saturating_sub(CHAT_GENERATION_RESERVE)
+                    .max(MIN_PROMPT_BUDGET)
+                    .min(window)
             }
         }
-
-        messages
     }
 }
 
@@ -429,7 +671,6 @@ impl ConversationHierarchy {
     pub fn new() -> Self {
         Self {
             sessions: DashMap::new(),
-            message_queues: DashMap::new(),
             counters: Arc::new(AtomicCounters::new()),
         }
     }
@@ -444,6 +685,14 @@ pub struct UnifiedAppState {
     pub context_orchestrator: Arc<tokio::sync::RwLock<Option<ContextOrchestrator>>>,
     pub llm_worker: Arc<LLMWorker>,
     pub auth_state: Option<Arc<crate::api::auth_api::AuthState>>,
+}
+
+/// Lets handlers that only need the shared system state take
+/// `State<Arc<SharedSystemState>>` (memory_api, admin_api).
+impl axum::extract::FromRef<UnifiedAppState> for Arc<SharedSystemState> {
+    fn from_ref(state: &UnifiedAppState) -> Self {
+        Arc::clone(&state.shared_state)
+    }
 }
 
 impl UnifiedAppState {
@@ -481,23 +730,36 @@ mod tests {
     /// observable by spawning a real process - so this pins the one link that
     /// can be checked in isolation.
     #[test]
-    fn the_runtime_config_always_requests_a_slot_save_path() {
+    fn warm_start_and_multiple_slots_are_mutually_exclusive() {
+        // This test previously asserted slot_save_path was ALWAYS set. That
+        // stopped being correct when the default slot count became 2: warm
+        // start restores a slot BY INDEX, and llama-server assigns slots by
+        // prompt similarity rather than by client, so "slot 0" with two slots
+        // is whichever conversation happened to look similar - restoring it
+        // would hand one thread's KV state to another. The rule the config
+        // must uphold now is the exclusivity, not the presence.
         let cfg = state().build_runtime_config(
             std::path::PathBuf::from("model.gguf"),
             crate::model_runtime::ModelFormat::GGUF,
             None,
         );
 
-        let path = cfg
-            .slot_save_path
-            .expect("slot_save_path must be set, or warm start cannot work at all");
-        assert!(
-            path.ends_with(crate::utils::storage_governor::KV_CACHE_DIR),
-            "slot blobs must land in the directory disk accounting and eviction \
-             watch ({}), got {}",
-            crate::utils::storage_governor::KV_CACHE_DIR,
-            path.display()
-        );
+        if cfg.parallel_slots > 1 {
+            assert!(
+                cfg.slot_save_path.is_none(),
+                "warm start must be off with {} slots",
+                cfg.parallel_slots
+            );
+        } else {
+            let path = cfg
+                .slot_save_path
+                .expect("with a single slot, warm start must be enabled");
+            assert!(
+                path.ends_with(crate::utils::storage_governor::KV_CACHE_DIR),
+                "slot blobs must land where disk accounting watches, got {}",
+                path.display()
+            );
+        }
     }
 
     /// Warm start saves whichever conversation last ran inference. If nothing
@@ -506,5 +768,110 @@ mod tests {
     fn no_conversation_has_generated_yet_means_no_active_session() {
         let s = state();
         assert!(s.last_active_session.read().unwrap().is_none());
+    }
+
+    // ── The 75/25 context split ──────────────────────────────────────────
+
+    /// The prefix is a contract with the FRONTEND, and breaking it fails
+    /// silently rather than loudly: a mismatch does not error, it just
+    /// classifies every assistant thread as Chat and hands it the full
+    /// budget. Nothing would look wrong until someone measured it. Pinning
+    /// the literal here means a rename has to come past a red test.
+    #[test]
+    fn assistant_prefix_matches_the_frontend_contract() {
+        assert_eq!(
+            ASSISTANT_SESSION_PREFIX, "draft-assistant-",
+            "must stay byte-identical to DRAFT_ASSISTANT_SESSION_PREFIX in              apps/desktop/src/api/chat.ts"
+        );
+    }
+
+    #[test]
+    fn sessions_are_classified_by_prefix() {
+        // The global panel thread and a per-document thread both carry it.
+        assert_eq!(
+            ClientKind::of_session("draft-assistant-global"),
+            ClientKind::Assistant
+        );
+        assert_eq!(
+            ClientKind::of_session("draft-assistant-42"),
+            ClientKind::Assistant
+        );
+        // A normal discussion id is a timestamp.
+        assert_eq!(ClientKind::of_session("1737000000000"), ClientKind::Chat);
+        // Anything unrecognised degrades to Chat — the pre-split behaviour.
+        assert_eq!(ClientKind::of_session(""), ClientKind::Chat);
+    }
+
+    #[test]
+    fn the_two_shares_are_75_25_and_account_for_the_whole_window() {
+        assert_eq!(ClientKind::Chat.context_pct(), 75);
+        assert_eq!(ClientKind::Assistant.context_pct(), 25);
+        assert_eq!(
+            ClientKind::Chat.context_pct() + ClientKind::Assistant.context_pct(),
+            100,
+            "the shares must not overcommit the window"
+        );
+    }
+
+    /// THE invariant that makes --parallel 2 safe.
+    ///
+    /// With --kv-unified both slots draw from one shared KV buffer, so the
+    /// worst case is both clients holding a full prompt AND generating at the
+    /// same time. If that sums past the window the engine must evict or fail
+    /// mid-answer - a failure that appears only under concurrency, i.e.
+    /// rarely, and in front of a user.
+    ///
+    /// This is precisely why the shares are taken from the WHOLE window and
+    /// each client subtracts its own reserve, rather than one shared reserve
+    /// being removed first and the remainder split.
+    #[test]
+    fn both_clients_at_full_budget_fit_the_window() {
+        for window in [4096usize, 8192, 16_384, 32_768, 131_072] {
+            let chat = SharedSystemState::prompt_budget(window, ClientKind::Chat)
+                + ClientKind::Chat.generation_reserve();
+            let assistant = SharedSystemState::prompt_budget(window, ClientKind::Assistant)
+                + ClientKind::Assistant.generation_reserve();
+            assert!(
+                chat + assistant <= window,
+                "window {}: chat peak {} + assistant peak {} = {} overcommits the shared KV buffer",
+                window, chat, assistant, chat + assistant
+            );
+        }
+    }
+
+    #[test]
+    fn a_roomy_window_divides_as_asked() {
+        // 8192: chat 75% = 6144, less its 2048 reserve = 4096.
+        //       assistant 25% = 2048, less its 768 reserve = 1280.
+        assert_eq!(SharedSystemState::prompt_budget(8192, ClientKind::Chat), 4096);
+        assert_eq!(SharedSystemState::prompt_budget(8192, ClientKind::Assistant), 1280);
+    }
+
+    #[test]
+    fn chat_always_gets_the_larger_prompt_budget() {
+        // The whole point of 75/25. Checked across sizes because the two
+        // reserves differ, so a careless change to either could invert this on
+        // a small window without touching the percentages at all.
+        for window in [2048usize, 4096, 8192, 32_768] {
+            assert!(
+                SharedSystemState::prompt_budget(window, ClientKind::Chat)
+                    >= SharedSystemState::prompt_budget(window, ClientKind::Assistant),
+                "window {}: chat must never get less prompt room than the assistant",
+                window
+            );
+        }
+    }
+
+    #[test]
+    fn no_budget_can_exceed_the_window_that_must_hold_it() {
+        for window in [256usize, 512, 1024] {
+            for kind in [ClientKind::Chat, ClientKind::Assistant] {
+                assert!(
+                    SharedSystemState::prompt_budget(window, kind) <= window,
+                    "window {} / {:?} produced a budget larger than the window",
+                    window, kind
+                );
+            }
+        }
     }
 }

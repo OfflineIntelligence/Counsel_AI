@@ -124,6 +124,84 @@ impl OoxmlPackage {
         Ok(())
     }
 
+    /// Whether a part exists.
+    pub fn has_part(&self, name: &str) -> bool {
+        self.parts.contains_key(name)
+    }
+
+    /// Add a brand-new part at the end of the package.
+    ///
+    /// Callers own the bookkeeping a new part needs — a content type (see
+    /// `ensure_default_content_type` / `ensure_override_content_type`) and a
+    /// relationship from whichever part references it (`add_relationship`).
+    /// Refuses to overwrite: replacing goes through `replace_part`.
+    pub fn add_part(&mut self, name: &str, bytes: Vec<u8>) -> Result<()> {
+        if self.parts.contains_key(name) {
+            return Err(anyhow!("Refusing to add '{}': that part already exists.", name));
+        }
+        self.order.push(name.to_string());
+        self.parts.insert(name.to_string(), bytes);
+        Ok(())
+    }
+
+    /// A part name under `dir` with `stem` and `ext` that is not yet taken,
+    /// e.g. `word/media/image3.png`.
+    pub fn unused_part_name(&self, dir: &str, stem: &str, ext: &str) -> String {
+        (1..)
+            .map(|n| format!("{}/{}{}.{}", dir.trim_end_matches('/'), stem, n, ext))
+            .find(|name| !self.parts.contains_key(name))
+            .expect("an unbounded range always yields a free name")
+    }
+
+    /// Register a `<Default Extension=…>` in `[Content_Types].xml` if absent.
+    pub fn ensure_default_content_type(&mut self, ext: &str, content_type: &str) -> Result<()> {
+        let source = self.part_str(CONTENT_TYPES_PART)?.to_string();
+        let needle = format!("Extension=\"{}\"", ext);
+        if source.to_ascii_lowercase().contains(&needle.to_ascii_lowercase()) {
+            return Ok(());
+        }
+        let entry = format!("<Default Extension=\"{}\" ContentType=\"{}\"/>", ext, content_type);
+        self.replace_part(CONTENT_TYPES_PART, insert_before_close(&source, "Types", &entry)?.into_bytes())
+    }
+
+    /// Register an `<Override PartName=…>` in `[Content_Types].xml` if absent.
+    pub fn ensure_override_content_type(&mut self, part: &str, content_type: &str) -> Result<()> {
+        let source = self.part_str(CONTENT_TYPES_PART)?.to_string();
+        let part_name = format!("/{}", part.trim_start_matches('/'));
+        if source.contains(&format!("PartName=\"{}\"", part_name)) {
+            return Ok(());
+        }
+        let entry = format!("<Override PartName=\"{}\" ContentType=\"{}\"/>", part_name, content_type);
+        self.replace_part(CONTENT_TYPES_PART, insert_before_close(&source, "Types", &entry)?.into_bytes())
+    }
+
+    /// Append a relationship to a `.rels` part, creating the part when the
+    /// source part has none yet. Returns the new relationship id.
+    ///
+    /// `target` is written as given — relative to the source part's directory.
+    pub fn add_relationship(&mut self, rels_part: &str, rel_type: &str, target: &str) -> Result<String> {
+        if !self.has_part(rels_part) {
+            self.add_part(
+                rels_part,
+                b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>"
+                    .to_vec(),
+            )?;
+        }
+        let source = self.part_str(rels_part)?.to_string();
+        let existing = read_relationships(&source)?;
+        let id = (1..)
+            .map(|n| format!("rIdCounsel{}", n))
+            .find(|id| !existing.contains_key(id))
+            .expect("an unbounded range always yields a free id");
+        let entry = format!(
+            "<Relationship Id=\"{}\" Type=\"{}\" Target=\"{}\"/>",
+            id, rel_type, target
+        );
+        self.replace_part(rels_part, insert_before_close(&source, "Relationships", &entry)?.into_bytes())?;
+        Ok(id)
+    }
+
     /// Every part name, in original package order.
     pub fn part_names(&self) -> &[String] {
         &self.order
@@ -164,6 +242,41 @@ impl OoxmlPackage {
             writer.finish().context("could not finalise the package")?;
         }
         Ok(out)
+    }
+}
+
+pub const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
+
+/// Insert `entry` just before the closing tag of the root element `local`,
+/// whatever prefix it was written with. Handles a self-closing root too.
+pub fn insert_before_close(source: &str, local: &str, entry: &str) -> Result<String> {
+    let s = super::spans::scan(source)?;
+    let root = s
+        .elements
+        .iter()
+        .find(|e| e.local == local)
+        .ok_or_else(|| anyhow!("expected a <{}> element in this part", local))?;
+    if root.outer.end == root.start_tag.end && root.start_tag.of(source).ends_with("/>") {
+        // `<Types/>` — open it up.
+        let tag = root.start_tag.of(source);
+        let open = format!("{}>", tag.trim_end_matches("/>").trim_end());
+        let mut out = String::with_capacity(source.len() + entry.len() + 16);
+        out.push_str(&source[..root.outer.start]);
+        out.push_str(&open);
+        out.push_str(entry);
+        out.push_str(&format!("</{}>", root.qname));
+        out.push_str(&source[root.outer.end..]);
+        return Ok(out);
+    }
+    let at = root.inner.end;
+    Ok(format!("{}{}{}", &source[..at], entry, &source[at..]))
+}
+
+/// The `_rels/X.rels` part that holds relationships for `part`.
+pub fn rels_part_for(part: &str) -> String {
+    match part.rsplit_once('/') {
+        Some((dir, file)) => format!("{}/_rels/{}.rels", dir, file),
+        None => format!("_rels/{}.rels", part),
     }
 }
 

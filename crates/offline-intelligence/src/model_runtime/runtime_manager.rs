@@ -6,8 +6,9 @@
 
 use super::runtime_trait::{ModelRuntime, ModelFormat, RuntimeConfig, InferenceRequest, InferenceResponse, RuntimeMetadata};
 use super::format_detector::FormatDetector;
-use crate::model_runtime::{GGUFRuntime, GGMLRuntime, ONNXRuntime, TensorRTRuntime, SafetensorsRuntime, CoreMLRuntime};
+use crate::model_runtime::GGUFRuntime;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 use tracing::{info, error};
 
@@ -18,6 +19,24 @@ pub enum RuntimeState {
     Switching { model_name: String },
     Ready,
     Restarting,
+    /// A model is chosen but unloaded to free RAM and VRAM. Its config is
+    /// parked in the holder; `wake()` starts it again.
+    Sleeping { model_name: String },
+}
+
+fn model_name_of(config: &RuntimeConfig) -> String {
+    config
+        .model_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Runtime holder for lock-free access
@@ -32,6 +51,8 @@ pub struct RuntimeManager {
     holder: Arc<ArcSwap<RuntimeHolder>>,
     /// Lifecycle state (lock-free via ArcSwap)
     state: Arc<ArcSwap<RuntimeState>>,
+    /// Wall clock millis of the last request that needed the model.
+    last_activity: AtomicU64,
 }
 
 impl RuntimeManager {
@@ -42,6 +63,71 @@ impl RuntimeManager {
                 config: None,
             }))),
             state: Arc::new(ArcSwap::new(Arc::new(RuntimeState::Idle))),
+            last_activity: AtomicU64::new(now_millis()),
+        }
+    }
+
+    /// Record that the model is in use now.
+    pub fn touch(&self) {
+        self.last_activity.store(now_millis(), Ordering::SeqCst);
+    }
+
+    /// Time since the model was last used.
+    pub fn idle_for(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(now_millis().saturating_sub(self.last_activity.load(Ordering::SeqCst)))
+    }
+
+    pub fn is_sleeping(&self) -> bool {
+        matches!(**self.state.load(), RuntimeState::Sleeping { .. })
+    }
+
+    /// Choose a model without loading it (lazy startup). Any running server is
+    /// stopped. The format is detected from the file when possible.
+    pub async fn park(&self, mut config: RuntimeConfig) -> anyhow::Result<()> {
+        if config.model_path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        if let Some(format) = FormatDetector::detect_from_path(&config.model_path) {
+            config.format = format;
+        }
+        self.shutdown_internal().await?;
+        let model_name = model_name_of(&config);
+        self.holder.store(Arc::new(RuntimeHolder { runtime: None, config: Some(config) }));
+        self.state.store(Arc::new(RuntimeState::Sleeping { model_name: model_name.clone() }));
+        info!("Runtime state → Sleeping ({}): model unloaded, RAM and VRAM released", model_name);
+        Ok(())
+    }
+
+    /// Unload the running model but keep it chosen. No-op unless Ready.
+    pub async fn sleep(&self) -> anyhow::Result<()> {
+        if **self.state.load() != RuntimeState::Ready {
+            return Ok(());
+        }
+        match self.holder.load().config.clone() {
+            Some(config) => self.park(config).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Load the parked model again. No-op unless Sleeping. On failure the
+    /// model stays parked so the next request retries.
+    pub async fn wake(&self) -> anyhow::Result<()> {
+        if !self.is_sleeping() {
+            return Ok(());
+        }
+        let Some(config) = self.holder.load().config.clone() else {
+            return Ok(());
+        };
+        info!("Waking model {}", model_name_of(&config));
+        match self.initialize(config.clone()).await {
+            Ok(_) => {
+                self.touch();
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.park(config).await;
+                Err(e)
+            }
         }
     }
 
@@ -105,12 +191,13 @@ impl RuntimeManager {
 
         // Create appropriate runtime based on format
         let mut runtime: Box<dyn ModelRuntime> = match config.format {
-            ModelFormat::GGUF => Box::new(GGUFRuntime::new()),
-            ModelFormat::GGML => Box::new(GGMLRuntime::new()),
-            ModelFormat::ONNX => Box::new(ONNXRuntime::new()),
-            ModelFormat::TensorRT => Box::new(TensorRTRuntime::new()),
-            ModelFormat::Safetensors => Box::new(SafetensorsRuntime::new()),
-            ModelFormat::CoreML => Box::new(CoreMLRuntime::new()),
+            // llama.cpp is the only engine provisioned; legacy GGML files
+            // load through the same llama-server.
+            ModelFormat::GGUF | ModelFormat::GGML => Box::new(GGUFRuntime::new()),
+            other => {
+                self.state.store(Arc::new(RuntimeState::Idle));
+                anyhow::bail!("{:?} models are not supported: only GGUF models run on the llama.cpp engine", other);
+            }
         };
 
         // Initialize the runtime
@@ -140,6 +227,7 @@ impl RuntimeManager {
         });
         self.holder.store(new_holder);
         self.state.store(Arc::new(RuntimeState::Ready));
+        self.touch();
         info!("Runtime state → Ready");
 
         Ok(base_url)

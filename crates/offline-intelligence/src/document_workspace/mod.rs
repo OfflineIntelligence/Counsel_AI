@@ -15,6 +15,7 @@
 //! Version 1 is never amended, so the pristine original is recoverable for the
 //! life of the draft, and the user's library cannot be damaged by editing.
 
+pub mod compare;
 pub mod ooxml;
 pub mod pdf_workspace;
 pub mod text_workspace;
@@ -73,6 +74,16 @@ pub fn editable_format_of(filename: &str) -> Result<String> {
         filename,
         EDITABLE_FORMATS.join(", ").to_uppercase()
     ))
+}
+
+/// How many edits Undo remembers per draft.
+pub const MAX_UNDO_STEPS: usize = 100;
+
+/// Which of a draft's two snapshot stacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoStack {
+    Undo,
+    Redo,
 }
 
 /// Orchestrates draft files on disk alongside the metadata in `DraftsStore`.
@@ -164,6 +175,9 @@ impl DraftManager {
             bytes.len(),
             origin_kind
         );
+        // Indexed on creation, so an imported document is findable before
+        // anyone has opened it — which is exactly when search matters most.
+        self.reindex(db, draft.id);
         Ok(draft)
     }
 
@@ -183,6 +197,37 @@ impl DraftManager {
             }
             "txt" => Ok(()),
             other => Err(anyhow!("unsupported workspace format '{}'", other)),
+        }
+    }
+
+    /// Re-index a draft's text for search.
+    ///
+    /// Deliberately infallible from the caller's point of view: a failure to
+    /// index must never fail the save that triggered it. Losing a search
+    /// result is an inconvenience the backfill repairs on next startup;
+    /// losing an edit is not recoverable at all.
+    ///
+    /// # Cost
+    ///
+    /// This parses the document a second time. `apply_patches` hands back
+    /// bytes rather than a model, so the model it built internally is already
+    /// gone by the time we get here. Avoiding the reparse would mean widening
+    /// the `apply` signature through all three OOXML modules to return both —
+    /// a large change to save a few milliseconds on a debounced save path.
+    pub fn reindex(&self, db: &MemoryDatabase, draft_id: i64) {
+        let outcome = (|| -> Result<()> {
+            let draft = db
+                .drafts
+                .get_draft(draft_id)?
+                .ok_or_else(|| anyhow!("draft {} not found", draft_id))?;
+            let model = self.view_model(db, draft_id)?;
+            let body = view_model::plain_text(&model);
+            db.search
+                .index_draft(draft_id, &draft.title, &body, draft.current_version)
+        })();
+
+        if let Err(e) = outcome {
+            warn!("Draft {} could not be indexed for search: {}", draft_id, e);
         }
     }
 
@@ -229,6 +274,24 @@ impl DraftManager {
     /// from an explicit save (cut a new one) — the rule that stops debounced
     /// typing from producing hundreds of versions. Version 1 is never amended:
     /// the first edit after opening always cuts version 2.
+    /// View model for a SPECIFIC version, for comparison against history.
+    ///
+    /// `view_model` reads whatever is current; this reads a named version, so
+    /// "what did this clause say three saves ago" is answerable.
+    pub fn view_model_at(
+        &self,
+        db: &MemoryDatabase,
+        draft_id: i64,
+        version_no: i64,
+    ) -> Result<DraftViewModel> {
+        let draft = db
+            .drafts
+            .get_draft(draft_id)?
+            .ok_or_else(|| anyhow!("draft {} not found", draft_id))?;
+        let bytes = self.read_version(db, draft_id, version_no)?;
+        view_model::build(&draft.format, &bytes, version_no)
+    }
+
     pub fn apply_patches(
         &self,
         db: &MemoryDatabase,
@@ -246,6 +309,33 @@ impl DraftManager {
         let new_bytes = view_model::apply(&draft.format, &current_bytes, patches)?;
         let patch_json = serde_json::to_string(patches).ok();
 
+        // Every change that alters the bytes is one undo step; a new edit
+        // makes whatever was undone before it unreachable, as in any editor.
+        if new_bytes != current_bytes {
+            self.push_snapshot(draft_id, UndoStack::Undo, &draft.format, &current_bytes)?;
+            self.clear_stack(draft_id, UndoStack::Redo);
+        }
+
+        self.write_current(db, draft_id, &new_bytes, cut_new_version, patch_json.as_deref(), label)
+    }
+
+    /// Persist `new_bytes` as the draft's current state: amend the current
+    /// version, or cut a new one.
+    fn write_current(
+        &self,
+        db: &MemoryDatabase,
+        draft_id: i64,
+        new_bytes: &[u8],
+        cut_new_version: bool,
+        patch_json: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<i64> {
+        let draft = db
+            .drafts
+            .get_draft(draft_id)?
+            .ok_or_else(|| anyhow!("draft {} not found", draft_id))?;
+        let patches_len = patch_json.map(|p| p.matches("\"op\"").count()).unwrap_or(0);
+
         // Amend only when explicitly allowed AND we are not sitting on the
         // pristine original.
         let amend = !cut_new_version && draft.current_version > 1;
@@ -255,16 +345,13 @@ impl DraftManager {
                 .drafts
                 .current_version(draft_id)?
                 .ok_or_else(|| anyhow!("draft {} has no current version", draft_id))?;
-            std::fs::write(self.absolute(&version.storage_path), &new_bytes)?;
-            db.drafts.amend_current_version(
-                draft_id,
-                new_bytes.len() as i64,
-                patch_json.as_deref(),
-            )?;
+            std::fs::write(self.absolute(&version.storage_path), new_bytes)?;
+            db.drafts.amend_current_version(draft_id, new_bytes.len() as i64, patch_json)?;
             // The version number did not change, so the cache key did not
             // either — this is the case that would otherwise serve a stale
             // page image for edits made inside the amend window.
             self.prune_page_cache(draft_id);
+            self.reindex(db, draft_id);
             Ok(version.version_no)
         } else {
             let next = draft.current_version + 1;
@@ -273,24 +360,94 @@ impl DraftManager {
             if let Some(parent) = absolute.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&absolute, &new_bytes)?;
-            let version_no = db.drafts.add_version(
-                draft_id,
-                &relative,
-                new_bytes.len() as i64,
-                patch_json.as_deref(),
-                label,
-            )?;
+            std::fs::write(&absolute, new_bytes)?;
+            let version_no = db.drafts.add_version(draft_id, &relative, new_bytes.len() as i64, patch_json, label)?;
             self.prune_page_cache(draft_id);
+            self.reindex(db, draft_id);
             info!(
                 "Draft {} saved as version {} ({} patches, {} bytes)",
                 draft_id,
                 version_no,
-                patches.len(),
+                patches_len,
                 new_bytes.len()
             );
             Ok(version_no)
         }
+    }
+
+    // ------------------------------------------------------------ undo / redo
+
+    fn stack_dir(&self, draft_id: i64, stack: UndoStack) -> PathBuf {
+        self.draft_dir(draft_id).join(match stack {
+            UndoStack::Undo => "undo",
+            UndoStack::Redo => "redo",
+        })
+    }
+
+    /// Snapshot files in a stack, oldest first. Named by a zero-padded
+    /// sequence number so lexical order is push order.
+    fn stack_entries(&self, draft_id: i64, stack: UndoStack) -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(self.stack_dir(draft_id, stack))
+            .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect())
+            .unwrap_or_default();
+        entries.sort();
+        entries
+    }
+
+    fn push_snapshot(&self, draft_id: i64, stack: UndoStack, format: &str, bytes: &[u8]) -> Result<()> {
+        let dir = self.stack_dir(draft_id, stack);
+        std::fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
+        let entries = self.stack_entries(draft_id, stack);
+        let next = entries
+            .last()
+            .and_then(|p| p.file_stem()?.to_str()?.parse::<u64>().ok())
+            .map(|n| n + 1)
+            .unwrap_or(1);
+        std::fs::write(dir.join(format!("{:010}.{}", next, format)), bytes)?;
+        // Bounded: the oldest steps fall off, exactly as in Word.
+        let entries = self.stack_entries(draft_id, stack);
+        if entries.len() > MAX_UNDO_STEPS {
+            for old in &entries[..entries.len() - MAX_UNDO_STEPS] {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_stack(&self, draft_id: i64, stack: UndoStack) {
+        let _ = std::fs::remove_dir_all(self.stack_dir(draft_id, stack));
+    }
+
+    /// How many steps can be undone and redone.
+    pub fn undo_depth(&self, draft_id: i64) -> (usize, usize) {
+        (self.stack_entries(draft_id, UndoStack::Undo).len(), self.stack_entries(draft_id, UndoStack::Redo).len())
+    }
+
+    /// Step back (`Undo`) or forward (`Redo`) one edit.
+    ///
+    /// The restored bytes are written the way an autosave is — amending the
+    /// current version — so undoing does not litter the version history. The
+    /// state being left goes onto the opposite stack, so every undo can be
+    /// redone. Returns `None` when there is nothing to step to.
+    pub fn step(&self, db: &MemoryDatabase, draft_id: i64, direction: UndoStack) -> Result<Option<i64>> {
+        let draft = db
+            .drafts
+            .get_draft(draft_id)?
+            .ok_or_else(|| anyhow!("draft {} not found", draft_id))?;
+        let Some(snapshot) = self.stack_entries(draft_id, direction).pop() else {
+            return Ok(None);
+        };
+        let target = std::fs::read(&snapshot).with_context(|| format!("could not read {}", snapshot.display()))?;
+        let current = self.read_current(db, draft_id)?;
+
+        let opposite = match direction {
+            UndoStack::Undo => UndoStack::Redo,
+            UndoStack::Redo => UndoStack::Undo,
+        };
+        self.push_snapshot(draft_id, opposite, &draft.format, &current)?;
+        let version = self.write_current(db, draft_id, &target, false, None, None)?;
+        std::fs::remove_file(&snapshot).ok();
+        Ok(Some(version))
     }
 
     /// Restore an old version by writing its bytes as a NEW version, so
@@ -301,6 +458,13 @@ impl DraftManager {
             .get_draft(draft_id)?
             .ok_or_else(|| anyhow!("draft {} not found", draft_id))?;
         let bytes = self.read_version(db, draft_id, version_no)?;
+        // A restore is an edit like any other, so Undo can take it back.
+        if let Ok(current) = self.read_current(db, draft_id) {
+            if current != bytes {
+                self.push_snapshot(draft_id, UndoStack::Undo, &draft.format, &current)?;
+                self.clear_stack(draft_id, UndoStack::Redo);
+            }
+        }
 
         let next = draft.current_version + 1;
         let relative = Self::relative_version_path(draft_id, next, &draft.format);
@@ -317,12 +481,20 @@ impl DraftManager {
             Some(&format!("Restored from v{}", version_no)),
         )?;
         self.prune_page_cache(draft_id);
+        self.reindex(db, draft_id);
         info!("Draft {} restored v{} as v{}", draft_id, version_no, created);
         Ok(created)
     }
 
     /// Delete a draft's metadata and every byte it owns.
     pub fn delete(&self, db: &MemoryDatabase, draft_id: i64) -> Result<()> {
+        // Before the row goes: draft_text cascades with it, but draft_fts is a
+        // virtual table with no foreign keys. Left behind, it would keep a
+        // deleted document's text searchable and return a hit that cannot be
+        // opened.
+        if let Err(e) = db.search.remove_draft(draft_id) {
+            warn!("Draft {} left an entry in the search index: {}", draft_id, e);
+        }
         db.drafts.delete_draft(draft_id)?;
         let dir = self.draft_dir(draft_id);
         if dir.exists() {

@@ -161,16 +161,32 @@ pub fn directory_size(path: &Path) -> u64 {
 /// whole `data/` directory rather than just `memory.db`, because SQLite in WAL
 /// mode also keeps `-wal` and `-shm` alongside it and the `-wal` file can be
 /// substantial.
+/// Where saved KV states live: `KV_STORE_DIR` when set (any local storage
+/// device), otherwise `KV_CACHE_DIR` under the application data folder.
+pub fn kv_dir(app_data_dir: &Path) -> std::path::PathBuf {
+    kv_dir_from(app_data_dir, crate::tuning::var("KV_STORE_DIR").as_deref())
+}
+
+fn kv_dir_from(app_data_dir: &Path, configured: Option<&str>) -> std::path::PathBuf {
+    match configured.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => app_data_dir.join(KV_CACHE_DIR),
+    }
+}
+
 pub fn measure(app_data_dir: &Path) -> DiskUsage {
     let models_bytes = directory_size(&app_data_dir.join(MODELS_DIR));
     let engines_bytes = directory_size(&app_data_dir.join(ENGINES_DIR));
     let database_bytes = directory_size(&app_data_dir.join(DATA_DIR));
     let vault_bytes = directory_size(&app_data_dir.join(FILES_DIR));
     let downloads_bytes = directory_size(&app_data_dir.join(DOWNLOADS_DIR));
-    let kv_cache_bytes = directory_size(&app_data_dir.join(KV_CACHE_DIR));
+    let kv_path = kv_dir(app_data_dir);
+    let kv_cache_bytes = directory_size(&kv_path);
+    // A KV folder moved to another device is part of the footprint too.
+    let kv_outside = if kv_path.starts_with(app_data_dir) { 0 } else { kv_cache_bytes };
     let drafts_bytes = directory_size(&app_data_dir.join(DRAFTS_DIR));
 
-    let total_bytes = directory_size(app_data_dir);
+    let total_bytes = directory_size(app_data_dir).saturating_add(kv_outside);
     let accounted = models_bytes
         .saturating_add(engines_bytes)
         .saturating_add(database_bytes)
@@ -283,7 +299,7 @@ pub fn enforce_limit(ctx: &EvictionContext, limit: EffectiveLimit) -> EvictionOu
 
     // ── Tier 1: KV cache blobs ────────────────────────────────────────────
     // Pure derived state. Deleting one costs a prompt re-prefill, nothing else.
-    let kv_dir = ctx.app_data_dir.join(KV_CACHE_DIR);
+    let kv_dir = kv_dir(&ctx.app_data_dir);
     if to_free > 0 && kv_dir.exists() {
         for (path, size) in files_oldest_first(&kv_dir) {
             if to_free == 0 {
@@ -848,5 +864,18 @@ mod tests {
         let usage = measure(&root);
         assert_eq!(usage.total_bytes, 0);
         assert_eq!(usage.other_bytes, 0);
+    }
+}
+
+#[cfg(test)]
+mod kv_dir_tests {
+    use super::*;
+
+    #[test]
+    fn the_kv_folder_defaults_under_app_data_and_can_be_moved() {
+        let app = Path::new("/data/app");
+        assert_eq!(kv_dir_from(app, None), app.join(KV_CACHE_DIR));
+        assert_eq!(kv_dir_from(app, Some("  ")), app.join(KV_CACHE_DIR));
+        assert_eq!(kv_dir_from(app, Some("/mnt/nvme/kv")), std::path::PathBuf::from("/mnt/nvme/kv"));
     }
 }

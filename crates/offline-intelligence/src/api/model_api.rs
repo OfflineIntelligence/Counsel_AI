@@ -31,6 +31,10 @@ use crate::{
 /// Request to install/download a model
 #[derive(Debug, Deserialize)]
 pub struct InstallModelRequest {
+    /// Continue an interrupted install from the partial files on disk
+    /// (see model_management::pending) instead of starting over.
+    #[serde(default)]
+    pub resume: bool,
     pub model_id: String,
     pub model_name: String,
     pub source: ModelSourceSpecifier,
@@ -42,7 +46,7 @@ pub struct InstallModelRequest {
 }
 
 /// Specify where to download a model from
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ModelSourceSpecifier {
     HuggingFace { repo_id: String, filename: String },
@@ -121,6 +125,9 @@ pub struct HardwareRecommendationsResponse {
 #[derive(Debug, Deserialize)]
 pub struct SwitchModelRequest {
     pub model_id: String,
+    /// Choose without loading (lazy): the model loads on the next question.
+    #[serde(default)]
+    pub lazy: bool,
 }
 
 /// Response after switching model
@@ -131,10 +138,124 @@ pub struct SwitchModelResponse {
     pub model_path: String,
 }
 
-/// Helper function to clone models from registry
-async fn get_cloned_models(model_manager: &ModelManager) -> Vec<ModelInfo> {
+/// Capabilities of the installed default engine, if one is installed and its
+/// library can be read.
+async fn engine_capabilities(
+    state: &UnifiedAppState,
+) -> Option<std::sync::Arc<crate::model_management::engine_compat::EngineCapabilities>> {
+    let engine_manager = state.shared_state.engine_manager.as_ref()?;
+    let bin_path = engine_manager.registry.read().await.get_default_engine_binary_path()?;
+    crate::model_management::engine_compat::EngineCapabilities::for_engine_binary(&bin_path)
+}
+
+/// Clone the registry's models, leaving out any the installed engine cannot
+/// load - switching to one would only fail with llama-server exiting at
+/// startup. With no engine installed nothing is filtered.
+async fn get_cloned_models(state: &UnifiedAppState, model_manager: &ModelManager) -> Vec<ModelInfo> {
+    let caps = engine_capabilities(state).await;
     let registry = model_manager.registry.read().await;
-    registry.list_models().iter().map(|m| (*m).clone()).collect()
+    registry
+        .list_models()
+        .into_iter()
+        .filter(|m| caps.as_ref().map_or(true, |c| crate::model_management::ModelRegistry::engine_can_load(m, c)))
+        .cloned()
+        .collect()
+}
+
+/// Whether a chat can be answered right now, and if not, why.
+///
+/// One classification shared by `GET /models/readiness` (which the UI asks
+/// BEFORE sending, so a missing model never becomes a failed request) and the
+/// guard at the top of `generate_stream` (which refuses before any retrieval
+/// or tokenisation work is spent on a request that cannot be answered).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessState {
+    /// A model is loaded and serving.
+    Ready,
+    /// A model is being loaded or switched in.
+    Loading,
+    /// The engine is restarting after a crash.
+    Restarting,
+    /// Models are installed, but none is loaded.
+    NotLoaded,
+    /// No model has been downloaded yet.
+    NoneInstalled,
+    /// A model is chosen but unloaded to save memory; the next question
+    /// loads it. Clients treat this like Ready.
+    Sleeping,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Readiness {
+    pub state: ReadinessState,
+    /// Installed chat models on disk.
+    pub installed: usize,
+    /// The model being loaded, while `state` is `loading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loading_model: Option<String>,
+}
+
+pub async fn model_readiness(state: &UnifiedAppState) -> Readiness {
+    use crate::model_runtime::RuntimeState;
+
+    // The cheap, common case first: a ready engine needs no registry read.
+    // On Cloud, the cloud model answers, so every surface may ask.
+    if state.llm_worker.cloud().is_some() || state.llm_worker.is_runtime_ready().await {
+        return Readiness { state: ReadinessState::Ready, installed: 0, loading_model: None };
+    }
+    let installed = match state.shared_state.model_manager.as_ref() {
+        Some(mm) => mm
+            .registry
+            .read()
+            .await
+            .list_models()
+            .iter()
+            .filter(|m| m.status == ModelStatus::Installed)
+            .count(),
+        None => 0,
+    };
+    let (state_kind, loading_model) = match state.llm_worker.get_runtime_state() {
+        RuntimeState::Switching { model_name } => (ReadinessState::Loading, Some(model_name)),
+        RuntimeState::Restarting => (ReadinessState::Restarting, None),
+        RuntimeState::Sleeping { model_name } => (ReadinessState::Sleeping, Some(model_name)),
+        _ if installed == 0 => (ReadinessState::NoneInstalled, None),
+        _ => (ReadinessState::NotLoaded, None),
+    };
+    Readiness { state: state_kind, installed, loading_model }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ReadinessQuery {
+    /// Set when the UI asks because the user is about to send (`chat` or
+    /// `agent`), so an unanswerable request is recorded in the backend log
+    /// even though it is never sent.
+    #[serde(default, rename = "for")]
+    pub purpose: Option<String>,
+}
+
+/// `GET /models/readiness[?for=chat|agent]`
+pub async fn get_model_readiness(
+    State(state): State<UnifiedAppState>,
+    Query(q): Query<ReadinessQuery>,
+) -> Json<Readiness> {
+    let readiness = model_readiness(&state).await;
+    if readiness.state != ReadinessState::Ready {
+        if let Some(purpose) = q.purpose.as_deref() {
+            warn!(
+                "{} request cannot be answered: model {:?} ({} installed){}",
+                purpose,
+                readiness.state,
+                readiness.installed,
+                readiness
+                    .loading_model
+                    .as_deref()
+                    .map(|m| format!(", loading {}", m))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Json(readiness)
 }
 
 /// Get list of all models (installed and available)
@@ -144,7 +265,7 @@ pub async fn list_models(
     let model_manager = state.shared_state.model_manager.as_ref()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let models = get_cloned_models(model_manager).await;
+    let models = get_cloned_models(&state, model_manager).await;
 
     Ok(Json(models))
 }
@@ -161,7 +282,7 @@ pub async fn list_models_by_mode(
         .map(|s| s.as_str())
         .unwrap_or("offline");
 
-    let all_models = get_cloned_models(model_manager).await;
+    let all_models = get_cloned_models(&state, model_manager).await;
 
     match mode {
         "offline" | _ => {
@@ -248,7 +369,7 @@ pub async fn get_active_model(
         gpu_layers: config.gpu_layers,
         backend_url: config.backend_url.clone(),
         status,
-        vision: state.shared_state.vision_active().await,
+        vision: state.shared_state.vision_chosen().await,
     })
 }
 
@@ -260,7 +381,7 @@ pub async fn search_models(
     let model_manager = state.shared_state.model_manager.as_ref()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let all_models = get_cloned_models(model_manager).await;
+    let all_models = get_cloned_models(&state, model_manager).await;
     let query_lower = params.query.to_lowercase();
     
     let mut filtered_models: Vec<ModelInfo> = all_models
@@ -300,16 +421,13 @@ pub async fn refresh_models(
 
     // Refresh Hugging Face GGUF/GGML catalog if requested
     if source == "huggingface" || source == "all" {
-        let mut registry = model_manager.registry.write().await;
-        // Fetch top 100 GGUF models by downloads
-        if let Err(e) = registry.refresh_huggingface_catalog_from_api(100).await {
+        // Fetch top 100 GGUF models by downloads, off the lock (see
+        // refresh_hf_catalog_unlocked) so the model list stays readable.
+        if let Err(e) = crate::model_management::refresh_hf_catalog_unlocked(&model_manager.registry, 100).await {
             error!("Failed to refresh Hugging Face catalog: {}", e);
             // Continue - don't fail the entire refresh
         } else {
             updated_sources.push("huggingface".to_string());
-        }
-        if let Err(e) = registry.save_registry().await {
-            error!("Failed to save model registry after HuggingFace refresh: {}", e);
         }
     }
 
@@ -352,6 +470,27 @@ pub async fn install_model(
     // model ends up in the registry HashMap under both keys and renders as
     // two cards after an app restart.
     let canonical_id = sanitize_model_id(&payload.model_id);
+
+    // Remember the install until it finishes, so one interrupted by closing
+    // the app can be offered for resume at the next launch.
+    let registry_dir = model_manager.storage.location.registry_dir.clone();
+    crate::model_management::pending::upsert(
+        &registry_dir,
+        crate::model_management::pending::PendingDownload {
+            model_id: payload.model_id.clone(),
+            model_name: payload.model_name.clone(),
+            source: serde_json::to_value(&payload.source).unwrap_or_default(),
+            description: payload.description.clone(),
+            size_bytes: payload.size_bytes,
+            format: payload.format.clone(),
+            started_at: chrono::Utc::now(),
+        },
+    );
+    let pending_key = payload.model_id.clone();
+    let resume_partial = payload.resume;
+    if resume_partial {
+        info!("Resuming interrupted download of {}", payload.model_id);
+    }
 
     // VISION: the install request carries only id/name/size — the mmproj
     // pairing lives in the registry entry (curated catalog or HF refresh).
@@ -414,6 +553,7 @@ pub async fn install_model(
         downloads: 0,
         mmproj_filename: registry_mmproj_filename,
         mmproj_size_bytes: registry_mmproj_size,
+        gguf_identity: None,
     };
 
     // Convert source specifier to download source
@@ -448,10 +588,24 @@ pub async fn install_model(
     let downloader = model_manager.downloader.clone();
     let existing_download_id = pre_download_id.clone();
 
+    let state_for_activation = state.clone();
     tokio::spawn(async move {
         // Pass the pre-created download ID so progress is tracked correctly
         // Also pass the HF token from the request for authentication
-        match downloader.download_model(model_info.clone(), download_source_clone.clone(), Some(existing_download_id), payload.hf_token).await {
+        let outcome = downloader
+            .download_model(
+                model_info.clone(),
+                download_source_clone.clone(),
+                Some(existing_download_id),
+                payload.hf_token,
+                resume_partial,
+            )
+            .await;
+        // Finished, failed or cancelled: either way it is no longer
+        // interrupted. (A shutdown drops this task before it gets here, which
+        // is exactly what leaves the record in place for the next launch.)
+        crate::model_management::pending::remove(&registry_dir, &pending_key);
+        match outcome {
             Ok(_download_id) => {
                 // Extract the filename from the download source
                 let filename = match &download_source_clone {
@@ -483,6 +637,36 @@ pub async fn install_model(
                     error!("Failed to save model metadata: {}", e);
                 }
                 info!("Model installation completed: {}", model_info.name);
+
+                // First model on this machine (or none loaded): activate it,
+                // so "download a model" is the only step between an empty
+                // install and a working chat. A loaded model is never
+                // replaced behind the user's back.
+                if model_readiness(&state_for_activation).await.state == ReadinessState::NotLoaded {
+                    info!("No model is loaded; activating the newly installed {}", model_info.id);
+                    match switch_model(
+                        State(state_for_activation.clone()),
+                        Json(SwitchModelRequest { model_id: model_info.id.clone(), lazy: true }),
+                    )
+                    .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            info!("Auto-activated {} after download; loading it now", model_info.id);
+                            // Activation is lazy; load now so the first
+                            // question does not wait for the model to start.
+                            crate::model_runtime::lifecycle::prewarm(state_for_activation.shared_state.clone());
+                        }
+                        Ok(resp) => warn!(
+                            "Auto-activation of {} was refused (HTTP {}); the user can activate it from Models",
+                            model_info.id,
+                            resp.status()
+                        ),
+                        Err(code) => warn!(
+                            "Auto-activation of {} failed (HTTP {}); the user can activate it from Models",
+                            model_info.id, code
+                        ),
+                    }
+                }
             }
             Err(e) => {
                 error!("Model installation failed: {} - {}", model_info.name, e);
@@ -585,6 +769,95 @@ pub async fn pause_download(
     } else {
         Err(StatusCode::NOT_FOUND)
     }
+}
+
+/// An install that was under way when the app last closed.
+#[derive(Debug, Serialize)]
+pub struct InterruptedDownload {
+    pub model_id: String,
+    pub model_name: String,
+    pub size_bytes: u64,
+    /// How much of it is already on disk.
+    pub bytes_on_disk: u64,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// The original install request's fields, so the client can send it
+    /// again with `resume: true` (plus its own Hugging Face token).
+    pub source: serde_json::Value,
+    pub description: Option<String>,
+    pub format: String,
+}
+
+/// `GET /models/downloads/interrupted` — installs left unfinished by the last
+/// run. Ones already running again, or already installed, are left out.
+pub async fn get_interrupted_downloads(
+    State(state): State<UnifiedAppState>,
+) -> Result<Json<Vec<InterruptedDownload>>, StatusCode> {
+    let model_manager = state.shared_state.model_manager.as_ref()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let registry_dir = &model_manager.storage.location.registry_dir;
+    let live: std::collections::HashSet<String> = model_manager
+        .downloader
+        .progress_tracker()
+        .get_all_downloads()
+        .await
+        .into_iter()
+        .filter(|d| !d.status.is_finished())
+        .map(|d| d.model_id)
+        .collect();
+    let registry = model_manager.registry.read().await;
+    let interrupted = crate::model_management::pending::load(registry_dir)
+        .into_iter()
+        .filter_map(|r| {
+            let canonical = sanitize_model_id(&r.model_id);
+            let installed = registry
+                .get_model(&canonical)
+                .map_or(false, |m| m.status == ModelStatus::Installed);
+            if installed || live.contains(&canonical) {
+                return None;
+            }
+            let bytes_on_disk = crate::model_management::pending::bytes_on_disk(
+                &model_manager.storage.model_directory(&r.model_id),
+            );
+            Some(InterruptedDownload {
+                model_id: r.model_id,
+                model_name: r.model_name,
+                size_bytes: r.size_bytes,
+                bytes_on_disk,
+                started_at: r.started_at,
+                source: r.source,
+                description: r.description,
+                format: r.format,
+            })
+        })
+        .collect();
+    Ok(Json(interrupted))
+}
+
+/// `POST /models/downloads/interrupted/discard?model_id=` — forget an
+/// interrupted install and delete its partial files.
+pub async fn discard_interrupted_download(
+    State(state): State<UnifiedAppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let model_manager = state.shared_state.model_manager.as_ref()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let model_id = params.get("model_id").ok_or(StatusCode::BAD_REQUEST)?;
+    let canonical = sanitize_model_id(model_id);
+    let installed = model_manager
+        .registry
+        .read()
+        .await
+        .get_model(&canonical)
+        .map_or(false, |m| m.status == ModelStatus::Installed);
+    crate::model_management::pending::remove(&model_manager.storage.location.registry_dir, model_id);
+    // Never delete an installed model's files through this route.
+    if !installed {
+        if let Err(e) = model_manager.storage.remove_model(model_id) {
+            warn!("Could not delete partial files for {}: {}", model_id, e);
+        }
+    }
+    info!("Discarded interrupted download of {}", model_id);
+    Ok(Json(serde_json::json!({ "message": "Discarded" })))
 }
 
 /// Resume a paused download
@@ -811,7 +1084,7 @@ pub async fn get_recommended_models(
         .unwrap_or(10);
 
     let hardware = ModelRecommender::detect_hardware_profile(&state.shared_state.config);
-    let all_models = get_cloned_models(model_manager).await;
+    let all_models = get_cloned_models(&state, model_manager).await;
     
     let recommendations = model_manager.recommender.get_recommendations(
         all_models.iter().collect(),
@@ -977,6 +1250,33 @@ pub async fn switch_model(
 
     info!("âœ… Model file verified at: {}", model_path.display());
 
+    // Refuse a model the installed engine cannot load, with the reason, rather
+    // than letting llama-server exit at startup with a bare exit code.
+    if let Some(caps) = engine_capabilities(&state).await {
+        let identity = model_info.gguf_identity.clone().or_else(|| {
+            crate::model_management::engine_compat::read_local_identity(&model_path)
+        });
+        if let Some(id) = identity.filter(|id| !caps.supports(id)) {
+            error!(
+                "Model {} is not supported by the installed engine (architecture {:?}, pre-tokenizer {:?})",
+                payload.model_id, id.architecture, id.pre_tokenizer
+            );
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "model_not_supported_by_engine",
+                    "detail": format!(
+                        "This model needs a newer inference engine than the one installed \
+                         (architecture '{}', tokenizer '{}'). Choose another model from the catalogue.",
+                        id.architecture,
+                        id.pre_tokenizer.as_deref().unwrap_or("default")
+                    ),
+                    "action": "choose_another_model",
+                })),
+            ).into_response());
+        }
+    }
+
     // VISION: resolve the multimodal projector recorded for this model.
     // Registry says vision + file missing on disk = a LOUD, actionable
     // failure — activating text-only would silently break image processing.
@@ -1107,7 +1407,47 @@ pub async fn switch_model(
         info!("   Multimodal projector (vision): {}", mmproj.display());
     }
 
-    // Use the runtime manager's hot_swap method to switch models
+    // Serialize with wakes and the idle reaper (model_runtime::lifecycle), so
+    // a switch can never interleave with an unload of the previous model.
+    crate::model_runtime::lifecycle::wait_for_in_flight(std::time::Duration::from_secs(
+        state.shared_state.config.hot_swap_grace_seconds,
+    ))
+    .await;
+    let _gate = crate::model_runtime::lifecycle::transition_gate().await;
+
+    // The running engine is about to be replaced: write its unsaved KV state
+    // to the store now, while the engine that computed it still holds it, so
+    // it is there when this model, engine and context size return.
+    if crate::model_runtime::kv_store::enabled() {
+        crate::model_runtime::kv_store::save_active(&state.shared_state).await;
+    }
+    crate::model_runtime::kv_store::engine_reset();
+
+    // A lazy choice (the chat's model menu) parks the model: any running
+    // model is unloaded now, and the chosen one loads on the next question.
+    if payload.lazy {
+        return match runtime_manager.park(runtime_config).await {
+            Ok(()) => {
+                remember_activation(&state, &payload.model_id);
+                info!("Model {} chosen; it loads on the next question", model_info.name);
+                Ok(Json(SwitchModelResponse {
+                    message: format!("Model {} chosen; it loads on the next question", model_info.name),
+                    model_id: payload.model_id.clone(),
+                    model_path: model_path_str,
+                })
+                .into_response())
+            }
+            Err(e) => Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "model_choice_failed",
+                    "detail": format!("Could not switch to the chosen model: {}", e),
+                })),
+            )
+                .into_response()),
+        };
+    }
+
     // Use initialize_auto to automatically detect the model format
     match runtime_manager.initialize_auto(runtime_config).await {
         Ok(base_url) => {
@@ -1118,28 +1458,9 @@ pub async fn switch_model(
                 Ok(_) => {
                     info!("✅ Model {} activated successfully and health check passed", model_info.name);
 
-                    // Save last used model for auto-load on next startup
-                    {
-                        let last_model_path = crate::config::get_app_data_dir().join("last_model.txt");
-                        let _ = std::fs::write(last_model_path, &payload.model_id);
-                    }
-
-                    // Record activation recency for disk eviction. Written only
-                    // after the health check passes, so a model that failed to
-                    // load never counts as "recently used" and keeps its place
-                    // at the front of the eviction queue.
-                    if let Err(e) = state
-                        .shared_state
-                        .database_pool
-                        .settings
-                        .record_model_used(&payload.model_id)
-                    {
-                        warn!(
-                            "Could not record activation time for model {}: {} - disk eviction \
-                             will treat it as never used",
-                            payload.model_id, e
-                        );
-                    }
+                    // Recorded only after the health check passes, so a model
+                    // that failed to load never counts as "recently used".
+                    remember_activation(&state, &payload.model_id);
 
                     Ok(Json(SwitchModelResponse {
                         message: format!("Model {} loaded and ready for inference", model_info.name),
@@ -1325,6 +1646,8 @@ pub struct StoragePaths {
     pub registry_dir: String,
     pub database_path: String,
     pub engines_dir: String,
+    /// Where the bundled legal reference documents are installed.
+    pub knowledge_dir: String,
 }
 
 /// Information about an installed engine
@@ -1396,6 +1719,7 @@ pub async fn get_storage_metadata(
         registry_dir: model_manager.storage.location.registry_dir.to_string_lossy().to_string(),
         database_path: app_data_dir.join("data").join("memory.db").to_string_lossy().to_string(),
         engines_dir: engines_dir.to_string_lossy().to_string(),
+        knowledge_dir: crate::knowledge::knowledge_dir().to_string_lossy().to_string(),
     };
     
     // Get downloaded models with metadata
@@ -1553,6 +1877,13 @@ pub async fn install_engine(
             let registry = engine_manager.registry.read().await;
             registry.installed_engines.contains_key(&engine_id)
                 || registry.available_engines.iter().any(|e| e.id == engine_id)
+                // An engine excluded by a recorded backend failure is still a
+                // valid id to ASK for explicitly — that is how a user retries
+                // after fixing their driver or installing the VC++ runtime.
+                || registry
+                    .catalog_including_excluded(&engine_manager.hardware_capabilities)
+                    .iter()
+                    .any(|e| e.id == engine_id)
         };
         if !known {
             error!("Engine install refused: unknown engine id '{}'", engine_id);
@@ -1642,6 +1973,17 @@ pub async fn list_available_engines(
             "acceleration": format!("{}", e.acceleration),
         }));
 
+    // Accelerations proven unusable on this machine by a real backend-load
+    // check, with the recorded cause. Reported so the UI can explain a demotion
+    // instead of the user silently receiving a slower engine.
+    let demoted_from = registry.demoted_from(&engine_manager.hardware_capabilities);
+    let demotion: Option<serde_json::Value> = demoted_from.as_ref().map(|a| serde_json::json!({
+        "acceleration": format!("{}", a),
+        "reason": registry.exclusion_reason(a),
+    }));
+
+    let hw = &engine_manager.hardware_capabilities;
+
     let installed: Vec<serde_json::Value> = registry.installed_engines.values()
         .map(|e| serde_json::json!({
             "id": e.id,
@@ -1677,6 +2019,17 @@ pub async fn list_available_engines(
         "has_engine": registry.has_installed_engine(),
         "engine_state": engine_state,
         "table_engine": table_engine,
+        "demotion": demotion,
+        // Environment facts that explain most engine failures, so a support
+        // report carries them without needing a second round trip.
+        "environment": {
+            "windows_build": hw.windows_build,
+            "is_virtual_machine": hw.is_virtual_machine,
+            "vc_redist_ok": hw.vc_redist_ok,
+            "has_vulkan": hw.has_vulkan,
+            "has_cuda": hw.has_cuda,
+            "architecture": format!("{}", hw.architecture),
+        },
     })))
 }
 
@@ -1716,4 +2069,48 @@ fn format_bytes(bytes: u64) -> String {
     }
     
     format!("{:.2} {}", size, UNITS[unit_index])
+}
+
+/// POST /models/prewarm — the user is about to ask (opened Aurora, focused or
+/// typed in a composer). Starts loading a sleeping model in the background
+/// and returns at once.
+pub async fn prewarm_model(State(state): State<UnifiedAppState>) -> Json<serde_json::Value> {
+    crate::model_runtime::lifecycle::prewarm(state.shared_state.clone());
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FocusRequest {
+    pub focused: bool,
+}
+
+/// POST /runtime/focus — the app window gained or lost focus. While
+/// unfocused, the model is unloaded after a shorter idle time.
+pub async fn set_window_focus(Json(body): Json<FocusRequest>) -> Json<serde_json::Value> {
+    crate::model_runtime::lifecycle::set_focused(body.focused);
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Remember the chosen model: last_model.txt (chosen again at the next
+/// launch, lazily) and its activation time (disk eviction order).
+fn remember_activation(state: &UnifiedAppState, model_id: &str) {
+    let last_model_path = crate::config::get_app_data_dir().join("last_model.txt");
+    let _ = std::fs::write(last_model_path, model_id);
+    if let Err(e) = state.shared_state.database_pool.settings.record_model_used(model_id) {
+        warn!(
+            "Could not record activation time for model {}: {} - disk eviction will treat it as never used",
+            model_id, e
+        );
+    }
+}
+
+/// GET /context/window: how many tokens the model now answering can take in,
+/// for the composer's context gauge. On Cloud it is the cloud budget; On
+/// Computer, the loaded model's live window (or the configured size).
+pub async fn context_window(State(state): State<UnifiedAppState>) -> impl IntoResponse {
+    let window = state.shared_state.raw_context_window().await;
+    Json(serde_json::json!({
+        "window": window,
+        "mode": if state.llm_worker.cloud().is_some() { "cloud" } else { "local" },
+    }))
 }

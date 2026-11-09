@@ -43,6 +43,12 @@ pub fn configure_server_command(cmd: &mut Command) {
 ///
 /// `label` names the child in log lines (e.g. "llama-server").
 pub fn attach_managed_child(child: &mut Child, label: &'static str) {
+    // Remembered so the app can end it explicitly on exit, in addition to
+    // the job object (see `kill_all_managed_children`).
+    if let Ok(mut pids) = MANAGED_PIDS.lock() {
+        pids.push(child.id());
+    }
+
     // ── Windows: child dies with this process, no matter how we exit ──
     #[cfg(target_os = "windows")]
     {
@@ -71,6 +77,41 @@ pub fn attach_managed_child(child: &mut Child, label: &'static str) {
     if let Some(stderr) = child.stderr.take() {
         spawn_pipe_reader(stderr, label, "stderr", true);
     }
+}
+
+/// PIDs of every inference/embedding server this process started.
+static MANAGED_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// End every server this process started. Called by the desktop shell as the
+/// last step of quitting.
+///
+/// The Windows job object already guarantees this when the process exits,
+/// but only for children it could be assigned (assignment can fail, and
+/// other platforms have no job object). Killing explicitly makes "close the
+/// app, everything closes" true everywhere. A PID is only killed if it is
+/// still running AS OUR CHILD, so a recycled PID belonging to some other
+/// program is never touched. Returns how many were ended.
+pub fn kill_all_managed_children() -> usize {
+    let pids: Vec<u32> = match MANAGED_PIDS.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(_) => return 0,
+    };
+    if pids.is_empty() {
+        return 0;
+    }
+    let me = sysinfo::Pid::from_u32(std::process::id());
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes();
+    let mut killed = 0;
+    for pid in pids {
+        if let Some(process) = sys.process(sysinfo::Pid::from_u32(pid)) {
+            if process.parent() == Some(me) && process.kill() {
+                info!("Ended {} (pid {}) on exit", process.name(), pid);
+                killed += 1;
+            }
+        }
+    }
+    killed
 }
 
 /// Read a child's pipe line-by-line and forward into `tracing` until EOF.

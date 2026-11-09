@@ -85,16 +85,53 @@ pub fn plan_offload(
 /// VRAM, plan the offload. Errors (non-GGUF file, unreadable header, no
 /// measurable VRAM) propagate to the caller, which decides on the fallback —
 /// they are never silently converted into a guess here.
-pub fn compute_gpu_layers_for_model(model_path: &Path, ctx_size: u32) -> anyhow::Result<OffloadPlan> {
-    let model_info = read_model_info(model_path)?;
+/// Bytes per KV cache element for a llama.cpp cache type (block formats
+/// include their scale: q8_0 is 34 bytes per 32 values).
+pub fn kv_bytes_per_element(kv_cache_type: &str) -> f64 {
+    match kv_cache_type {
+        "f32" => 4.0,
+        "q8_0" => 34.0 / 32.0,
+        "q5_0" => 22.0 / 32.0,
+        "q5_1" => 24.0 / 32.0,
+        "q4_0" | "iq4_nl" => 18.0 / 32.0,
+        "q4_1" => 20.0 / 32.0,
+        _ => 2.0,
+    }
+}
 
-    let (vram_mb, source) = crate::config::detect_available_vram_mb()
+pub fn compute_gpu_layers_for_model(model_path: &Path, ctx_size: u32, kv_cache_type: &str) -> anyhow::Result<OffloadPlan> {
+    let model_info = read_model_info(model_path)?;
+    // plan_offload sizes the KV cache as f16 (2 bytes per element). A
+    // quantized cache is smaller, which is expressed as an equivalent f16
+    // context so more layers fit on the GPU.
+    // Sliding-window layers keep only the window (plus one micro-batch), so
+    // the average cells per layer can be well below the context size.
+    let ubatch = super::machine::ubatch();
+    let swa_full = crate::tuning::flag_or("LLAMA_SWA_FULL", false);
+    let cells = model_info.effective_kv_cells(ctx_size as u64, ubatch, swa_full);
+    let kv_ctx = (cells * kv_bytes_per_element(kv_cache_type) / 2.0).ceil() as u32;
+
+    let (measured_mb, source) = crate::config::detect_available_vram_mb()
         .ok_or_else(|| anyhow::anyhow!(
             "GPU VRAM could not be measured (no NVML, nvidia-smi, or registry value)"
         ))?;
 
+    // The compute buffer and, when it is pinned to the GPU, the embedding
+    // server take VRAM before any chat layer is placed.
+    let compute_mb = super::machine::compute_buffer_bytes(model_info.vocab_size, model_info.embedding_length, ubatch)
+        / (1024 * 1024);
+    let embed_mb = match super::machine::EmbedMode::from_env() {
+        super::machine::EmbedMode::Gpu => super::machine::embedder_gpu_need_mb(),
+        _ => 0,
+    };
+    let vram_mb = measured_mb.saturating_sub(compute_mb + embed_mb);
+
     let vram_kind = if source.ends_with("free") { VramKind::Free } else { VramKind::Total };
-    let plan = plan_offload(&model_info, ctx_size, vram_mb, vram_kind);
+    let plan = plan_offload(&model_info, kv_ctx, vram_mb, vram_kind);
+    info!(
+        "GPU offload accounting: {} MB measured, {} MB compute buffer, {} MB embedder, {:.0} KV cells/layer at ctx {} ({} of {} layers sliding-window)",
+        measured_mb, compute_mb, embed_mb, cells, ctx_size, model_info.swa_layers, model_info.block_count
+    );
 
     info!(
         "GPU offload plan for {:?} [{}]: {}/{} layers on GPU ({}) — \
@@ -128,7 +165,31 @@ mod tests {
             head_count_kv: kv_heads,
             file_size: file_size_mb * 1024 * 1024,
             trained_context_length: 0,
+            sliding_window: 0,
+            swa_layers: 0,
+            vocab_size: 32_000,
+            key_length: 0,
+            value_length: 0,
         }
+    }
+
+    /// Gemma-2-2B: 26 layers, 8 heads, 4 KV heads of 256, embedding 2,304.
+    /// Measured: a 714-token q8_0 state saved by llama-server was 40,415,924
+    /// bytes, 56,605 per token. Declared head sizes give 4 x 512 values x
+    /// 1.0625 bytes x 26 layers = 56,576; the old estimate from the
+    /// embedding size gave 63,648 (12.5% high).
+    #[test]
+    fn declared_head_sizes_give_the_measured_kv_size() {
+        let mut m = model(26, 1630, 2304, 8, 4);
+        let estimate = m.kv_values_per_token_layer();
+        m.key_length = 256;
+        m.value_length = 256;
+        let declared = m.kv_values_per_token_layer();
+        assert_eq!(declared, 2048);
+        assert_eq!(estimate, 2304);
+        let per_token = declared as f64 * kv_bytes_per_element("q8_0") * 26.0;
+        assert_eq!(per_token.round() as u64, 56_576);
+        assert!((56_605.0 - per_token).abs() / 56_605.0 < 0.01);
     }
 
     #[test]

@@ -51,6 +51,9 @@ impl ModelDownloader {
         source: DownloadSource,
         existing_download_id: Option<String>,
         hf_token: Option<String>,
+        // Continue from partial files left by an interrupted install (the app
+        // was closed mid-download) instead of truncating them.
+        resume_partial: bool,
     ) -> Result<String> {
         info!("Starting download of model: {} from {:?}", model_info.name, source);
 
@@ -82,12 +85,12 @@ impl ModelDownloader {
             DownloadSource::HuggingFace { repo_id, filename } => {
                 if let Some(total_shards) = self.detect_shard_pattern(filename) {
                     info!("Detected sharded model with {} parts, downloading all shards", total_shards);
-                    self.download_sharded_model(&download_id, repo_id, filename, &model_dir, total_shards, hf_token)
+                    self.download_sharded_model(&download_id, repo_id, filename, &model_dir, total_shards, hf_token, resume_partial)
                         .await
                         .map(|_| model_info.size_bytes)
                 } else {
                     self.download_single_or_vision(
-                        &download_id, repo_id, filename, &model_dir, &model_info, hf_token,
+                        &download_id, repo_id, filename, &model_dir, &model_info, hf_token, resume_partial,
                     )
                     .await
                 }
@@ -105,6 +108,20 @@ impl ModelDownloader {
             }
             Err(e) => {
                 error!("Failed to download model {}: {}", model_info.name, e);
+                // Failed or cancelled: the file in flight has already been
+                // deleted, but files that finished earlier (earlier shards, a
+                // main file before its projector) would otherwise be left as
+                // gigabytes nothing refers to. Remove the folder — unless the
+                // model was installed before this attempt (its metadata is
+                // written only on success), so a failed re-download can never
+                // take a working model with it.
+                if !self.storage.metadata_path(&model_info.id).exists() {
+                    match std::fs::remove_dir_all(&model_dir) {
+                        Ok(()) => info!("Removed partial files of {} after the failed download", model_info.name),
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => warn!("Could not remove partial files in {}: {}", model_dir.display(), err),
+                    }
+                }
                 self.progress_tracker
                     .update_progress(&download_id, 0, DownloadStatus::Failed, Some(e.to_string()))
                     .await;
@@ -133,6 +150,7 @@ impl ModelDownloader {
         model_dir: &std::path::Path,
         model_info: &ModelInfo,
         hf_token: Option<String>,
+        resume_partial: bool,
     ) -> Result<u64> {
         let token = hf_token.or_else(|| self.get_hf_token());
         let main_url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, filename);
@@ -183,7 +201,7 @@ impl ModelDownloader {
         // bytes landed on top of it.
         let mut done: u64 = self
             .download_file_resumable(
-                download_id, &main_url, model_dir, filename, &token, 0, mmproj_size,
+                download_id, &main_url, model_dir, filename, &token, 0, mmproj_size, resume_partial,
             )
             .await?;
 
@@ -194,7 +212,7 @@ impl ModelDownloader {
             );
             match self
                 .download_file_resumable(
-                    download_id, &mmproj_url, model_dir, &mmproj_filename, &token, done, 0,
+                    download_id, &mmproj_url, model_dir, &mmproj_filename, &token, done, 0, resume_partial,
                 )
                 .await
             {
@@ -302,6 +320,7 @@ impl ModelDownloader {
         token: &Option<String>,
         offset_base: u64,
         remaining_after: u64,
+        resume_partial: bool,
     ) -> Result<u64> {
         use futures_util::StreamExt;
         use tokio::io::{AsyncSeekExt, SeekFrom};
@@ -310,11 +329,30 @@ impl ModelDownloader {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
         let path = model_dir.join(filename);
-        // Always start clean: a partial from a PREVIOUS failed install is not
-        // trusted (create() truncates). Resumption applies only to retries
-        // within this call, where we know exactly what was written.
-        let mut file = File::create(&path).await?;
-        let mut written: u64 = 0;
+        // A FAILED install deletes its partial file (see `cleanup`), so a file
+        // that is still here was left by an INTERRUPTED one — the app closed
+        // or was killed mid-download. Bytes are written strictly in order, so
+        // what is on disk is an exact prefix of the file and safe to continue
+        // from. Without `resume_partial` the file starts clean, as before.
+        let (mut file, mut written) = match resume_partial {
+            true => match tokio::fs::OpenOptions::new().write(true).open(&path).await {
+                Ok(mut f) => {
+                    let len = f.metadata().await?.len();
+                    f.seek(SeekFrom::End(0)).await?;
+                    if len > 0 {
+                        info!("Resuming '{}' from {} bytes already on disk", filename, len);
+                    }
+                    (f, len)
+                }
+                Err(_) => (File::create(&path).await?, 0),
+            },
+            false => (File::create(&path).await?, 0),
+        };
+        if written > 0 {
+            self.progress_tracker
+                .update_progress(download_id, offset_base + written, DownloadStatus::Downloading, None)
+                .await;
+        }
         let mut attempt: u32 = 0;
         let start_time = std::time::Instant::now();
 
@@ -360,6 +398,13 @@ impl ModelDownloader {
             };
 
             let status = response.status();
+            if written > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                // Asked for bytes past the end: the file on disk is already
+                // complete (a resumed install whose main file finished before
+                // the interruption).
+                info!("'{}' was already fully downloaded ({} bytes)", filename, written);
+                return Ok(written);
+            }
             if written > 0 && status == reqwest::StatusCode::OK {
                 // Server ignored the Range request: it is sending the whole
                 // file again. Restart this file's accounting honestly.
@@ -402,8 +447,11 @@ impl ModelDownloader {
                         return Err(anyhow::anyhow!("Download cancelled by user"));
                     }
                     if progress.status == DownloadStatus::Paused {
+                        // Everything received so far is on disk before the
+                        // wait, so closing the app while paused loses nothing.
+                        file.flush().await?;
                         loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                             match self.progress_tracker.get_progress(download_id).await {
                                 Some(p) if p.status == DownloadStatus::Paused => continue,
                                 Some(p) if p.status == DownloadStatus::Cancelled => {
@@ -424,12 +472,7 @@ impl ModelDownloader {
                             .update_elapsed_time(download_id, start_time.elapsed())
                             .await;
                         self.progress_tracker
-                            .update_progress(
-                                download_id,
-                                offset_base + written,
-                                DownloadStatus::Downloading,
-                                None,
-                            )
+                            .record_bytes(download_id, offset_base + written)
                             .await;
                     }
                     Err(e) => {
@@ -522,6 +565,7 @@ impl ModelDownloader {
         model_dir: &std::path::Path,
         total_shards: u32,
         hf_token: Option<String>,
+        resume_partial: bool,
     ) -> Result<()> {
         // Extract the pattern from the first filename to construct other shard names
         let re = regex::Regex::new(r"(.*-)(\d{5})(-of-\d{5}\.[^.]+)$").unwrap();
@@ -531,160 +575,53 @@ impl ModelDownloader {
 
         let prefix = &caps[1];
         let suffix = &caps[3];
+        let token = hf_token.or_else(|| self.get_hf_token());
 
-        // Calculate total size for progress tracking
-        let mut total_expected_size = 0u64;
+        // Each shard's size, for one continuous progress bar across all of
+        // them. A shard whose size cannot be read counts as 0 here; its own
+        // transfer corrects the total once it starts.
+        let mut shards: Vec<(String, String, u64)> = Vec::with_capacity(total_shards as usize);
         for i in 1..=total_shards {
             let shard_filename = format!("{}{:05}{}", prefix, i, suffix);
             let url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, shard_filename);
-            
-            // Get the size of each shard
-            let response = self.http_client.head(&url).send().await?;
-            if response.status().is_success() {
-                if let Some(content_length) = response.content_length() {
-                    total_expected_size += content_length;
-                }
+            let mut head = self.http_client.head(&url);
+            if let Some(t) = &token {
+                head = head.header("Authorization", format!("Bearer {}", t));
             }
+            let size = match head.send().await {
+                Ok(r) if r.status().is_success() => r.content_length().unwrap_or(0),
+                _ => 0,
+            };
+            shards.push((shard_filename, url, size));
         }
-
-        // Update progress tracker with total size
+        let total_expected_size: u64 = shards.iter().map(|s| s.2).sum();
         self.progress_tracker.update_total_bytes(download_id, total_expected_size).await;
 
-        // Download each shard
-        let mut downloaded_so_far = 0u64;
-        for i in 1..=total_shards {
-            let shard_filename = format!("{}{:05}{}", prefix, i, suffix);
-            let url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, shard_filename);
-            
-            info!("Downloading shard {}/{}: {}", i, total_shards, shard_filename);
-
-            // Download the shard file
-            self.download_single_shard_with_progress(
-                download_id,
-                &url,
-                model_dir,
-                &shard_filename,
-                hf_token.clone(),
-                &mut downloaded_so_far,
-            ).await?;
+        // Every shard goes through the same resumable path as a single-file
+        // model: HTTP Range retries mid-stream, pause/cancel checked per
+        // chunk, and — when resuming an interrupted install — each shard
+        // continues from the bytes already on disk. A shard that finished
+        // before the interruption is recognised as complete (the server
+        // answers 416 to a range past its end) and is not downloaded again.
+        let mut done = 0u64;
+        for (index, (shard_filename, url, _)) in shards.iter().enumerate() {
+            let remaining_after: u64 = shards[index + 1..].iter().map(|s| s.2).sum();
+            info!("Downloading shard {}/{}: {}", index + 1, total_shards, shard_filename);
+            done += self
+                .download_file_resumable(
+                    download_id,
+                    url,
+                    model_dir,
+                    shard_filename,
+                    &token,
+                    done,
+                    remaining_after,
+                    resume_partial,
+                )
+                .await?;
         }
 
         info!("Successfully downloaded all {} shards", total_shards);
-        Ok(())
-    }
-
-    /// Download a single shard with progress tracking
-    async fn download_single_shard_with_progress(
-        &self,
-        download_id: &str,
-        url: &str,
-        model_dir: &std::path::Path,
-        filename: &str,
-        hf_token: Option<String>,
-        downloaded_so_far: &mut u64,
-    ) -> Result<()> {
-        use futures_util::StreamExt;
-
-        // Build request with optional HF_TOKEN authentication
-        let mut request = self.http_client.get(url);
-        
-        // Add HuggingFace token if available (provided token takes precedence over env var)
-        let token_to_use = hf_token.or_else(|| self.get_hf_token());
-        if let Some(hf_token) = token_to_use {
-            request = request.header("Authorization", format!("Bearer {}", hf_token));
-        }
-
-        let response = request
-            .send()
-            .await
-            .context("Failed to start download")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_msg = if status == 401 {
-                // Extract repo_id from URL for the gated model link
-                let repo_id = url.strip_prefix("https://huggingface.co/")
-                    .and_then(|s| s.split("/resolve/").next())
-                    .unwrap_or("unknown");
-                
-                format!(
-                    "Download failed with HTTP status: 401 Unauthorized.\n\n\
-                    This may be because:\n\
-                    1. The model requires authentication - check your HF_TOKEN\n\
-                    2. The model is gated and requires terms acceptance at huggingface.co\n\
-                    3. You've hit the unauthenticated rate limit (100 req/hour)\n\
-                    4. The model is private or has been removed\n\n\
-                    To fix:\n\
-                    - Get a token from https://huggingface.co/settings/tokens\n\
-                    - Visit https://huggingface.co/{} to request access to gated models\n\
-                    - Set your token in the app settings and try again\n\n\
-                    REPO_ID:{}",
-                    repo_id, repo_id
-                )
-            } else {
-                format!("Download failed with HTTP status: {}", status)
-            };
-            return Err(anyhow::anyhow!(error_msg));
-        }
-
-        // Get size of this shard from Content-Length header
-        let shard_size = response.content_length().unwrap_or(0);
-        
-        let mut file = tokio::fs::File::create(model_dir.join(filename)).await?;
-        let start_time = std::time::Instant::now();
-
-        // Stream the response in chunks for real-time progress
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk_result) = stream.next().await {
-            // Check for cancellation
-            if let Some(progress) = self.progress_tracker.get_progress(download_id).await {
-                if progress.status == DownloadStatus::Cancelled {
-                    // Clean up partial file
-                    let _ = tokio::fs::remove_file(model_dir.join(filename)).await;
-                    return Err(anyhow::anyhow!("Download cancelled by user"));
-                }
-                
-                // Check for pause status
-                if progress.status == DownloadStatus::Paused {
-                    // Wait until the download is resumed
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // Check every 100ms
-                        if let Some(updated_progress) = self.progress_tracker.get_progress(download_id).await {
-                            if updated_progress.status != DownloadStatus::Paused {
-                                break; // Exit the pause loop when resumed or status changed
-                            }
-                        } else {
-                            // If progress is no longer tracked, exit
-                            break;
-                        }
-                    }
-                    
-                    // After resuming, check if we should continue or stop
-                    if let Some(updated_progress) = self.progress_tracker.get_progress(download_id).await {
-                        if updated_progress.status == DownloadStatus::Cancelled {
-                            // Clean up partial file
-                            let _ = tokio::fs::remove_file(model_dir.join(filename)).await;
-                            return Err(anyhow::anyhow!("Download cancelled by user"));
-                        }
-                    }
-                }
-            }
-
-            let chunk = chunk_result.context("Error reading download stream")?;
-            file.write_all(&chunk).await?;
-        }
-
-        file.flush().await?;
-
-        // Update cumulative progress
-        *downloaded_so_far += shard_size;
-        let elapsed = start_time.elapsed();
-        self.progress_tracker.update_elapsed_time(download_id, elapsed).await;
-        self.progress_tracker
-            .update_progress(download_id, *downloaded_so_far, DownloadStatus::Downloading, None)
-            .await;
-
         Ok(())
     }
 

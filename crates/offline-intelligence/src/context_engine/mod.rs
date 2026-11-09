@@ -6,6 +6,12 @@ pub mod orchestrator;
 pub mod document_memory;
 pub mod reference_detector;
 pub mod past_retrieval;
+pub mod workspace_brief;
+pub mod conversation_memory;
+pub mod reading_notes;
+pub mod prompt_replay;
+pub mod topic_memory;
+pub mod duplicates;
 
 pub use retrieval_planner::{RetrievalPlanner, RetrievalPlan};
 pub use tier_manager::{TierManager, TierManagerConfig, TierStats};

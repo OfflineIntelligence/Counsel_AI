@@ -70,7 +70,7 @@ pub struct UserResponse {
 
 const JWT_EXPIRY_HOURS: i64 = 24 * 7;
 
-fn hash_password(password: &str) -> Result<String, String> {
+pub(crate) fn hash_password(password: &str) -> Result<String, String> {
     let salt = SaltString::generate(&mut rand::thread_rng());
     let argon2 = Argon2::default();
     
@@ -81,7 +81,7 @@ fn hash_password(password: &str) -> Result<String, String> {
     Ok(hash.to_string())
 }
 
-fn verify_password(password: &str, hash: &str) -> Result<bool, String> {
+pub(crate) fn verify_password(password: &str, hash: &str) -> Result<bool, String> {
     use argon2::PasswordHash;
     
     let parsed_hash = PasswordHash::new(hash)
@@ -98,7 +98,7 @@ fn generate_verification_token() -> String {
     hex::encode(random)
 }
 
-fn create_jwt_token(email: &str, name: &str, secret: &str) -> Result<String, String> {
+pub(crate) fn create_jwt_token(email: &str, name: &str, secret: &str) -> Result<String, String> {
     let now = chrono::Utc::now().timestamp();
     let exp = now + (JWT_EXPIRY_HOURS * 3600);
     
@@ -118,7 +118,7 @@ fn create_jwt_token(email: &str, name: &str, secret: &str) -> Result<String, Str
     .map_err(|e| format!("Failed to create token: {}", e))
 }
 
-fn decode_jwt_token(token: &str, secret: &str) -> Result<TokenData<Claims>, String> {
+pub(crate) fn decode_jwt_token(token: &str, secret: &str) -> Result<TokenData<Claims>, String> {
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -203,7 +203,7 @@ async fn send_verification_email(email: &str, name: &str, token: &str) -> Result
     Ok(())
 }
 
-fn get_auth_state(state: &UnifiedAppState) -> &AuthState {
+pub(crate) fn get_auth_state(state: &UnifiedAppState) -> &AuthState {
     state.auth_state.as_ref().expect("Auth state not initialized").as_ref()
 }
 

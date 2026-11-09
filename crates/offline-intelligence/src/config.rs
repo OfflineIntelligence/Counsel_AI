@@ -81,6 +81,16 @@ pub struct Config {
     pub queue_size: usize,
     pub queue_timeout_seconds: u64,
     pub backend_url: String,
+    /// Seconds without chat or Aurora use before the model is unloaded
+    /// (MODEL_IDLE_SECONDS, default 300). 0 never unloads.
+    pub model_idle_seconds: u64,
+    /// The same, while the app window is unfocused or minimised
+    /// (MODEL_IDLE_UNFOCUSED_SECONDS, default 90). 0 never unloads.
+    pub model_idle_unfocused_seconds: u64,
+    /// KV cache type for K and V (KV_CACHE_TYPE, default "q8_0"; "f16" off).
+    pub kv_cache_type: String,
+    /// Engine RAM prompt cache cap in MiB (CACHE_RAM_MB, default 1024).
+    pub cache_ram_mb: i64,
 }
 
 impl Config {
@@ -331,6 +341,23 @@ impl Config {
                 .unwrap_or_else(|_| "30".into())
                 .parse()?,
             backend_url,
+            model_idle_seconds: env::var("MODEL_IDLE_SECONDS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(300),
+            model_idle_unfocused_seconds: env::var("MODEL_IDLE_UNFOCUSED_SECONDS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(90),
+            kv_cache_type: env::var("KV_CACHE_TYPE")
+                .ok()
+                .map(|v| v.trim().to_lowercase())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "q8_0".to_string()),
+            cache_ram_mb: env::var("CACHE_RAM_MB")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(1024),
         })
     }
 
@@ -718,24 +745,21 @@ impl Config {
             {
                 let ps_script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
-$max = [int64]0
 $cls = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+$found = $false
 foreach ($c in @($cls)) {
     if (-not $c) { continue }
-    $v = Get-ItemProperty -Path $c.PSPath -Name 'HardwareInformation.qwMemorySize'
-    if ($v) {
+    $v = Get-ItemProperty -Path $c.PSPath -Name 'HardwareInformation.qwMemorySize','DriverDesc'
+    if ($v -and $v.'HardwareInformation.qwMemorySize') {
         $q = [int64]$v.'HardwareInformation.qwMemorySize'
-        if ($q -gt $max) { $max = $q }
+        if ($q -gt 0) { Write-Output ('REG:' + [math]::Round($q / 1MB) + '|' + $v.DriverDesc); $found = $true }
     }
 }
-if ($max -gt 0) {
-    Write-Output ('REG:' + [math]::Round($max / 1MB))
-} else {
-    $gpu = Get-WmiObject Win32_VideoController | Sort-Object AdapterRAM -Descending | Select-Object -First 1
-    if ($gpu -and $gpu.AdapterRAM -gt 0) {
-        Write-Output ('WMI:' + [math]::Round([int64]$gpu.AdapterRAM / 1MB))
-    } else {
-        Write-Output 'NONE:0'
+if (-not $found) {
+    foreach ($gpu in @(Get-WmiObject Win32_VideoController)) {
+        if ($gpu -and $gpu.AdapterRAM -gt 0) {
+            Write-Output ('WMI:' + [math]::Round([int64]$gpu.AdapterRAM / 1MB) + '|' + $gpu.Name)
+        }
     }
 }
 "#;
@@ -997,6 +1021,75 @@ if ($max -gt 0) {
 /// Sources ending in "total" require the caller to reserve the OS/display share
 /// (see gpu_offload::VramKind). Cached in a OnceLock because the registry/WMI
 /// probes spawn PowerShell (hundreds of ms).
+/// Sum of one number per line (nvidia-smi prints one line per GPU), with the
+/// count of lines that parsed; None when no line does.
+fn sum_mb_lines(stdout: &str) -> Option<(u64, usize)> {
+    let values: Vec<u64> = stdout.lines().filter_map(|l| l.trim().parse::<u64>().ok()).collect();
+    (!values.is_empty()).then(|| (values.iter().sum(), values.len()))
+}
+
+/// Total VRAM in MB over every adapter the Windows probe printed
+/// ("REG:<mb>|<name>" or "WMI:<mb>|<name>" per line), with the adapter count
+/// and the source. An entry repeated with the same name and size counts once.
+fn sum_adapter_lines(stdout: &str) -> Option<(u64, usize, &'static str)> {
+    let mut seen: Vec<(String, u64)> = Vec::new();
+    let mut source = "registry-total";
+    for line in stdout.lines() {
+        let Some((kind, rest)) = line.trim().split_once(':') else { continue };
+        let (mb_str, name) = rest.split_once('|').unwrap_or((rest, ""));
+        let Ok(mb) = mb_str.trim().parse::<u64>() else { continue };
+        if mb == 0 {
+            continue;
+        }
+        if kind == "WMI" {
+            source = "wmi-total";
+        }
+        let key = (name.trim().to_string(), mb);
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    (!seen.is_empty()).then(|| (seen.iter().map(|(_, mb)| mb).sum(), seen.len(), source))
+}
+
+/// Free VRAM in MB summed over the (total, used) byte pairs of each card.
+fn sum_free_mb(cards: &[(u64, u64)]) -> u64 {
+    cards.iter().map(|(total, used)| total.saturating_sub(*used) / 1024 / 1024).sum()
+}
+
+/// Free VRAM over every amdgpu card under `drm` (normally /sys/class/drm):
+/// each `cardN/device` that has `mem_info_vram_total` and `mem_info_vram_used`.
+/// A card reached through two names counts once.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn amdgpu_free_mb(drm: &std::path::Path) -> Option<(u64, usize)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut cards: Vec<(u64, u64)> = Vec::new();
+    for entry in std::fs::read_dir(drm).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // cardN only, not connectors such as card0-HDMI-A-1.
+        let is_card = name.len() > 4 && name.starts_with("card") && name[4..].chars().all(|c| c.is_ascii_digit());
+        if !is_card {
+            continue;
+        }
+        let dev = entry.path().join("device");
+        let read = |f: &str| std::fs::read_to_string(dev.join(f)).ok().and_then(|v| v.trim().parse::<u64>().ok());
+        let (Some(total), Some(used)) = (read("mem_info_vram_total"), read("mem_info_vram_used")) else { continue };
+        let id = std::fs::canonicalize(&dev).unwrap_or_else(|_| dev.clone());
+        if seen.insert(id) {
+            cards.push((total, used));
+        }
+    }
+    (!cards.is_empty()).then(|| (sum_free_mb(&cards), cards.len()))
+}
+
+/// GPU budget in MB on unified memory (Apple Silicon): what the system has
+/// available now, but no more than 3/4 of all memory, so the GPU cannot
+/// starve the rest of the system.
+#[cfg_attr(not(any(all(target_os = "macos", target_arch = "aarch64"), test)), allow(dead_code))]
+fn unified_budget_mb(total_bytes: u64, available_bytes: u64) -> u64 {
+    available_bytes.min(total_bytes / 4 * 3) / 1024 / 1024
+}
+
 pub fn detect_available_vram_mb() -> Option<(u64, &'static str)> {
     use std::sync::OnceLock;
     static VRAM: OnceLock<Option<(u64, &'static str)>> = OnceLock::new();
@@ -1006,14 +1099,16 @@ pub fn detect_available_vram_mb() -> Option<(u64, &'static str)> {
         #[cfg(all(feature = "nvidia", any(target_os = "windows", target_os = "linux")))]
         {
             if let Ok(nvml) = Nvml::init() {
-                if let Ok(device) = nvml.device_by_index(0) {
-                    if let Ok(mem) = device.memory_info() {
-                        let free_mb = mem.free / 1024 / 1024;
-                        if free_mb > 0 {
-                            info!("VRAM probe: {} MB free via NVML", free_mb);
-                            return Some((free_mb, "nvml-free"));
-                        }
-                    }
+                // Every GPU: the engine splits layers across all of them.
+                let count = nvml.device_count().unwrap_or(1).max(1);
+                let free_mb: u64 = (0..count)
+                    .filter_map(|i| nvml.device_by_index(i).ok())
+                    .filter_map(|d| d.memory_info().ok())
+                    .map(|m| m.free / 1024 / 1024)
+                    .sum();
+                if free_mb > 0 {
+                    info!("VRAM probe: {} MB free across {} GPU(s) via NVML", free_mb, count);
+                    return Some((free_mb, "nvml-free"));
                 }
             }
         }
@@ -1034,9 +1129,9 @@ pub fn detect_available_vram_mb() -> Option<(u64, &'static str)> {
             if let Ok(output) = cmd.output() {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Some(mb) = stdout.lines().next().and_then(|l| l.trim().parse::<u64>().ok()) {
+                    if let Some((mb, gpus)) = sum_mb_lines(&stdout) {
                         if mb > 0 {
-                            info!("VRAM probe: {} MB free via nvidia-smi", mb);
+                            info!("VRAM probe: {} MB free across {} GPU(s) via nvidia-smi", mb, gpus);
                             return Some((mb, "nvidia-smi-free"));
                         }
                     }
@@ -1044,7 +1139,40 @@ pub fn detect_available_vram_mb() -> Option<(u64, &'static str)> {
             }
         }
 
-        // 3. Display-adapter registry / WMI (AMD, Intel, Arc — total VRAM only)
+        // 3. Linux amdgpu: free VRAM per card from the driver's sysfs files.
+        #[cfg(target_os = "linux")]
+        {
+            // AMD through the amdgpu driver's counters, Intel discrete GPUs
+            // through their driver's memory-region query; both counted.
+            let amd = amdgpu_free_mb(std::path::Path::new("/sys/class/drm"));
+            let intel = crate::model_runtime::intel_vram::intel_vram_mb();
+            let mb = amd.map_or(0, |(m, _)| m) + intel.map_or(0, |(m, _, _)| m);
+            if mb > 0 {
+                let gpus = amd.map_or(0, |(_, g)| g) + intel.map_or(0, |(_, g, _)| g);
+                // Free only if every reading is free memory (Intel needs CAP_PERFMON for that).
+                let free = intel.map_or(true, |(_, _, f)| f);
+                info!(
+                    "VRAM probe: {} MB {} across {} GPU(s) (AMD {:?}, Intel {:?})",
+                    mb, if free { "free" } else { "total" }, gpus, amd, intel
+                );
+                return Some((mb, if free { "linux-gpu-free" } else { "linux-gpu-total" }));
+            }
+        }
+
+        // 4. Apple Silicon: the GPU shares unified memory with the CPU.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            use sysinfo::System;
+            let mut sys = System::new();
+            sys.refresh_memory();
+            let mb = unified_budget_mb(sys.total_memory(), sys.available_memory());
+            if mb > 0 {
+                info!("VRAM probe: {} MB of unified memory available to the GPU", mb);
+                return Some((mb, "unified-free"));
+            }
+        }
+
+        // 5. Windows display-adapter registry / WMI (AMD, Intel, Arc): total VRAM per adapter, summed
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -1082,15 +1210,9 @@ if ($max -gt 0) {
 
             if let Ok(output) = result {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let line = stdout.trim();
-                if let Some((source, mb_str)) = line.split_once(':') {
-                    if let Ok(mb) = mb_str.trim().parse::<u64>() {
-                        if mb > 0 {
-                            let tag = if source == "REG" { "registry-total" } else { "wmi-total" };
-                            info!("VRAM probe: {} MB total via {}", mb, tag);
-                            return Some((mb, tag));
-                        }
-                    }
+                if let Some((mb, gpus, tag)) = sum_adapter_lines(&stdout) {
+                    info!("VRAM probe: {} MB total across {} GPU(s) via {}", mb, gpus, tag);
+                    return Some((mb, tag));
                 }
             }
         }
@@ -1110,6 +1232,13 @@ if ($max -gt 0) {
 /// AppData\Local (not Roaming), matching where the Tauri shell stores
 /// its own data.
 pub fn get_app_data_dir() -> std::path::PathBuf {
+    // Development/testing override: run a backend against an isolated copy of
+    // the app data instead of the user's real folder. Unset in installs.
+    if let Ok(dir) = std::env::var("OFFLINE_COUNSEL_APP_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
         .join("Offline Counsel AI")
@@ -1193,6 +1322,10 @@ mod tests {
             queue_size: 1000,
             queue_timeout_seconds: 300,
             backend_url: "http://127.0.0.1:9639".to_string(),
+            model_idle_seconds: 300,
+            model_idle_unfocused_seconds: 90,
+            kv_cache_type: "q8_0".to_string(),
+            cache_ram_mb: 1024,
         }
     }
 
@@ -1561,5 +1694,59 @@ mod tests {
         assert!(config.gpu_layers <= config.ctx_size);
         assert!(config.api_port > 0);
         assert!(config.llama_port > 0);
+    }
+}
+
+#[cfg(test)]
+mod vram_sum_tests {
+    use super::sum_mb_lines;
+
+    #[test]
+    fn free_memory_is_summed_over_every_gpu() {
+        assert_eq!(sum_mb_lines("3817\n"), Some((3817, 1)));
+        assert_eq!(sum_mb_lines("24000\n23500\r\n24100\n"), Some((71600, 3)));
+        assert_eq!(sum_mb_lines("N/A\n"), None);
+        assert_eq!(sum_mb_lines(""), None);
+    }
+
+    #[test]
+    fn windows_adapters_are_summed_and_repeated_entries_count_once() {
+        use super::sum_adapter_lines;
+        let out = "REG:16368|AMD Radeon RX 7800 XT\nREG:16368|AMD Radeon RX 7800 XT\nREG:12272|Intel(R) Arc(TM) A770\nREG:0|Microsoft Basic Display\n";
+        assert_eq!(sum_adapter_lines(out), Some((16368 + 12272, 2, "registry-total")));
+        assert_eq!(sum_adapter_lines("WMI:8192|Radeon\r\n"), Some((8192, 1, "wmi-total")));
+        assert_eq!(sum_adapter_lines("NONE:0\n"), None);
+        assert_eq!(sum_adapter_lines(""), None);
+    }
+
+    #[test]
+    fn amd_free_memory_is_read_from_sysfs_and_summed() {
+        use super::amdgpu_free_mb;
+        let root = std::env::temp_dir().join(format!("oca_drm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let gib = 1024u64 * 1024 * 1024;
+        let card = |name: &str, total: u64, used: u64| {
+            let dev = root.join(name).join("device");
+            std::fs::create_dir_all(&dev).unwrap();
+            std::fs::write(dev.join("mem_info_vram_total"), total.to_string()).unwrap();
+            std::fs::write(dev.join("mem_info_vram_used"), used.to_string()).unwrap();
+        };
+        card("card0", 24 * gib, 2 * gib);
+        card("card1", 16 * gib, 4 * gib);
+        // A connector entry and a card without amdgpu files are ignored.
+        std::fs::create_dir_all(root.join("card0-DP-1")).unwrap();
+        std::fs::create_dir_all(root.join("card2").join("device")).unwrap();
+        assert_eq!(amdgpu_free_mb(&root), Some(((22 + 12) * 1024, 2)));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(amdgpu_free_mb(&root), None);
+    }
+
+    #[test]
+    fn unified_memory_budget_is_available_memory_capped_at_three_quarters() {
+        use super::unified_budget_mb;
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(unified_budget_mb(64 * gib, 20 * gib), 20 * 1024);
+        assert_eq!(unified_budget_mb(64 * gib, 60 * gib), 48 * 1024);
+        assert_eq!(unified_budget_mb(0, 0), 0);
     }
 }

@@ -6,12 +6,11 @@
 //! between components. The only network call is to the localhost llama-server.
 
 use std::sync::Arc;
-use tracing::{debug, info, warn, error};
+use tracing::{info, warn, error};
 
 use crate::{
     config::Config,
     shared_state::{SharedState, UnifiedAppState},
-    thread_pool::{ThreadPool, ThreadPoolConfig},
     memory_db::MemoryDatabase,
     model_management::ModelManager,
 };
@@ -21,18 +20,49 @@ use crate::{
 /// # Arguments
 /// * `cfg` - Server configuration
 /// * `port_tx` - Optional channel to communicate the bound port back to the Tauri main thread.
-///               The server binds exclusively to cfg.api_port (8888) â€” no random fallback.
+///               The server prefers cfg.api_port (8888) and falls back to a free port if it stays taken.
 pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sender<u16>>) -> anyhow::Result<()> {
     crate::telemetry::init_tracing();
     crate::metrics::init_metrics();
+    crate::generation_queue::configure(&cfg);
     cfg.print_config();
 
     info!("Starting thread-based server architecture");
+
+    // Bind the TCP socket and notify the Tauri main thread FIRST, before any
+    // initialisation that can be slow (hardware probes, engine scan, model
+    // catalog) or fail. The main thread waits on this port with a timeout;
+    // anything ahead of the bind turns a slow disk or antivirus scan into a
+    // "failed to bind" startup error. axum::serve accepts connections only
+    // after all init is done.
+    let (listener, selected_port) = bind_and_notify_port(
+        &cfg.api_host,
+        cfg.api_port,
+        port_tx,          // consumed here; no second send below
+    ).await?;
+    info!("Socket reserved on port {}; starting initialisation", selected_port);
 
     // Kill any llama-server left behind by a previous session (force-killed app,
     // pre-job-object build). Runs BEFORE any engine verification or runtime
     // spawn so it can never race against this session's own child processes.
     crate::model_runtime::process_util::kill_orphaned_llama_servers();
+
+    // The chat engine's port must be free BEFORE the runtime starts, or the
+    // model load fails. An orphan just killed above releases it within a
+    // moment; anything else holding it (another program) is worked around by
+    // moving the engine to a free port. The engine is only ever reached
+    // through cfg.backend_url, so nothing else needs to know.
+    let mut cfg = cfg;
+    if !wait_for_free_port(&cfg.llama_host, cfg.llama_port, std::time::Duration::from_secs(2)).await {
+        match std::net::TcpListener::bind((cfg.llama_host.as_str(), 0)).and_then(|l| l.local_addr()) {
+            Ok(addr) => {
+                warn!("Engine port {} is in use by another program; using {} instead", cfg.llama_port, addr.port());
+                cfg.llama_port = addr.port();
+                cfg.backend_url = format!("http://{}:{}", cfg.llama_host, cfg.llama_port);
+            }
+            Err(e) => warn!("Engine port {} is in use and no free port was found: {}", cfg.llama_port, e),
+        }
+    }
 
     // Initialize database - use canonical app data directory for persistence across updates
     // This ensures data survives app updates and works on Windows where Program Files is read-only
@@ -131,19 +161,10 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
     // vision model when one is active (Windows OCR otherwise).
     crate::utils::vision_extraction::register_shared_state(shared_state.clone());
 
-    // â”€â”€ BIND PORT EARLY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Bind the TCP socket and notify the Tauri main thread *before* any slow
-    // initialisation (runtime load, catalog refresh, â€¦) so the main-thread
-    // port-wait never races against engine or model operations.
-    // axum::serve will start accepting connections only after all init is done.
-    let (listener, selected_port) = bind_and_notify_port(
-        &cfg.api_host,
-        cfg.api_port,
-        &shared_state,
-        port_tx,          // consumed here â€” no second send below
-    ).await?;
-
-    info!("ðŸŒ Socket reserved on port {} â€” starting heavy initialisation", selected_port);
+    // Store in shared_state so API handlers can report the real port
+    if let Ok(mut guard) = shared_state.http_port.write() {
+        *guard = selected_port;
+    }
 
     // Initialize Runtime Manager for multi-format model support
     info!("ðŸš€ Initializing Runtime Manager for multi-format model support");
@@ -164,7 +185,7 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
     // This prevents race conditions and ensures llama-server is available when UI loads
     info!("â³ Waiting for runtime to be ready...");
 
-    let mut runtime_initialized = false;
+    let runtime_initialized = false;
 
     // Always register the RuntimeManager in shared state so that POST /models/switch
     // can find it even when no engine is installed at startup.  The manager starts
@@ -181,6 +202,7 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
         if let Some(default_engine) = registry.get_default_engine_binary_path() {
             drop(registry); // Release the read lock
             info!("âœ… Default engine found: {}", default_engine.display());
+            crate::rag::embedder::set_engine_binary(default_engine.clone());
 
             // Try to load last used model instead of config model (which is often empty)
             let should_auto_load = if cfg.model_path.is_empty() {
@@ -251,22 +273,12 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
                                             updated_config.mmproj_path = auto_load_mmproj;
 
                                             // Initialize with last used model
-                                            match runtime_manager.initialize_auto(updated_config).await {
-                                                Ok(base_url) => {
-                                                    info!("âœ… Last used model auto-loaded at {}", base_url);
-                                                    match runtime_manager.health_check().await {
-                                                        Ok(status) => {
-                                                            info!("âœ… Runtime health check passed: {}", status);
-                                                            runtime_initialized = true;
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("âš ï¸  Runtime health check failed after auto-load: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    warn!("âš ï¸  Failed to auto-load last used model: {}", e);
-                                                }
+                                            // Lazy startup: choose the model but load nothing.
+                                            // The first chat or Aurora question (or a prewarm)
+                                            // loads it; see model_runtime::lifecycle.
+                                            match runtime_manager.park(updated_config).await {
+                                                Ok(()) => info!("Last used model chosen; it loads on first use"),
+                                                Err(e) => warn!("Could not prepare the last used model: {}", e),
                                             }
 
                                             // Skip the manual load block below
@@ -323,33 +335,11 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
                 }
 
                 // BLOCKING initialization with 120 second timeout for llama-server health check
-                info!("ðŸš€ Initializing runtime (this may take up to 2 minutes)...");
-                match runtime_manager.initialize_auto(updated_config).await {
-                Ok(base_url) => {
-                    info!("âœ… Runtime initialized at {}", base_url);
-
-                    // Verify runtime is actually ready by performing health check
-                    match runtime_manager.health_check().await {
-                        Ok(status) => {
-                            info!("âœ… Runtime health check passed: {}", status);
-
-                            // Link runtime manager to LLM worker
-                            shared_state.llm_worker.set_runtime_manager(runtime_manager.clone());
-                            info!("ðŸ”— LLM worker linked to runtime");
-
-                            runtime_initialized = true;
-                        }
-                        Err(e) => {
-                            warn!("âš ï¸  Runtime health check failed: {}", e);
-                            warn!("   App will continue without runtime â€” no model loaded");
-                        }
-                    }
+                // Lazy startup, as above: chosen now, loaded on first use.
+                match runtime_manager.park(updated_config).await {
+                    Ok(()) => info!("MODEL_PATH model chosen; it loads on first use"),
+                    Err(e) => warn!("Could not prepare the MODEL_PATH model: {}", e),
                 }
-                Err(e) => {
-                    warn!("âš ï¸  Runtime initialization failed: {}", e);
-                    warn!("   App will continue without runtime â€” no model loaded");
-                }
-            }
             } // End of should_auto_load else block
         } else {
             drop(registry); // Release the read lock
@@ -392,11 +382,6 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
         }
     };
 
-    // Initialize thread pool
-    let thread_pool_config = ThreadPoolConfig::new(&cfg);
-    let mut thread_pool = ThreadPool::new(thread_pool_config, shared_state.clone());
-    thread_pool.start().await?;
-
     // Set context orchestrator (tokio RwLock for async access from handlers)
     {
         let mut orch_guard = shared_state.context_orchestrator.write().await;
@@ -411,64 +396,24 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
     // before the app closed has bytes but no searchable content. Spawned (not
     // awaited) so it never delays the server coming up, and sequential inside
     // so OCR does not compete with the first conversation.
-    // Warm start: put the last conversation's KV state back into the engine's
-    // slot, so its next message skips re-processing the whole conversation.
-    //
-    // Spawned rather than awaited so it never delays the HTTP server coming
-    // up: restoring a large blob is disk-bound, and until it finishes the app
-    // is merely as slow as it was before this feature existed. `restore_if_valid`
-    // refuses anything saved by a different model, engine or context size and
-    // deletes it, so a stale blob costs one launch, not every launch.
+    // Unload the model after a stretch without chat or Aurora use. Warm start
+    // is now saved on each unload and restored on each wake (lifecycle.rs).
+    crate::model_runtime::lifecycle::spawn_idle_reaper(shared_state.clone());
+
+    crate::api::files_api::spawn_startup_backfill(unified_state.clone());
+
+    // Install and index the legal reference documents shipped with the app.
+    crate::knowledge::spawn_startup_sync(unified_state.clone());
+    // Topic memory for conversations that predate it (bounded, background).
     {
-        let warm_state = unified_state.clone();
-        tokio::spawn(async move {
-            let rt = warm_state.shared_state.runtime_manager.read().ok().and_then(|g| g.clone());
-            let Some(rt) = rt else { return };
-            let Some(base_url) = rt.get_base_url().await else { return };
-            let Some(cfg) = rt.get_current_config().await else { return };
-
-            let model_id = cfg
-                .model_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let engine_id = match warm_state.shared_state.engine_manager {
-                Some(ref em) => {
-                    let registry = em.registry.read().await;
-                    registry.get_default_engine().map(|e| e.id.clone()).unwrap_or_default()
-                }
-                None => String::new(),
-            };
-            let ctx_size = rt.get_effective_context().await.unwrap_or(cfg.context_size);
-
-            use crate::model_runtime::slot_cache::RestoreOutcome;
-            match crate::model_runtime::slot_cache::restore_if_valid(
-                &warm_state.shared_state.database_pool,
-                &base_url,
-                &model_id,
-                &engine_id,
-                ctx_size,
-            )
-            .await
-            {
-                RestoreOutcome::Restored { session_id, n_tokens } => {
-                    info!("Warm start ready: {} tokens restored for session {}", n_tokens, session_id);
-                }
-                RestoreOutcome::NoRecord => {
-                    debug!("No warm-start cache from a previous run");
-                }
-                RestoreOutcome::Rejected(reason) => {
-                    info!("Warm-start cache not used: {}", reason);
-                }
-                RestoreOutcome::Failed(reason) => {
-                    warn!("Warm-start restore failed: {} - the next message will be processed normally", reason);
-                }
+        let db = shared_state.database_pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let n = crate::context_engine::topic_memory::backfill(&db, 500);
+            if n > 0 {
+                info!("Topic memory built for {} earlier conversation(s)", n);
             }
         });
     }
-
-    crate::api::files_api::spawn_startup_backfill(unified_state.clone());
 
     // Bring disk usage under the configured budget once at startup.
     //
@@ -478,6 +423,11 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
     // it having finished. A pass also runs on every PUT /settings/storage, so
     // this is the "limit was lowered while the app was closed, or files grew
     // between runs" case rather than the only enforcement point.
+    // Background retrieval indexer: chunks and keyword-indexes every stored
+    // document (including ones from before this version), then embeds them
+    // once the embedding model is available.
+    crate::rag::indexer::spawn(unified_state.shared_state.database_pool.clone());
+
     {
         let eviction_state = unified_state.clone();
         tokio::spawn(async move {
@@ -490,6 +440,7 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
 
     info!("âœ… Backend initialisation complete â€” starting HTTP server on port {}", selected_port);
     let app = build_compatible_router(unified_state);
+    spawn_metrics_listener(&cfg);
 
     if let Err(e) = axum::serve(listener, app).await {
         error!("Axum server error: {}", e);
@@ -499,35 +450,60 @@ pub async fn run_thread_server(cfg: Config, port_tx: Option<std::sync::mpsc::Sen
     Ok(())
 }
 
+/// PROMETHEUS_PORT: a second loopback listener serving only GET /metrics, for
+/// a scraper that should not reach the rest of the API. 0 or the API port
+/// itself turns it off (GET /metrics on the API stays available either way).
+fn spawn_metrics_listener(cfg: &Config) {
+    let port = cfg.prometheus_port;
+    if port == 0 || port == cfg.api_port {
+        return;
+    }
+    let addr = format!("{}:{}", cfg.api_host, port);
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => {
+                info!("Prometheus metrics on http://{}/metrics", addr);
+                let app = axum::Router::new().route("/metrics", axum::routing::get(crate::metrics::get_metrics));
+                if let Err(e) = axum::serve(listener, app).await {
+                    warn!("Metrics listener stopped: {}", e);
+                }
+            }
+            Err(e) => warn!("Metrics port {} unavailable ({}); /metrics stays on the API port", addr, e),
+        }
+    });
+}
+
 /// Bind to the configured port, store the result in shared_state, and notify the main
 /// thread immediately via port_tx.  Returns the bound TcpListener and selected port so
 /// axum::serve can start later (after all heavy init is done).
-/// Fails fast with a clear error if the port is already in use â€” no random fallback.
+/// Falls back to a free port if the configured one stays in use.
 async fn bind_and_notify_port(
     host: &str,
     configured_port: u16,
-    shared_state: &Arc<crate::shared_state::SharedState>,
     port_tx: Option<std::sync::mpsc::Sender<u16>>,
 ) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
-    let (listener, selected_port) = match try_bind_port(host, configured_port).await {
-        Ok(listener) => {
-            let port = listener.local_addr()?.port();
-            info!("âœ… HTTP server socket bound to {}:{}", host, port);
-            (listener, port)
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "Failed to bind API server to port {}: {}. \
-                 Ensure port {} is not already in use by another application or another instance of this app.",
-                configured_port, e, configured_port
-            ));
+    // The configured port first. A previous session that is still closing
+    // can hold it for a moment, so keep trying briefly before giving up on it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let listener = loop {
+        match try_bind_port(host, configured_port).await {
+            Ok(listener) => break Some(listener),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                warn!("{}; falling back to a free port", e);
+                break None;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
         }
     };
-
-    // Store in shared_state so API handlers can report the real port
-    if let Ok(mut guard) = shared_state.http_port.write() {
-        *guard = selected_port;
-    }
+    // Port taken by another program: any free loopback port works, because
+    // the UI asks the Tauri shell for the real port (get_backend_port) rather
+    // than assuming 8888.
+    let listener = match listener {
+        Some(listener) => listener,
+        None => try_bind_port(host, 0).await?,
+    };
+    let selected_port = listener.local_addr()?.port();
+    info!("HTTP server socket bound to {}:{}", host, selected_port);
 
     // Notify main thread â€” exactly once
     if let Some(tx) = port_tx {
@@ -539,6 +515,20 @@ async fn bind_and_notify_port(
     }
 
     Ok((listener, selected_port))
+}
+
+/// True once `port` can be bound, polling until `wait` has passed.
+async fn wait_for_free_port(host: &str, port: u16, wait: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if std::net::TcpListener::bind((host, port)).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Try to bind to a specific port, returning the listener if successful
@@ -632,6 +622,9 @@ async fn health_check(axum::extract::State(state): axum::extract::State<UnifiedA
         ("switching", Some(format!("Switching to model: {}", model_name)))
     } else if matches!(runtime_state, crate::model_runtime::RuntimeState::Restarting) {
         ("switching", Some("Model server is restarting, please wait...".to_string()))
+    } else if let crate::model_runtime::RuntimeState::Sleeping { ref model_name } = runtime_state {
+        // Reported as "ready": nothing is wrong, the model loads on demand.
+        ("ready", Some(format!("Model {} is unloaded to save memory; it loads on the next question", model_name)))
     } else {
         let msg = match engine {
             Some(crate::engine_management::EngineState::NotInstalled) => {
@@ -674,14 +667,39 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
     };
     use std::time::Duration;
 
+    // Only the app's own pages may call the API from a browser context: the
+    // Tauri webview (tauri://localhost on macOS/Linux, http(s)://tauri.localhost
+    // on Windows) and local dev servers. `Any` let every website open in the
+    // user's browser read their Vault, chats and settings off 127.0.0.1.
+    // Non-browser callers send no Origin and are unaffected.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::DELETE])
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
+            let o = origin.to_str().unwrap_or("");
+            o == "tauri://localhost"
+                || o == "http://tauri.localhost"
+                || o == "https://tauri.localhost"
+                || o.starts_with("http://localhost:")
+                || o.starts_with("http://127.0.0.1:")
+                || o == "http://localhost"
+                || o == "http://127.0.0.1"
+        }))
+        // PATCH is load-bearing and was missing: renaming a draft, moving one
+        // between folders, filing it under a matter and changing its status
+        // are all PATCH, and every one of them failed in the browser as an
+        // unexplained "Failed to fetch" while working perfectly over curl.
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+        ])
         .allow_headers(Any);
 
     // Get JWT secret from environment or generate a default
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "offline-intelligence-default-secret-change-in-production".to_string());
+    // JWT_SECRET if set; otherwise a random secret created once per install and
+    // kept in the app's data folder, so no two installs share a signing key.
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| install_secret());
 
     // Get users store from database
     let users_store = state.shared_state.database_pool.users.clone();
@@ -698,6 +716,19 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         .route("/auth/login", post(crate::api::auth_api::login))
         .route("/auth/verify-email", post(crate::api::auth_api::verify_email))
         .route("/auth/me", post(crate::api::auth_api::get_current_user))
+        // E-mail verified accounts: one-time code, then user name + password
+        .route("/auth/status", get(crate::api::account_api::status))
+        .route("/auth/register/start", post(crate::api::account_api::register_start))
+        .route("/auth/register/verify", post(crate::api::account_api::register_verify))
+        .route("/auth/signin", post(crate::api::account_api::sign_in))
+        // Passwordless sign-in by e-mailed code, and Google / Microsoft
+        .route("/auth/age", post(crate::api::account_api::confirm_age))
+        .route("/auth/otp/start", post(crate::api::account_api::otp_start))
+        .route("/auth/otp/verify", post(crate::api::account_api::otp_verify))
+        .route("/auth/providers", get(crate::api::oauth_api::providers))
+        .route("/auth/oauth/start", post(crate::api::oauth_api::start))
+        .route("/auth/oauth/callback", get(crate::api::oauth_api::callback))
+        .route("/auth/oauth/result", get(crate::api::oauth_api::result))
         // Core 1-hop streaming endpoint
         .route("/generate/stream", post(crate::api::stream_api::generate_stream))
         // Conversation CRUD via shared memory -> database
@@ -709,8 +740,10 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         .route("/conversations/:id", delete(crate::api::conversation_api::delete_conversation))
         // Model management endpoints
         .route("/models", get(crate::api::model_api::list_models))
+        .route("/context/window", get(crate::api::model_api::context_window))
         .route("/models/by-mode", get(crate::api::model_api::list_models_by_mode))
         .route("/models/active", get(crate::api::model_api::get_active_model))
+        .route("/models/readiness", get(crate::api::model_api::get_model_readiness))
         .route("/models/search", get(crate::api::model_api::search_models))
         .route("/models/install", post(crate::api::model_api::install_model))
         .route("/models/remove", delete(crate::api::model_api::remove_model))
@@ -719,10 +752,16 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         .route("/models/downloads/cancel", post(crate::api::model_api::cancel_download))
         .route("/models/downloads/pause", post(crate::api::model_api::pause_download))
         .route("/models/downloads/resume", post(crate::api::model_api::resume_download))
+        .route("/models/downloads/interrupted", get(crate::api::model_api::get_interrupted_downloads))
+        .route("/models/downloads/interrupted/discard", post(crate::api::model_api::discard_interrupted_download))
         .route("/models/recommendations", get(crate::api::model_api::get_recommended_models))
         .route("/models/preferences", post(crate::api::model_api::update_preferences))
+        .route("/models/marks", get(crate::api::model_prefs_api::get_marks))
+        .route("/models/marks/star", post(crate::api::model_prefs_api::set_star))
         .route("/models/refresh", post(crate::api::model_api::refresh_models))
         .route("/models/switch", post(crate::api::model_api::switch_model))
+        .route("/models/prewarm", post(crate::api::model_api::prewarm_model))
+        .route("/runtime/focus", post(crate::api::model_api::set_window_focus))
         .route("/hardware/recommendations", get(crate::api::model_api::get_hardware_recommendations))
         .route("/hardware/info", get(crate::api::model_api::get_hardware_info))
         // Engine management endpoints
@@ -743,13 +782,88 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         .route("/drafts/upload", post(crate::api::drafts_api::create_from_upload))
         .route("/drafts/blank", post(crate::api::drafts_api::create_blank))
         .route(
+            "/workspace/search",
+            get(crate::api::drafts_api::search_workspace),
+        )
+        .route("/compare", post(crate::api::drafts_api::compare_documents))
+        .route(
+            "/matters",
+            get(crate::api::drafts_api::list_matters).post(crate::api::drafts_api::create_matter),
+        )
+        .route(
+            "/matters/:id",
+            axum::routing::patch(crate::api::drafts_api::update_matter)
+                .delete(crate::api::drafts_api::delete_matter),
+        )
+        // The library sits beside /drafts rather than under it: a precedent
+        // outlives the matter it came from, so it is not a draft.
+        .route(
+            "/library",
+            get(crate::api::drafts_api::list_library)
+                .post(crate::api::drafts_api::create_library_item),
+        )
+        // Literal segments before /library/:id, same reason as /drafts/upload.
+        .route(
+            "/library/:id/text",
+            get(crate::api::drafts_api::library_item_text),
+        )
+        .route(
+            "/library/:id/new-draft",
+            post(crate::api::drafts_api::new_draft_from_library),
+        )
+        .route(
+            "/library/:id",
+            axum::routing::delete(crate::api::drafts_api::delete_library_item),
+        )
+        .route(
+            "/drafts/:id/to-library",
+            post(crate::api::drafts_api::draft_to_library),
+        )
+        .route(
+            "/clauses",
+            get(crate::api::drafts_api::list_clauses)
+                .post(crate::api::drafts_api::create_clause),
+        )
+        .route(
+            "/clauses/:id",
+            axum::routing::delete(crate::api::drafts_api::delete_clause),
+        )
+        .route(
+            "/drafts/:id/matter",
+            axum::routing::patch(crate::api::drafts_api::assign_draft_matter),
+        )
+        .route(
+            "/drafts/:id/status",
+            axum::routing::patch(crate::api::drafts_api::set_draft_status),
+        )
+        .route(
+            "/drafts/:id/star",
+            axum::routing::patch(crate::api::drafts_api::set_draft_starred),
+        )
+        .route(
+            "/draft-folders",
+            get(crate::api::drafts_api::list_folders).post(crate::api::drafts_api::create_folder),
+        )
+        .route(
+            "/draft-folders/:id",
+            axum::routing::patch(crate::api::drafts_api::update_folder)
+                .delete(crate::api::drafts_api::delete_folder),
+        )
+        .route(
+            "/drafts/:id/folder",
+            axum::routing::patch(crate::api::drafts_api::move_draft),
+        )
+        .route(
             "/drafts/:id",
             get(crate::api::drafts_api::get_draft)
                 .patch(crate::api::drafts_api::rename_draft)
                 .delete(crate::api::drafts_api::delete_draft),
         )
         .route("/drafts/:id/content", get(crate::api::drafts_api::get_content))
+        .route("/drafts/:id/preview", get(crate::api::drafts_api::get_preview))
         .route("/drafts/:id/patch", post(crate::api::drafts_api::apply_patch))
+        .route("/drafts/:id/undo", get(crate::api::drafts_api::undo_state).post(crate::api::drafts_api::undo))
+        .route("/drafts/:id/redo", post(crate::api::drafts_api::redo))
         .route("/drafts/:id/raw", get(crate::api::drafts_api::get_raw))
         .route("/drafts/:id/publish", post(crate::api::drafts_api::publish))
         .route("/drafts/:id/page/:page", get(crate::api::drafts_api::get_page))
@@ -758,6 +872,7 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
             get(crate::api::drafts_api::list_versions).post(crate::api::drafts_api::checkpoint),
         )
         .route("/drafts/:id/versions/:n/restore", post(crate::api::drafts_api::restore_version))
+        .route("/drafts/:id/versions/:n", delete(crate::api::drafts_api::delete_version))
         .route("/engines", get(crate::api::model_api::list_available_engines))
         .route("/engines/install", post(crate::api::model_api::install_engine))
         .route("/engines/progress", get(crate::api::model_api::get_engine_download_progress))
@@ -767,12 +882,19 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         // User-adjustable settings (disk budget)
         .route("/settings/storage", get(crate::api::settings_api::get_storage_settings)
                                    .put(crate::api::settings_api::update_storage_settings))
-        // API Keys management endpoints
-        .route("/api-keys", post(crate::api::api_keys_api::save_api_key))
-        .route("/api-keys", get(crate::api::api_keys_api::get_api_key))
-        .route("/api-keys/all", get(crate::api::api_keys_api::get_all_api_keys))
-        .route("/api-keys", delete(crate::api::api_keys_api::delete_api_key))
-        .route("/api-keys/mark-used", post(crate::api::api_keys_api::mark_key_used))
+        // API keys and cloud models: a signed-in session once an account exists.
+        .merge(
+            Router::new()
+                .route("/api-keys", post(crate::api::api_keys_api::save_api_key))
+                .route("/api-keys", get(crate::api::api_keys_api::get_api_key))
+                .route("/api-keys/all", get(crate::api::api_keys_api::get_all_api_keys))
+                .route("/api-keys", delete(crate::api::api_keys_api::delete_api_key))
+                .route("/api-keys/mark-used", post(crate::api::api_keys_api::mark_key_used))
+                .route("/cloud/providers", get(crate::api::cloud_api::list_providers))
+                .route("/cloud/models", get(crate::api::cloud_api::list_models))
+                .route("/cloud/active", get(crate::api::cloud_api::get_active).post(crate::api::cloud_api::set_active))
+                .route_layer(axum::middleware::from_fn_with_state(state.clone(), crate::api::authz::require_session)),
+        )
         // Files API endpoints (database-backed with nested folder support)
         .route("/files", get(crate::api::files_api::get_files))
         .route("/files/all", get(crate::api::files_api::get_all_files))
@@ -787,15 +909,48 @@ pub(crate) fn build_compatible_router(mut state: UnifiedAppState) -> axum::Route
         .route("/files", delete(crate::api::files_api::delete_file))
         // Feedback endpoint
         .route("/feedback", post(crate::api::feedback_api::submit_feedback))
+        .route(
+            "/announcements/:id/seen",
+            get(crate::api::announcements_api::get_seen),
+        )
+        .route(
+            "/announcements/seen",
+            post(crate::api::announcements_api::mark_seen),
+        )
         // Login notification endpoint
         .route("/notify-login", post(crate::api::login_notification_api::notify_user_login))
         // Metrics endpoint
         .route("/metrics", get(crate::metrics::get_metrics))
         .route("/healthz", get(health_check))
         .route("/admin/shutdown", post(crate::admin::stop_backend))
+        .route("/admin/health", get(crate::api::admin_api::health))
+        .route("/admin/db-stats", get(crate::api::admin_api::db_stats))
+        .route("/admin/maintenance", post(crate::api::admin_api::maintenance))
+        .route("/memory/optimize", post(crate::api::memory_api::memory_optimize))
+        .route("/memory/stats/:session_id", get(crate::api::memory_api::memory_stats))
+        .route("/memory/cleanup", post(crate::api::memory_api::memory_cleanup))
+        // Retrieval (RAG), embedding model and matter scoping
+        .route("/embeddings/status", get(crate::api::rag_api::embeddings_status))
+        .route("/embeddings/install", post(crate::api::rag_api::embeddings_install))
+        .route("/embeddings/models", get(crate::api::rag_api::embeddings_models))
+        .route("/embeddings/models/:id", axum::routing::delete(crate::api::rag_api::embeddings_remove))
+        .route("/embeddings/select", post(crate::api::rag_api::embeddings_select))
+        .route("/embeddings/pause", post(crate::api::rag_api::embeddings_pause))
+        .route("/embeddings/cancel", post(crate::api::rag_api::embeddings_cancel))
+        .route("/rag/reindex", post(crate::api::rag_api::reindex))
+        .route("/rag/search", post(crate::api::rag_api::search))
+        .route("/documents/:id/index", get(crate::api::rag_api::document_index_state))
+        .route(
+            "/matters/:id/documents",
+            get(crate::api::rag_api::list_matter_documents).post(crate::api::rag_api::add_matter_document),
+        )
+        .route(
+            "/matters/:id/documents/:document_id",
+            axum::routing::delete(crate::api::rag_api::remove_matter_document),
+        )
 .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .layer(TimeoutLayer::new(Duration::from_secs(600)))
+        .layer(TimeoutLayer::new(Duration::from_secs(crate::tuning::parse_or("HTTP_REQUEST_TIMEOUT_SECONDS", 600u64).max(30))))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
@@ -902,4 +1057,42 @@ mod tests {
             mirrored, MAX_REQUEST_BODY_BYTES
         );
     }
+}
+
+/// The per-install signing secret: read from `auth.secret` in the app's data
+/// folder, or generated there on first use.
+fn install_secret() -> String {
+    use crate::utils::secret_box;
+    use rand::Rng;
+    // Stored encrypted (AES-256-GCM, DPAPI-wrapped key) in the app data folder.
+    // An older plaintext file is read once and rewritten encrypted.
+    let path = crate::config::get_app_data_dir().join("auth.secret");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let existing = existing.trim();
+        let plain = if secret_box::is_encrypted(existing) {
+            secret_box::decrypt(existing).ok()
+        } else {
+            Some(existing.to_string())
+        };
+        if let Some(plain) = plain.filter(|p| p.len() >= 32) {
+            if !secret_box::is_encrypted(existing) {
+                if let Ok(enc) = secret_box::encrypt(&plain) {
+                    let _ = std::fs::write(&path, enc);
+                }
+            }
+            return plain;
+        }
+    }
+    let bytes: [u8; 32] = rand::thread_rng().gen();
+    let secret = hex::encode(bytes);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match secret_box::encrypt(&secret) {
+        Ok(enc) => {
+            let _ = std::fs::write(&path, enc);
+        }
+        Err(e) => tracing::warn!("JWT signing key not persisted: {}", e),
+    }
+    secret
 }

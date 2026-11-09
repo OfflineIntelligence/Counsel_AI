@@ -39,12 +39,22 @@ zip = "1.1"
 clap = { version = "4.4", features = ["derive"] }
 dashmap = "5.5"
 rusqlite = { version = "0.32", features = ["bundled", "functions", "modern_sqlite"] }
+
+# Paragraph and word level diffing for document comparison.
+#
+# Pure Rust, no runtime network, no C dependency. Chosen over hand-rolling
+# Myers because diff correctness is thoroughly solved ground and a subtly
+# wrong redline is worse than no redline -- a lawyer would rely on it.
+similar = { version = "2", default-features = false, features = ["text", "inline"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
 regex = "1.10"
+memchr = "2"
 blake3 = "1.5"
 bincode = "1.3"
 rand = "0.8"
+# Authenticated encryption of stored secrets (API keys, JWT signing key).
+aes-gcm = "0.10"
 moka = { version = "0.12", features = ["future", "sync"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
@@ -53,7 +63,6 @@ validator = { version = "0.16", features = ["derive"] }
 rayon = "1.8"
 bytes = "1.5"
 which = "1.0"
-crossbeam-queue = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 async-stream = "0.3"
 tokio-stream = "0.1"
@@ -82,6 +91,10 @@ argon2 = "0.5"
 hex = "0.4"
 # Document extraction (accuracy-first: real parsers, no regex-over-XML)
 calamine = { version = "0.26", features = ["dates"] }
+# calamine 0.26 does not compile against zip 2.6+ (ZipFile gained a generic
+# parameter). This constraint holds the zip 2.x that calamine resolves to below
+# 2.6, so a regenerated Cargo.lock cannot pick the incompatible release.
+zip_calamine_compat = { package = "zip", version = ">=2.0, <2.6", default-features = false }
 quick-xml = "0.37"
 encoding_rs = "0.8"
 chardetng = "0.1"
@@ -133,6 +146,10 @@ windows = { version = "0.58", features = [
     "Foundation",
     "Foundation_Collections",
     "Globalization",
+    # DPAPI (CryptProtectData) wraps the secret-store master key to the
+    # Windows user account.
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
 ] }
 
 [features]

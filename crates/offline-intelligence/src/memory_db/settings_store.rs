@@ -47,8 +47,9 @@ impl SettingsStore {
     /// table would exist in production and be missing in every test - the
     /// exact split that forced migration 010 to special-case itself. Kept
     /// byte-identical in shape to migration 013.
-    pub fn initialize_schema(&self) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
+    /// Schema DDL for this store. Only ever called from the migration
+    /// chain (`migration::get_migrations`), the single schema route.
+    pub(crate) fn create_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_settings (
                  key        TEXT PRIMARY KEY,
@@ -57,6 +58,12 @@ impl SettingsStore {
              );",
         )?;
         Ok(())
+    }
+
+    /// Bring the database this store uses up to the current schema. Goes
+    /// through the migration chain like every other caller.
+    pub fn initialize_schema(&self) -> anyhow::Result<()> {
+        super::migration::ensure_schema(&self.pool)
     }
 
     /// Read a raw setting. `None` means the user has never set it - which the

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 use crate::model_runtime::platform_detector::{HardwareCapabilities, Platform, HardwareArchitecture};
+use super::verification_log::VerificationLog;
 
 /// Single source of truth for the bundled llama.cpp engine version.
 ///
@@ -171,20 +172,40 @@ pub struct EngineRegistry {
     pub available_engines: Vec<EngineInfo>,
     pub default_engine: Option<String>,
     pub storage_path: PathBuf,
-
+    /// Accelerations proven unusable on this machine by a real backend-load
+    /// check (by this app or by the NSIS installer). Held here rather than
+    /// passed through every call site so the decision table and the engine
+    /// catalog cannot possibly consult different exclusion sets.
+    pub verification_log: VerificationLog,
 }
 
 impl EngineRegistry {
     pub fn new() -> Result<Self> {
         let storage_path = Self::get_engine_storage_path()?;
         std::fs::create_dir_all(&storage_path)?;
-        
+
+        let verification_log = VerificationLog::load(&storage_path);
+
         Ok(Self {
             installed_engines: HashMap::new(),
             available_engines: Vec::new(),
             default_engine: None,
             storage_path,
+            verification_log,
         })
+    }
+
+    /// Persist the verification log. A write failure is logged, never fatal —
+    /// the only consequence is that a demotion is not remembered across
+    /// restarts, which self-corrects on the next verification.
+    pub fn save_verification_log(&self) {
+        if let Err(e) = self.verification_log.save(&self.storage_path) {
+            warn!(
+                "Could not persist the engine verification log to {:?}: {}. The current \
+                 session still honours it; it may be re-derived after a restart.",
+                self.storage_path, e
+            );
+        }
     }
     
     /// Get platform-appropriate storage path for engines
@@ -196,6 +217,17 @@ impl EngineRegistry {
     pub async fn scan_installed_engines(&mut self, hardware_capabilities: &HardwareCapabilities) -> Result<()> {
         self.installed_engines.clear();
 
+        // Re-read from disk every scan: the NSIS installer may have written
+        // demotions after this process started (repair/upgrade install), and
+        // this is the point at which they must take effect.
+        self.verification_log = VerificationLog::load(&self.storage_path);
+
+        // Accelerations observed this scan, so the log can be brought in line
+        // with reality in BOTH directions — recording new failures and clearing
+        // stale ones. Collected first because load_engine_metadata borrows self.
+        let mut observed_failures: Vec<(AccelerationType, String, String, String)> = Vec::new();
+        let mut observed_successes: Vec<(AccelerationType, String)> = Vec::new();
+
         if self.storage_path.exists() {
             for entry in std::fs::read_dir(&self.storage_path)? {
                 let entry = entry?;
@@ -203,6 +235,22 @@ impl EngineRegistry {
                     let engine_dir = entry.path();
                     match self.load_engine_metadata(engine_dir.clone()).await {
                         Some(engine_info) => {
+                            match engine_info.status {
+                                EngineStatus::Corrupted => observed_failures.push((
+                                    engine_info.acceleration.clone(),
+                                    engine_info.id.clone(),
+                                    engine_info.version.clone(),
+                                    engine_info
+                                        .failure_reason
+                                        .clone()
+                                        .unwrap_or_else(|| "verification failed".to_string()),
+                                )),
+                                EngineStatus::Installed => observed_successes.push((
+                                    engine_info.acceleration.clone(),
+                                    engine_info.version.clone(),
+                                )),
+                                _ => {}
+                            }
                             self.installed_engines.insert(engine_info.id.clone(), engine_info);
                         }
                         None => {
@@ -214,6 +262,28 @@ impl EngineRegistry {
                     }
                 }
             }
+        }
+
+        // Successes are applied first, then failures. An acceleration that both
+        // succeeded and failed this scan (two installed engines of the same
+        // acceleration, one broken) ends up excluded — the conservative reading,
+        // and the demotion is cleared as soon as a clean scan observes only
+        // success.
+        let mut log_changed = false;
+        for (acceleration, version) in observed_successes {
+            if self.verification_log.clear_acceleration(&acceleration, &version) {
+                log_changed = true;
+            }
+        }
+        for (acceleration, id, version, reason) in observed_failures {
+            if !self.verification_log.is_excluded(&acceleration, &version) {
+                log_changed = true;
+            }
+            self.verification_log
+                .record_failure(&acceleration, &id, &version, reason);
+        }
+        if log_changed {
+            self.save_verification_log();
         }
 
         // Deterministic upgrade lifecycle: once a newer engine of the same
@@ -564,19 +634,35 @@ impl EngineRegistry {
     /// | 7   | macOS x64                                             | cpu-macos-x64     |
     /// | 8   | Linux x64 with Vulkan (covers NVIDIA via ICD)         | vulkan-linux      |
     /// | 9   | Linux x64                                             | cpu-linux-x64     |
+    ///
+    /// ## Exclusions
+    ///
+    /// A row whose acceleration has been *proven* unusable on this machine by a
+    /// real backend-load check is skipped (see `verification_log`). This is not
+    /// a fallback chain: the table still yields exactly one engine, and the
+    /// skip is driven by recorded evidence rather than by a failed attempt at
+    /// the previous row. The CPU rows are terminal and never skippable.
+    ///
+    /// Both CUDA rows are excluded together, because they share their entire
+    /// failure surface (`ggml-cuda.dll`, `nvcuda.dll`, `VCRUNTIME140_1.dll`).
+    ///
+    /// This mirrors `oci_DetectHardwareAndSetEngine` in installer-hooks.nsi,
+    /// which applies the same exclusions from the same file.
     pub fn select_correct_engine(&self, hardware: &HardwareCapabilities) -> Result<EngineInfo> {
         let latest_version = Self::get_engine_version();
+        let cuda_ok = !self.is_excluded(&AccelerationType::CUDA);
+        let vulkan_ok = !self.is_excluded(&AccelerationType::Vulkan);
 
         let engine_id = match (&hardware.platform, &hardware.architecture) {
             (Platform::Windows, HardwareArchitecture::Aarch64) => {
                 format!("llama-cpu-windows-arm64-{}", latest_version)
             }
             (Platform::Windows, HardwareArchitecture::X86_64) => {
-                if hardware.cuda13_usable() {
+                if cuda_ok && hardware.cuda13_usable() {
                     format!("llama-cuda13-windows-x64-{}", latest_version)
-                } else if hardware.cuda12_usable() {
+                } else if cuda_ok && hardware.cuda12_usable() {
                     format!("llama-cuda-windows-x64-{}", latest_version)
-                } else if hardware.has_vulkan {
+                } else if vulkan_ok && hardware.has_vulkan {
                     format!("llama-vulkan-windows-x64-{}", latest_version)
                 } else {
                     format!("llama-cpu-windows-x64-{}", latest_version)
@@ -589,7 +675,7 @@ impl EngineRegistry {
                 format!("llama-cpu-macos-x64-{}", latest_version)
             }
             (Platform::Linux, HardwareArchitecture::X86_64) => {
-                if hardware.has_vulkan || hardware.has_cuda {
+                if vulkan_ok && (hardware.has_vulkan || hardware.has_cuda) {
                     format!("llama-vulkan-linux-x64-{}", latest_version)
                 } else {
                     format!("llama-cpu-linux-x64-{}", latest_version)
@@ -622,6 +708,45 @@ impl EngineRegistry {
         ENGINE_VERSION
     }
 
+    /// Has this acceleration been proven unusable on this machine at the
+    /// version we ship? The single predicate used by BOTH `select_correct_engine`
+    /// and `get_all_compatible_engines`, so the decision table can never select
+    /// an id that the catalog has filtered out.
+    fn is_excluded(&self, acceleration: &AccelerationType) -> bool {
+        self.verification_log
+            .is_excluded(acceleration, Self::get_engine_version())
+    }
+
+    /// The user-facing reason an acceleration is being skipped, if it is.
+    pub fn exclusion_reason(&self, acceleration: &AccelerationType) -> Option<&str> {
+        self.verification_log
+            .reason_for(acceleration, Self::get_engine_version())
+    }
+
+    /// The acceleration the decision table WOULD have chosen were it not
+    /// excluded — i.e. what this machine was demoted from. `None` when no
+    /// demotion is in effect.
+    ///
+    /// Reported through GET /engines and /healthz so the UI can tell the user
+    /// what they lost and why, rather than silently handing them a slower
+    /// engine.
+    pub fn demoted_from(&self, hardware: &HardwareCapabilities) -> Option<AccelerationType> {
+        // Ask the table what it would pick with nothing excluded, then compare.
+        let would_be = if hardware.cuda13_usable() || hardware.cuda12_usable() {
+            AccelerationType::CUDA
+        } else if hardware.has_vulkan {
+            AccelerationType::Vulkan
+        } else {
+            return None;
+        };
+
+        if self.is_excluded(&would_be) {
+            Some(would_be)
+        } else {
+            None
+        }
+    }
+
     /// Parse the numeric part of a llama.cpp version tag ("b8037" -> 8037).
     /// Unparseable versions order lowest so a well-formed version always wins.
     fn version_number(version: &str) -> u64 {
@@ -642,6 +767,9 @@ impl EngineRegistry {
             Some(e) if e.status == EngineStatus::Installed => {
                 self.default_engine = Some(engine_id.to_string());
                 info!("Set default engine: {}", engine_id);
+                if let Some(path) = e.install_path.as_ref().map(|p| p.join(&e.binary_name)) {
+                    crate::rag::embedder::set_engine_binary(path);
+                }
                 Ok(())
             }
             Some(e) => Err(anyhow::anyhow!(
@@ -714,8 +842,54 @@ impl EngineRegistry {
         Ok(())
     }
     
+    /// The catalog for this hardware WITHOUT applying verification exclusions.
+    ///
+    /// Used only for an explicit, user-chosen reinstall by engine id: someone
+    /// who has just updated their GPU driver must be able to ask for the engine
+    /// we previously demoted away from. Selection paths use
+    /// `get_all_compatible_engines`, which does apply exclusions.
+    pub fn catalog_including_excluded(&self, hardware: &HardwareCapabilities) -> Vec<EngineInfo> {
+        self.build_catalog(hardware)
+    }
+
+    /// Clear the recorded failure for an acceleration so it will be attempted
+    /// again — the user asserting "I fixed the underlying problem".
+    pub fn clear_exclusion(&mut self, acceleration: &AccelerationType) -> bool {
+        let version = Self::get_engine_version().to_string();
+        self.verification_log.clear_acceleration(acceleration, &version)
+    }
+
     /// Get ALL compatible engines for the platform (like LM Studio)
     fn get_all_compatible_engines(&self, hardware: &HardwareCapabilities) -> Vec<EngineInfo> {
+        let mut engines = self.build_catalog(hardware);
+
+        // Drop accelerations proven unusable on this machine. Applied with the
+        // SAME predicate select_correct_engine uses, so a table hit can never
+        // be missing from the catalog (which that function reports as an
+        // internal error). Filtering here also stops the UI from offering an
+        // engine we already know cannot work.
+        //
+        // An engine that is already installed and verified is kept regardless:
+        // it demonstrably works, whatever the log says about its acceleration.
+        let installed_and_working: Vec<&String> = self
+            .installed_engines
+            .values()
+            .filter(|e| e.status == EngineStatus::Installed)
+            .map(|e| &e.id)
+            .collect();
+
+        engines.retain(|e| {
+            !self.is_excluded(&e.acceleration) || installed_and_working.contains(&&e.id)
+        });
+
+        engines
+    }
+
+    /// Build the full hardware-gated engine catalog, before any verification
+    /// exclusions are applied. Capability gates (CUDA floors, Vulkan ICD,
+    /// Adreno presence) still apply — those describe the hardware, not its
+    /// proven failures.
+    fn build_catalog(&self, hardware: &HardwareCapabilities) -> Vec<EngineInfo> {
         let mut engines = Vec::new();
         let latest_version = Self::get_engine_version();
         
@@ -968,7 +1142,7 @@ impl EngineRegistry {
         
         // Sort by compatibility score (highest first)
         engines.sort_by(|a, b| b.compatibility_score.partial_cmp(&a.compatibility_score).unwrap());
-        
+
         engines
     }
     
@@ -996,7 +1170,19 @@ mod tests {
             available_engines: Vec::new(),
             default_engine: None,
             storage_path: PathBuf::from("."),
+            verification_log: VerificationLog::default(),
         }
+    }
+
+    /// A registry whose verification log already records the given
+    /// accelerations as proven-unusable at the shipped ENGINE_VERSION.
+    fn registry_excluding(accels: &[AccelerationType]) -> EngineRegistry {
+        let mut reg = registry();
+        for a in accels {
+            reg.verification_log
+                .record_failure(a, "test-engine", ENGINE_VERSION, "test exclusion");
+        }
+        reg
     }
 
     fn hw(
@@ -1017,6 +1203,9 @@ mod tests {
                 max_compute_cap: cc,
             }),
             has_adreno_gpu: false,
+            windows_build: None,
+            is_virtual_machine: false,
+            vc_redist_ok: true,
         }
     }
 
@@ -1116,6 +1305,169 @@ mod tests {
             None,
         );
         assert!(registry().select_correct_engine(&h).is_err());
+    }
+
+    // ── Verification-driven demotion ─────────────────────────────────────────
+    // The failure this whole mechanism exists for: a machine whose Vulkan ICD
+    // is registered (so the capability probe passes) but whose ggml-vulkan.dll
+    // cannot actually load.
+
+    #[test]
+    fn demotion_vulkan_to_cpu() {
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        let e = registry_excluding(&[AccelerationType::Vulkan])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-windows-x64-{}", ENGINE_VERSION));
+        assert_eq!(e.acceleration, AccelerationType::CPU);
+    }
+
+    #[test]
+    fn demotion_cuda_to_vulkan() {
+        // CUDA proven unusable, but Vulkan untested: the table's next row wins.
+        let h = hw(
+            Platform::Windows,
+            HardwareArchitecture::X86_64,
+            true,
+            true,
+            Some(((581, 42), Some((8, 6)))),
+        );
+        let e = registry_excluding(&[AccelerationType::CUDA])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-vulkan-windows-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn demotion_cuda_then_vulkan_reaches_cpu() {
+        let h = hw(
+            Platform::Windows,
+            HardwareArchitecture::X86_64,
+            true,
+            true,
+            Some(((581, 42), Some((8, 6)))),
+        );
+        let e = registry_excluding(&[AccelerationType::CUDA, AccelerationType::Vulkan])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-windows-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn cuda13_exclusion_also_excludes_cuda12() {
+        // Both CUDA rows share ggml-cuda.dll / nvcuda.dll / VCRUNTIME140_1.dll,
+        // so proving one unusable must not leave the other selectable.
+        let h = hw(
+            Platform::Windows,
+            HardwareArchitecture::X86_64,
+            true,
+            false,
+            Some(((581, 42), Some((8, 6)))),
+        );
+        let e = registry_excluding(&[AccelerationType::CUDA])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-windows-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn cpu_row_is_never_excluded() {
+        // Even an explicit CPU exclusion must still yield the CPU engine —
+        // it is the terminal row and there is nothing below it.
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, false, None);
+        let e = registry_excluding(&[AccelerationType::CPU])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-windows-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn arm64_ignores_exclusions_entirely() {
+        // Row 1 is CPU-only, so no exclusion can affect it.
+        let h = hw(Platform::Windows, HardwareArchitecture::Aarch64, true, true, None);
+        let e = registry_excluding(&[AccelerationType::CUDA, AccelerationType::Vulkan])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-windows-arm64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn linux_vulkan_demotes_to_cpu() {
+        let h = hw(Platform::Linux, HardwareArchitecture::X86_64, false, true, None);
+        let e = registry_excluding(&[AccelerationType::Vulkan])
+            .select_correct_engine(&h)
+            .unwrap();
+        assert_eq!(e.id, format!("llama-cpu-linux-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn exclusion_at_a_different_version_does_not_demote() {
+        // A demotion is scoped to the release that failed. This is what stops
+        // an old failure from suppressing GPU acceleration forever.
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        let mut reg = registry();
+        reg.verification_log.record_failure(
+            &AccelerationType::Vulkan,
+            "old-engine",
+            "b0001",
+            "failed on a previous release",
+        );
+        let e = reg.select_correct_engine(&h).unwrap();
+        assert_eq!(e.id, format!("llama-vulkan-windows-x64-{}", ENGINE_VERSION));
+    }
+
+    #[test]
+    fn excluded_engine_is_removed_from_the_catalog() {
+        // The catalog and the table must apply the SAME exclusions, or
+        // select_correct_engine reports a spurious internal error.
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        let reg = registry_excluding(&[AccelerationType::Vulkan]);
+        let catalog = reg.get_all_compatible_engines(&h);
+        assert!(!catalog.iter().any(|e| e.acceleration == AccelerationType::Vulkan));
+        assert!(catalog.iter().any(|e| e.acceleration == AccelerationType::CPU));
+        // And the table still resolves cleanly against that filtered catalog.
+        assert!(reg.select_correct_engine(&h).is_ok());
+    }
+
+    #[test]
+    fn an_installed_working_engine_survives_its_acceleration_being_excluded() {
+        // Evidence beats record: if a Vulkan engine is installed AND verified,
+        // it demonstrably works and must not vanish from the catalog because of
+        // a stale exclusion.
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        let mut reg = registry_excluding(&[AccelerationType::Vulkan]);
+        let id = format!("llama-vulkan-windows-x64-{}", ENGINE_VERSION);
+        reg.installed_engines.insert(
+            id.clone(),
+            installed(&id, ENGINE_VERSION, AccelerationType::Vulkan),
+        );
+        let catalog = reg.get_all_compatible_engines(&h);
+        assert!(catalog.iter().any(|e| e.id == id));
+    }
+
+    #[test]
+    fn demoted_from_reports_the_lost_acceleration() {
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        let reg = registry_excluding(&[AccelerationType::Vulkan]);
+        assert_eq!(reg.demoted_from(&h), Some(AccelerationType::Vulkan));
+        assert_eq!(
+            reg.exclusion_reason(&AccelerationType::Vulkan),
+            Some("test exclusion")
+        );
+    }
+
+    #[test]
+    fn demoted_from_is_none_without_an_exclusion() {
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, true, None);
+        assert_eq!(registry().demoted_from(&h), None);
+    }
+
+    #[test]
+    fn demoted_from_is_none_on_a_cpu_only_machine() {
+        // Nothing was lost: this machine never had GPU acceleration to demote from.
+        let h = hw(Platform::Windows, HardwareArchitecture::X86_64, false, false, None);
+        let reg = registry_excluding(&[AccelerationType::Vulkan]);
+        assert_eq!(reg.demoted_from(&h), None);
     }
 
     #[test]

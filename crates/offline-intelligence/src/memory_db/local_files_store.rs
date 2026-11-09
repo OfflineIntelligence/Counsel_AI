@@ -55,10 +55,17 @@ impl LocalFilesStore {
     /// (documents_store, api_keys_store, users_store) already follows.
     /// Production's real database is unaffected: MigrationManager applies
     /// this same table (migration 004) before this ever runs there.
-    pub fn initialize_schema(&self) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
+    /// Schema DDL for this store. Only ever called from the migration
+    /// chain (`migration::get_migrations`), the single schema route.
+    pub(crate) fn create_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(SCHEMA_SQL)?;
         Ok(())
+    }
+
+    /// Bring the database this store uses up to the current schema. Goes
+    /// through the migration chain like every other caller.
+    pub fn initialize_schema(&self) -> anyhow::Result<()> {
+        super::migration::ensure_schema(&self.pool)
     }
 
     /// Get the app data directory path

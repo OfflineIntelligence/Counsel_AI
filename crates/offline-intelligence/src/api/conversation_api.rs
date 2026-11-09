@@ -1,14 +1,14 @@
 //! API endpoints for conversation/session management
 
 use axum::{
-    extract::{State, Path},
+    extract::{State, Path, Query},
     response::{IntoResponse, Response},
     Json,
 };
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{info, error};
+use tracing::{debug, info, error};
 
 use crate::shared_state::UnifiedAppState;
 
@@ -153,9 +153,19 @@ pub async fn get_conversations(
 }
 
 /// Fetch a specific conversation's messages
+/// `?allow_missing=true`: a thread with no row yet is an empty conversation,
+/// not an error. The Agent's threads exist only after their first message is
+/// saved, and opening one before that is the normal first-run path.
+#[derive(Debug, Deserialize, Default)]
+pub struct GetConversationQuery {
+    #[serde(default)]
+    pub allow_missing: bool,
+}
+
 pub async fn get_conversation(
     State(state): State<UnifiedAppState>,
     Path(session_id): Path<String>,
+    Query(query): Query<GetConversationQuery>,
 ) -> Result<Json<ConversationDetailResponse>, Response> {
     info!("Fetching conversation: {}", session_id);
     
@@ -165,6 +175,14 @@ pub async fn get_conversation(
         // Get session metadata
         let session = match orchestrator.database().conversations.get_session(&session_id) {
             Ok(Some(s)) => s,
+            Ok(None) if query.allow_missing => {
+                debug!("Conversation {} has no row yet; returning it empty", session_id);
+                return Ok(Json(ConversationDetailResponse {
+                    id: session_id,
+                    title: "New Chat".to_string(),
+                    messages: Vec::new(),
+                }));
+            }
             Ok(None) => {
                 return Err((StatusCode::NOT_FOUND, "Conversation not found").into_response());
             }

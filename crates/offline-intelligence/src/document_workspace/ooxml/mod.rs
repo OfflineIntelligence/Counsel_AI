@@ -13,8 +13,11 @@
 //!
 //! The format modules sit on top and only ever say "replace these bytes".
 
+pub mod blank;
 pub mod docx;
+pub mod math;
 pub mod package;
+pub mod props;
 pub mod pptx;
 pub mod spans;
 pub mod xlsx;

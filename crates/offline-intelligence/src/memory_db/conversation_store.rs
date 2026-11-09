@@ -1,7 +1,7 @@
 //! Conversation storage and retrieval operations with batch support and safe parsing
 
 use crate::memory_db::schema::*;
-use rusqlite::{params, Result, Row, Connection};
+use rusqlite::{params, OptionalExtension, Result, Row, Connection};
 use chrono::{DateTime, Utc, NaiveDateTime};
 use uuid::Uuid;
 use tracing::{info, debug, warn};
@@ -361,6 +361,148 @@ impl ConversationStore {
         Ok(messages)
     }
 
+    // --- Conversation memory (context_engine::conversation_memory) ---
+
+    /// The per-conversation rolling summary: how many leading messages it
+    /// covers and its entries (JSON). Created idempotently at startup.
+    /// Conversation memory table. Only called from the migration chain.
+    pub(crate) fn create_memory_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS conversation_memory (
+                 session_id   TEXT PRIMARY KEY,
+                 covered_upto INTEGER NOT NULL DEFAULT 0,
+                 entries      TEXT NOT NULL DEFAULT '[]',
+                 updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+             );",
+        )?;
+        Ok(())
+    }
+
+    /// Record the exact text the engine saw (user) or produced (assistant)
+    /// at one position of a conversation.
+    pub fn set_prompt_content(&self, session_id: &str, message_index: i32, role: &str, prompt: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT INTO message_prompts (session_id, message_index, role, prompt_content)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, message_index) DO UPDATE SET role = ?3, prompt_content = ?4",
+            rusqlite::params![session_id, message_index, role, prompt],
+        )?;
+        Ok(())
+    }
+
+    /// Replay view of a conversation: for each stored position, (role, the
+    /// content as stored, the content as the engine saw or produced it).
+    pub fn prompt_replay(&self, session_id: &str) -> anyhow::Result<std::collections::HashMap<i32, (String, String, String)>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.message_index, p.role, m.content, p.prompt_content
+             FROM message_prompts p
+             JOIN messages m ON m.session_id = p.session_id AND m.message_index = p.message_index
+             WHERE p.session_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map([session_id], |r| Ok((r.get::<_, i32>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        Ok(rows)
+    }
+
+    /// (covered_upto, entries JSON) for a conversation, if it has a summary.
+    pub fn get_memory(&self, session_id: &str) -> anyhow::Result<Option<(i64, String)>> {
+        let conn = self.get_conn()?;
+        let row = conn
+            .query_row(
+                "SELECT covered_upto, entries FROM conversation_memory WHERE session_id = ?1",
+                [session_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn set_memory(&self, session_id: &str, covered_upto: i64, entries_json: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT INTO conversation_memory (session_id, covered_upto, entries, updated_at)
+             SELECT ?1, ?2, ?3, CURRENT_TIMESTAMP WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?1)
+             ON CONFLICT(session_id) DO UPDATE SET
+                covered_upto = excluded.covered_upto, entries = excluded.entries,
+                updated_at = CURRENT_TIMESTAMP",
+            params![session_id, covered_upto, entries_json],
+        )?;
+        Ok(())
+    }
+
+    /// Full-text search within ONE conversation, limited to messages before
+    /// `below_index` (the turns no longer in the prompt).
+    pub fn search_session_messages_fulltext(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        below_index: i32,
+        limit: i64,
+    ) -> anyhow::Result<Vec<StoredMessage>> {
+        let Some(query) = crate::memory_db::fts::fts_query_from_user_text(user_text) else {
+            return Ok(Vec::new());
+        };
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.session_id, m.message_index, m.role, m.content, m.tokens, m.timestamp, m.importance_score
+             FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
+             WHERE messages_fts MATCH ?1 AND m.session_id = ?2 AND m.message_index < ?3
+               AND m.role IN ('user', 'assistant')
+             ORDER BY bm25(messages_fts) ASC LIMIT ?4",
+        )?;
+        let mut rows = match stmt.query(params![query, session_id, below_index, limit]) {
+            Ok(r) => r,
+            Err(e) => {
+                debug!("Session message search failed for {:?}: {}", user_text, e);
+                return Ok(Vec::new());
+            }
+        };
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(self.row_to_stored_message(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Messages of a conversation at the given indices, in index order.
+    pub fn get_messages_at(&self, session_id: &str, indices: &[i32]) -> anyhow::Result<Vec<StoredMessage>> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_conn()?;
+        let json = serde_json::to_string(indices)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, message_index, role, content, tokens, timestamp, importance_score
+             FROM messages WHERE session_id = ?1 AND message_index IN (SELECT value FROM json_each(?2))
+             ORDER BY message_index",
+        )?;
+        let mut rows = stmt.query(params![session_id, json])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(self.row_to_stored_message(row)?);
+        }
+        Ok(out)
+    }
+
+    /// The user's own messages in a conversation, oldest first.
+    pub fn get_user_messages(&self, session_id: &str) -> anyhow::Result<Vec<StoredMessage>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, message_index, role, content, tokens, timestamp, importance_score
+             FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY message_index",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(self.row_to_stored_message(row)?);
+        }
+        Ok(out)
+    }
+
     pub fn get_session_message_count(&self, session_id: &str) -> anyhow::Result<usize> {
         let conn = self.get_conn()?;
         let count: i64 = conn.query_row(
@@ -459,6 +601,24 @@ impl ConversationStore {
         exclude_session: Option<&str>,
         time_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> anyhow::Result<Vec<(StoredMessage, f64)>> {
+        self.search_messages_fulltext_scoped(user_text, limit, exclude_session, time_range, None)
+    }
+
+    /// Full-text message search restricted to `allowed_sessions` (None = all
+    /// chats). Used to keep recall inside a chat's matter.
+    pub fn search_messages_fulltext_scoped(
+        &self,
+        user_text: &str,
+        limit: i64,
+        exclude_session: Option<&str>,
+        time_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        allowed_sessions: Option<&std::collections::HashSet<String>>,
+    ) -> anyhow::Result<Vec<(StoredMessage, f64)>> {
+        let allowed_json: Option<String> = allowed_sessions.map(|a| {
+            let mut v: Vec<&String> = a.iter().collect();
+            v.sort();
+            serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string())
+        });
         let Some(query) = crate::memory_db::fts::fts_query_from_user_text(user_text) else {
             return Ok(Vec::new());
         };
@@ -478,6 +638,7 @@ impl ConversationStore {
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              WHERE messages_fts MATCH ?1 AND m.session_id != ?2
+               AND (?6 IS NULL OR m.session_id IN (SELECT value FROM json_each(?6)))
                AND (?4 IS NULL OR m.timestamp >= ?4)
                AND (?5 IS NULL OR m.timestamp <= ?5)
              ORDER BY rank ASC
@@ -489,6 +650,7 @@ impl ConversationStore {
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              WHERE messages_fts MATCH ?1 AND ?2 IS NULL
+               AND (?6 IS NULL OR m.session_id IN (SELECT value FROM json_each(?6)))
                AND (?4 IS NULL OR m.timestamp >= ?4)
                AND (?5 IS NULL OR m.timestamp <= ?5)
              ORDER BY rank ASC
@@ -498,7 +660,7 @@ impl ConversationStore {
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt
             .query_map(
-                rusqlite::params![query, exclude_session, limit, range_start, range_end],
+                rusqlite::params![query, exclude_session, limit, range_start, range_end, allowed_json],
                 |row| {
                     let ts_str: String = row.get(6)?;
                     let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)

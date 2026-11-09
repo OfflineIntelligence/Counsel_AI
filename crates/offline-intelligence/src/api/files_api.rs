@@ -629,8 +629,12 @@ pub async fn delete_file(
         return Err(StatusCode::BAD_REQUEST);
     };
     
+    let doomed_documents = state.shared_state.database_pool.rag.documents_for_local_files(&[file_id]).unwrap_or_default();
     match local_files.delete_file(file_id) {
         Ok(()) => {
+            if let Err(e) = state.shared_state.database_pool.rag.delete_documents(&doomed_documents) {
+                error!("Deleted file {} but its searchable document(s) remain: {}", file_id, e);
+            }
             info!("Deleted file/folder with id {}", file_id);
             Ok(Json(serde_json::json!({
                 "message": "File/directory deleted successfully"
@@ -650,8 +654,12 @@ pub async fn delete_file_by_id(
 ) -> Result<impl IntoResponse, StatusCode> {
     let local_files = &state.shared_state.database_pool.local_files;
     
+    let doomed_documents = state.shared_state.database_pool.rag.documents_for_local_files(&[id]).unwrap_or_default();
     match local_files.delete_file(id) {
         Ok(()) => {
+            if let Err(e) = state.shared_state.database_pool.rag.delete_documents(&doomed_documents) {
+                error!("Deleted file {} but its searchable document(s) remain: {}", id, e);
+            }
             info!("Deleted file/folder with id {}", id);
             Ok(Json(serde_json::json!({
                 "message": "File/directory deleted successfully"

@@ -70,6 +70,16 @@ pub struct StreamChatRequest {
     /// Inline file attachments (temporary, session-scoped)
     #[serde(default)]
     pub attachments: Option<Vec<ChatAttachment>>,
+    /// Answer with a cloud provider instead of the local model. Everything
+    /// else (attachments, retrieval, history) is identical.
+    #[serde(default)]
+    pub cloud: Option<CloudTarget>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CloudTarget {
+    pub provider: String,
+    pub model: String,
 }
 
 fn default_max_tokens() -> u32 { 2000 }
@@ -1500,8 +1510,8 @@ mod tests {
         );
         assert!(llm_input_messages.last().unwrap().content.contains("eighteen months"));
         assert!(
-            llm_input_messages.last().unwrap().content.starts_with(query),
-            "the user's own words must still come first in their message"
+            llm_input_messages.last().unwrap().content.ends_with(query),
+            "the user's own words come last, after the retrieved material"
         );
 
         // THE INVARIANT: the record that is persisted and shown in the UI is
@@ -2332,8 +2342,33 @@ mod tests {
 /// 2. Persists user message to database
 /// 3. Streams LLM response back via SSE
 /// 4. Persists assistant response to database after completion
+fn citation_inputs_of(
+    rag_context: &crate::rag::context::RagContext,
+    past_context: &crate::context_engine::PastContext,
+    folded_blocks: &[String],
+    carried_blocks: &[String],
+) -> crate::rag::citations::CitationInputs {
+    // Earlier material is everything recalled from the database this turn:
+    // past conversations and documents, the conversation summary and recalled
+    // turns, plus the blocks earlier turns carry in the replayed history. A
+    // citation that only appears there is still legitimate.
+    let mut earlier: Vec<String> = past_context.block.iter().cloned().collect();
+    for b in folded_blocks.iter().chain(carried_blocks) {
+        if !earlier.iter().any(|e| e == b) {
+            earlier.push(b.clone());
+        }
+    }
+    crate::rag::citations::CitationInputs {
+        passages: rag_context.passages.clone(),
+        full_document_ids: rag_context.full_document_ids.clone(),
+        session_document_ids: rag_context.scope.session_documents.clone(),
+        earlier_material: (!earlier.is_empty()).then(|| earlier.join("\n\n")),
+    }
+}
+
 pub async fn generate_stream(
     State(state): State<UnifiedAppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<StreamChatRequest>,
 ) -> Response {
     let request_num = state.shared_state.counters.inc_total_requests();
@@ -2352,6 +2387,111 @@ pub async fn generate_stream(
 
     if req.messages.is_empty() {
         return (StatusCode::BAD_REQUEST, "Messages array cannot be empty").into_response();
+    }
+
+    // MAX_CONCURRENT_STREAMS / QUEUE_SIZE / QUEUE_TIMEOUT_SECONDS /
+    // REQUESTS_PER_SECOND. The permit lives as long as the answer's stream.
+    let stream_permit = match crate::generation_queue::admit().await {
+        Ok(p) => p,
+        Err(refused) => {
+            let status = match refused {
+                crate::generation_queue::Refused::TimedOut => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::TOO_MANY_REQUESTS,
+            };
+            crate::metrics::inc_request("/generate/stream", status.as_str());
+            return (
+                status,
+                Json(serde_json::json!({ "error": "generation_busy", "detail": refused.message() })),
+            )
+                .into_response();
+        }
+    };
+
+    // Cloud: resolve the provider and its saved key up front. The local model
+    // is not involved, so it is neither woken nor required to be ready.
+    // A request may name a provider; otherwise the app-wide On Computer /
+    // On Cloud switch held by the worker decides.
+    let cloud: Option<(&'static crate::cloud_providers::CloudProvider, String, String)> = match &req.cloud {
+        None => state.llm_worker.cloud().map(|c| (c.provider, c.key, c.model)),
+        Some(target) => {
+            // Naming a provider spends its saved key: the same signed-in
+            // session the key and cloud routes require.
+            if !crate::api::authz::session_ok(&state, &headers) {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+                    "error": "sign_in_required",
+                    "detail": "Sign in to use a cloud model.",
+                }))).into_response();
+            }
+            let Some(provider) = crate::cloud_providers::find(&target.provider) else {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": "unknown_provider",
+                    "detail": format!("Unknown cloud provider: {}", target.provider),
+                }))).into_response();
+            };
+            let key = state.shared_state.database_pool.api_keys
+                .get_key(crate::memory_db::ApiKeyType::Cloud(provider.id))
+                .ok()
+                .flatten()
+                .and_then(|r| crate::memory_db::KeyEncryption::decrypt(&r.encrypted_value).ok());
+            let Some(key) = key else {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": "cloud_not_connected",
+                    "detail": format!("{} is not connected. Add its API key to use it.", provider.name),
+                }))).into_response();
+            };
+            Some((provider, key, target.model.clone()))
+        }
+    };
+
+    // Wake the model if it sleeps (lazy startup or idle unload) and hold a
+    // lease so the idle reaper cannot unload it until this answer completes.
+    let model_lease = if cloud.is_some() {
+        crate::model_runtime::lifecycle::ModelLease::none()
+    } else { match crate::model_runtime::lifecycle::ensure_awake(&state.shared_state).await {
+        Ok(lease) => lease,
+        Err(e) => {
+            error!("Could not wake the model for session {}: {}", req.session_id, e);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "model_wake_failed",
+                    "detail": format!("The model could not be loaded: {}", e),
+                })),
+            )
+                .into_response();
+        }
+    } };
+
+    // 0. Refuse FIRST when no model can answer. Everything below (attachment
+    //    extraction, retrieval, the engine tokenizer round-trips) is wasted
+    //    work for a request that cannot be served, and the user message is
+    //    not recorded as a question nobody answered. The UI asks
+    //    /models/readiness before sending, so reaching this is a race (the
+    //    model was unloaded between check and send), not the normal path.
+    if cloud.is_none() {
+        use crate::api::model_api::{model_readiness, ReadinessState};
+        let readiness = model_readiness(&state).await;
+        if readiness.state != ReadinessState::Ready {
+            warn!(
+                "Stream request for session {} refused: model {:?} ({} installed)",
+                req.session_id, readiness.state, readiness.installed
+            );
+            let detail = match readiness.state {
+                ReadinessState::Loading => "A model is loading. Please wait a moment and try again.",
+                ReadinessState::Restarting => "The model engine is restarting. Please wait a moment and try again.",
+                ReadinessState::NotLoaded => "No model is loaded. Activate one of your downloaded models to start.",
+                _ => "No model is downloaded yet. Download a model to start.",
+            };
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "model_not_ready",
+                    "readiness": readiness,
+                    "detail": detail,
+                })),
+            )
+                .into_response();
+        }
     }
 
     let session_id = req.session_id.clone();
@@ -2376,6 +2516,10 @@ pub async fn generate_stream(
         debug!("Session creation result (may already exist): {}", e);
     }
 
+    // Taken BEFORE any attachment path runs, so what those paths link can be
+    // told apart from what earlier turns already linked (see stamp below).
+    let attach_started_at = chrono::Utc::now();
+
     // 1a. Persist inline (paperclip) attachments into the unified document store.
     if let Some(ref attachments) = req.attachments {
         persist_inline_attachments(&session_id, attachments, &state).await;
@@ -2384,6 +2528,52 @@ pub async fn generate_stream(
     // 1b. Persist file references (@filename, [Attached: filename]) into the
     //     same store, resolving from Local Storage or the app data dir.
     persist_file_reference_attachments(&session_id, &processed_messages, &state).await;
+
+    // 1c. Record WHICH TURN those files arrived on.
+    //
+    // The store has always known a document belongs to this conversation, and
+    // that is all retrieval needs. The transcript needs more: an attachment
+    // chip belongs on the message it was sent with, and without a turn the
+    // chips could only live in frontend memory and were gone after a reload.
+    //
+    // The turn is this user message's index - the position it occupies in the
+    // conversation, matching `msg_index` on the messages themselves.
+    //
+    // The same turn number also answers a question retrieval needs: did a
+    // file arrive WITH this message, or earlier in the conversation? Someone
+    // who attaches a document and types in the same breath is asking about
+    // the document, and no amount of pattern matching on the question beats
+    // simply knowing that. It is computed here, beside the stamp, because
+    // this is the only place that knows which turn this is.
+    let attached_this_turn = {
+        let turn = (processed_messages.len() as i32 - 1).max(0);
+        match state
+            .shared_state
+            .database_pool
+            .documents
+            .stamp_message_index(&session_id, turn, attach_started_at)
+        {
+            Ok(0) => {}
+            Ok(n) => debug!("Recorded {} attachment(s) on turn {} of session {}", n, turn, session_id),
+            Err(e) => error!("Failed to record the turn for session {}'s attachments: {}", session_id, e),
+        }
+        // Read back rather than trusting the UPDATE's row count: a file
+        // re-attached in a later message keeps the turn it first arrived on
+        // (link_session is INSERT OR IGNORE), so the stamp is a no-op while
+        // the document is still genuinely attached to this turn.
+        let attached = state
+            .shared_state
+            .database_pool
+            .documents
+            .session_document_turns(&session_id)
+            .unwrap_or_default()
+            .iter()
+            .any(|(_, idx)| *idx == Some(turn));
+        if attached {
+            debug!("Turn {} of session {} carries an attachment: retrieval is unconditional", turn, session_id);
+        }
+        attached
+    };
 
     // 2. Get or create session in shared memory (zero-cost Arc lookup)
     let session = state.shared_state.get_or_create_session(&session_id).await;
@@ -2427,94 +2617,86 @@ pub async fn generate_stream(
     //    turn - and fold it into a SEPARATE view for the LLM only.
     //    processed_messages (the persisted conversation record) is never
     //    touched by this.
-    let ctx_budget_tokens = state.shared_state.current_context_budget().await;
-    // Document-memory budget. Two competing pressures, resolved together:
+    // Which client is asking, and therefore how much of the window it may
+    // fill. Classified from the session id — assistant threads carry their own
+    // prefix (see shared_state::ASSISTANT_SESSION_PREFIX).
     //
-    //   1. More attached files need more total room. Attaching 3 contracts
-    //      into the "1 doc's worth" budget forces each into 1/3 the space
-    //      and reads like the model was quoting from a stub. So the base
-    //      grows with attachment count.
-    //   2. That growth MUST NOT exceed the real context window. The old
-    //      formula (`ctx_budget_tokens * 2 * scale_pct/100`) at 7+ docs
-    //      produced ~8× the token budget in chars, which llama-server would
-    //      then silently truncate — a partial reading presented as if
-    //      complete, the exact class of failure document_memory's PARTIAL
-    //      markers exist to prevent. It also used a 2-chars/token conversion
-    //      here while the "remaining" line below uses 4 — internally
-    //      inconsistent. Both now use the same CHARS_PER_TOKEN.
-    //
-    // Base share is 50% of the real context in chars; the per-file scale
-    // then grows it, but a hard ceiling (MAX_DOC_CONTEXT_PCT) guarantees at
-    // least 30% of the window survives for conversation memory + generation
-    // reserve regardless of how many documents were attached.
+    // Everything downstream — the document budget, the past-retrieval budget
+    // and the tier1/2/3 conversation budget — is derived from this single
+    // number, so the split applies to the whole prompt rather than to one
+    // stage of it. That is the reason it is applied HERE and not inside each
+    // builder: three separate percentages would drift apart.
+    let client_kind = crate::shared_state::ClientKind::of_session(&session_id);
+    let ctx_budget_tokens = state.shared_state.context_budget_for(client_kind).await;
+    info!(
+        "Context budget for session {}: {} tokens ({:?}, {}% of window)",
+        session_id,
+        ctx_budget_tokens,
+        client_kind,
+        client_kind.context_pct()
+    );
     const CHARS_PER_TOKEN: usize = 4;
-    const MAX_DOC_CONTEXT_PCT: usize = 70;
-    let doc_count = state.shared_state.database_pool.documents
-        .get_session_documents(&session_id)
-        .ok()
-        .map(|d| d.len())
-        .unwrap_or(0);
-    let scale_pct = 100 + (doc_count.saturating_sub(1) * 50).min(300); // 1=100%, 2=150%, 3=200%, 4+=300%
     let ctx_budget_chars = ctx_budget_tokens * CHARS_PER_TOKEN;
-    let scaled = ctx_budget_chars / 2 * scale_pct / 100;                // ~50% base scaled by doc count
-    let hard_cap = ctx_budget_chars * MAX_DOC_CONTEXT_PCT / 100;
-    let doc_budget_chars = scaled.min(hard_cap);
-    let doc_blocks = crate::context_engine::build_document_context(
-        &state.shared_state.database_pool,
-        &session_id,
-        doc_budget_chars,
-    ).await;
+    let db = state.shared_state.database_pool.clone();
 
-    let mut llm_input_messages = processed_messages.clone();
-    if let Some(ref block) = doc_blocks.session_block {
-        crate::context_engine::fold_into_system_message(&mut llm_input_messages, block);
-    }
+    // Documents attached in a chat that belongs to a matter become part of
+    // that matter's pool.
+    crate::rag::scope::link_session_documents(&db, &session_id);
 
-    // 4b. Past-material retrieval: documents and messages from EARLIER that this
-    //     question refers back to.
-    //
-    //     Runs only when the question actually points backwards - a named or
-    //     described file, an unambiguous phrase, or a date (see
-    //     context_engine::reference_detector). A brand-new topic performs no
-    //     search at all, which is the point: dragging unrelated history into a
-    //     fresh question produces worse answers than ignoring history entirely.
-    //     Persistence is unaffected either way - every message and document is
-    //     recorded regardless of whether anything is retrieved.
-    //
-    //     Folded into the LATEST message, not the system message. This block is
-    //     query-dependent by nature, so it can never be part of a stable prompt
-    //     prefix; putting it on the message that already changes every turn
-    //     leaves everything before it byte-identical and still cacheable, which
-    //     is what keeps time-to-first-token low on document conversations.
-    //
-    //     Budget is deliberately modest: this is supplementary context, and it
-    //     is drawn from the same window the conversation history needs.
-    const PAST_CONTEXT_PCT: usize = 15;
-    let past_budget_chars = ctx_budget_chars
-        .saturating_sub(doc_blocks.consumed_chars)
-        * PAST_CONTEXT_PCT
-        / 100;
+    // Past-material retrieval: documents and messages from earlier chats that
+    // this question explicitly refers back to (see reference_detector). Folded
+    // into the latest message so everything before it stays cacheable.
+    const PAST_CONTEXT_PCT: usize = 20;
+    let past_budget_chars = ctx_budget_chars * PAST_CONTEXT_PCT / 100;
     let past_context = if let Some(ref query) = user_msg_content {
-        // Known filenames let a DESCRIPTION resolve to a file ("the merger
-        // agreement" -> merger-agreement.pdf) instead of requiring an exact name.
-        let known_filenames: Vec<String> = state
-            .shared_state
-            .database_pool
-            .documents
-            .all_document_filenames(500)
-            .unwrap_or_default();
-        let intent = crate::context_engine::detect_reference(
-            query,
-            &known_filenames,
-            chrono::Utc::now(),
-        );
-        crate::context_engine::build_past_context(
-            &state.shared_state.database_pool,
+        let known_filenames: Vec<String> = db.documents.all_document_filenames(500).unwrap_or_default();
+        let intent = crate::context_engine::detect_reference(query, &known_filenames, chrono::Utc::now());
+        let semantic_messages = if intent.refers_to_past() {
+            let allowed = crate::rag::scope::allowed_sessions(&db, &session_id);
+            crate::rag::search::semantic_message_hits(
+                &db,
+                &crate::rag::runtime(),
+                query,
+                allowed.as_ref(),
+                &session_id,
+                intent.time_range,
+                6,
+                0.5,
+            )
+            .await
+        } else {
+            Vec::new()
+        };
+        let past =         crate::context_engine::past_retrieval::build_past_context_with(
+            &db,
             &session_id,
             query,
             &intent,
             past_budget_chars,
-        )
+            &semantic_messages,
+        );
+        // No phrase like "earlier", but the user's other conversations may
+        // still hold the answer: offer close matches as possibly related.
+        if past.block.is_none() && !intent.refers_to_past() {
+            match crate::context_engine::conversation_memory::related_other_conversations(
+                &db,
+                &crate::rag::runtime(),
+                &session_id,
+                query,
+                past_budget_chars,
+            )
+            .await
+            {
+                Some(block) => crate::context_engine::PastContext {
+                    consumed_chars: block.len(),
+                    block: Some(block),
+                    reason: "related exchanges found in other conversations".to_string(),
+                },
+                None => past,
+            }
+        } else {
+            past
+        }
     } else {
         crate::context_engine::PastContext {
             block: None,
@@ -2522,45 +2704,145 @@ pub async fn generate_stream(
             reason: "no retrieval: no user query in this request".to_string(),
         }
     };
-    if let Some(ref block) = past_context.block {
-        crate::context_engine::fold_into_latest_message(&mut llm_input_messages, block);
-    }
     debug!("Past-material retrieval: {}", past_context.reason);
 
-    // Remaining budget for tier1/2/3 conversation memory, after documents AND
-    // retrieved past material. Both are subtracted, using the same chars/token
-    // conversion as the budget calc above - omitting either would let the
-    // orchestrator plan against space that is already spent, and llama-server
-    // would then silently truncate the overflow.
-    let remaining_budget_tokens = ctx_budget_tokens
-        .saturating_sub(doc_blocks.consumed_chars / CHARS_PER_TOKEN)
-        .saturating_sub(past_context.consumed_chars / CHARS_PER_TOKEN)
-        .max(512);
+    // Document retrieval (docs/rag/RAG_R0-R6_PLAN.md): short attachments in
+    // full in the system message; large ones as cited passages retrieved for
+    // this question; with nothing attached, clearly relevant material from the
+    // chat's matter (unless past retrieval already supplied documents).
+    let rag_runtime = crate::rag::runtime();
 
-    // 5. Context Engine: Retrieve past conversation context (tiers 1/2/3,
-    //    keyword-based) on top of the document-enriched view above.
-    //    Always let the retrieval planner decide — even a brand-new session can trigger
-    //    cross-session search if the user asks "what did we discuss yesterday?".
-    let context_messages = {
-        let orchestrator_guard = state.context_orchestrator.read().await;
-        if let Some(ref orchestrator) = *orchestrator_guard {
-            let user_query = user_msg_content.as_deref();
-            match orchestrator.process_conversation(&session_id, &llm_input_messages, user_query, remaining_budget_tokens).await {
-                Ok(optimized) => {
-                    if optimized.len() != llm_input_messages.len() {
-                        info!("Context engine optimized: {} → {} messages (retrieved past context)",
-                            llm_input_messages.len(), optimized.len());
+    // Assemble, then measure with the engine's own tokenizer and chat
+    // template. The chars/4 estimate used while assembling can undershoot
+    // (legal text, non-Latin scripts, OCR noise); when the real count does not
+    // fit, the budget is tightened in proportion and the prompt rebuilt.
+    // The Agent's view of the workspace (chats, matters, drafts, Vault). Built
+    // once per request from indexed SQLite reads, outside the retry loop, and
+    // paid for out of the Agent's own share: 35% of it for the global Agent,
+    // whose whole job is the workspace, 15% for an Agent opened on a draft,
+    // which is about that draft first. Chat requests never carry it.
+    let workspace_brief = (client_kind == crate::shared_state::ClientKind::Assistant).then(|| {
+        let pct = if crate::context_engine::workspace_brief::is_global_agent(&session_id) { 35 } else { 15 };
+        crate::context_engine::workspace_brief::build(
+            &db,
+            &session_id,
+            user_msg_content.as_deref(),
+            ctx_budget_chars * pct / 100,
+        )
+    });
+    let brief_tokens = workspace_brief.as_ref().map_or(0, |b| b.chars() / CHARS_PER_TOKEN);
+    if let Some(ref b) = workspace_brief {
+        debug!(
+            "Workspace brief for {}: {} chars inventory, {} chars matches",
+            session_id,
+            b.inventory.len(),
+            b.hits.as_ref().map_or(0, |h| h.len())
+        );
+    }
+
+    // History exactly as the engine saw and produced it (prompt_replay), so
+    // the saved KV state of the previous turn still matches this prompt.
+    // PROMPT_REPLAY=false turns it off (for comparison measurements).
+    let recorded = if crate::tuning::flag_or("PROMPT_REPLAY", true) {
+        db.conversations.prompt_replay(&session_id).unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let replayed = crate::context_engine::prompt_replay::replay(&processed_messages, &recorded);
+    if replayed.replayed > 0 {
+        debug!("Prompt replay: {} earlier position(s) sent as the engine saw them", replayed.replayed);
+    }
+
+    let mut assembly_budget = ctx_budget_tokens.max(512);
+    let mut attempt = 0;
+    let (context_messages, citation_inputs, retrieved_passages, folded_blocks) = loop {
+        attempt += 1;
+        let rag_context = crate::rag::context::build_with_history(
+            &db,
+            &rag_runtime,
+            &session_id,
+            user_msg_content.as_deref(),
+            assembly_budget.saturating_sub(brief_tokens).max(512),
+            past_context.block.is_none(),
+            &processed_messages,
+            attached_this_turn,
+        )
+        .await;
+
+        let mut llm_input_messages = replayed.messages.clone();
+        if let Some(ref brief) = workspace_brief {
+            crate::context_engine::fold_into_system_message(&mut llm_input_messages, &brief.inventory);
+        }
+        if let Some(ref block) = rag_context.system_block {
+            crate::context_engine::fold_into_system_message(&mut llm_input_messages, block);
+        }
+        // Everything folded onto the user's message, kept verbatim.
+        //
+        // These are what a model reprints when it recites its prompt instead of
+        // answering, and holding on to them is what lets that reprint be cut
+        // EXACTLY rather than guessed at from its shape - the same for a PDF, a
+        // deck, a workbook, a Word file or a text file, and the same for the
+        // non-document blocks (earlier conversations, workspace matches) too.
+        let mut folded_blocks: Vec<String> = Vec::new();
+        if let Some(ref block) = rag_context.evidence_block {
+            crate::context_engine::fold_into_latest_message(&mut llm_input_messages, block);
+            folded_blocks.push(block.clone());
+        }
+        if let Some(ref block) = past_context.block {
+            crate::context_engine::fold_into_latest_message(&mut llm_input_messages, block);
+            folded_blocks.push(block.clone());
+        }
+        if let Some(block) = workspace_brief.as_ref().and_then(|b| b.hits.as_ref()) {
+            crate::context_engine::fold_into_latest_message(&mut llm_input_messages, block);
+            folded_blocks.push(block.clone());
+        }
+
+        // The orchestrator measures the whole assembled prompt (system message
+        // with documents, history, and the folded blocks on the latest
+        // message), so it is given the whole budget.
+        let assembled = {
+            let orchestrator_guard = state.context_orchestrator.read().await;
+            if let Some(ref orchestrator) = *orchestrator_guard {
+                let user_query = user_msg_content.as_deref();
+                match orchestrator
+                    .process_conversation_with_memory(&session_id, &llm_input_messages, user_query, assembly_budget)
+                    .await
+                {
+                    Ok(assembly) => {
+                        if assembly.messages.len() != llm_input_messages.len() {
+                            info!("Context engine optimized: {} → {} messages", llm_input_messages.len(), assembly.messages.len());
+                        }
+                        // The conversation summary and recalled turns are
+                        // scaffolding too: the echo guard cuts a reprint of
+                        // them, and the citation check accepts what they cite.
+                        folded_blocks.extend(assembly.memory_blocks);
+                        assembly.messages
                     }
-                    optimized
+                    Err(e) => {
+                        error!("Context engine error (falling back to document-enriched messages): {}", e);
+                        llm_input_messages
+                    }
                 }
-                Err(e) => {
-                    error!("Context engine error (falling back to document-enriched messages): {}", e);
-                    llm_input_messages.clone()
-                }
+            } else {
+                debug!("Context orchestrator not initialized, using document-enriched messages");
+                llm_input_messages
             }
-        } else {
-            debug!("Context orchestrator not initialized, using document-enriched messages");
-            llm_input_messages.clone()
+        };
+
+        match state.llm_worker.count_prompt_tokens(&assembled).await {
+            Some(real) if real > ctx_budget_tokens && attempt < 3 && assembly_budget > 512 => {
+                let tightened = ((assembly_budget as f64) * (ctx_budget_tokens as f64) / (real as f64) * 0.92) as usize;
+                warn!(
+                    "Prompt measured {} tokens by the engine, over the {} budget; rebuilding with a {} token assembly budget",
+                    real, ctx_budget_tokens, tightened
+                );
+                assembly_budget = tightened.max(512);
+            }
+            Some(real) => {
+                debug!("Prompt measured {} tokens (budget {})", real, ctx_budget_tokens);
+                break (assembled, citation_inputs_of(&rag_context, &past_context, &folded_blocks, &replayed.carried_blocks), rag_context.passages.clone(), folded_blocks);
+            }
+            None => break (assembled, citation_inputs_of(&rag_context, &past_context, &folded_blocks, &replayed.carried_blocks), rag_context.passages.clone(), folded_blocks),
         }
     };
 
@@ -2568,35 +2850,135 @@ pub async fn generate_stream(
     // is_role_alternation_error / is_context_overflow_error)
 
     // 5. Route to local LLM worker
-    let max_tokens = req.max_tokens;
+    // Optional reading step: notes of the retrieved facts replace the raw
+    // excerpts before the answer is generated (MEMORY_READING_NOTES).
+    let mut context_messages = context_messages;
+    // The engine's single slot is held from here until the reply finishes.
+    let kv_slot = crate::model_runtime::kv_store::lock().await;
+    if cloud.is_none() && crate::context_engine::reading_notes::enabled() && !folded_blocks.is_empty() {
+        if let Some(request) = context_messages.last().and_then(|m| crate::context_engine::reading_notes::notes_request(&m.content)) {
+            // The note-taking call replaces the slot's contents: keep them first.
+            crate::model_runtime::kv_store::checkpoint_and_release(&kv_slot, &state.shared_state).await;
+            let notes = tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                state.llm_worker.generate_with(request, crate::context_engine::reading_notes::NOTE_TOKENS, 0.0),
+            )
+            .await;
+            match notes {
+                Ok(Ok(notes)) => {
+                    if let Some(last) = context_messages.last_mut() {
+                        if let Some(rebuilt) = crate::context_engine::reading_notes::with_notes(&last.content, &notes) {
+                            debug!("Reading notes: {} chars replace {} chars of excerpts", rebuilt.len(), last.content.len());
+                            last.content = rebuilt;
+                        }
+                    }
+                }
+                Ok(Err(e)) => warn!("Reading-notes step failed ({}); answering from the excerpts", e),
+                Err(_) => warn!("Reading-notes step timed out; answering from the excerpts"),
+            }
+        }
+    }
+
+    // The Assistant's share of the window reserves ASSISTANT_GENERATION_RESERVE
+    // for its answer (see shared_state). Letting it generate past that would
+    // draw on the chat's half of the shared KV buffer, so its answer length is
+    // bounded here, where the share is known. Chat keeps the client's value.
+    let max_tokens = match client_kind {
+        crate::shared_state::ClientKind::Assistant => req
+            .max_tokens
+            .min(crate::shared_state::ASSISTANT_GENERATION_RESERVE as u32),
+        crate::shared_state::ClientKind::Chat => req.max_tokens,
+    };
     let temperature = req.temperature;
     let db_for_persist = state.shared_state.database_pool.clone();
     let session_id_for_persist = session_id.clone();
     let msg_index = req.messages.len() as i32;
 
-    {
-        // First check if the runtime is ready before attempting to stream
-        if !state.llm_worker.is_runtime_ready().await {
-            let rt_state = state.llm_worker.get_runtime_state();
-            if matches!(rt_state, crate::model_runtime::RuntimeState::Switching { .. }) {
-                return (StatusCode::SERVICE_UNAVAILABLE,
-                    "Model Switching: A model switch is in progress. Please wait for it to complete.").into_response();
+    // Restore the longest saved prefix of this prompt from the KV store, so
+    // the engine computes only what follows it.
+    if cloud.is_none() {
+        crate::model_runtime::kv_store::prepare(&kv_slot, &state.shared_state, &session_id, &context_messages).await;
+    }
+    let kv_sent = context_messages.clone();
+    let topic_question = user_msg_content.clone();
+    // Record the question as the engine sees it, for replay next turn.
+    if let Some(last) = context_messages.last().filter(|m| m.role == "user") {
+        let db = state.shared_state.database_pool.clone();
+        let sid = session_id.clone();
+        let content = last.content.clone();
+        let at = msg_index - 1;
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = db.conversations.set_prompt_content(&sid, at, "user", &content) {
+                warn!("Could not record the prompt for replay: {}", e);
             }
-            if matches!(rt_state, crate::model_runtime::RuntimeState::Restarting) {
-                return (StatusCode::SERVICE_UNAVAILABLE,
-                    "Model Restarting: The model server is restarting automatically. Please wait a moment and try again.").into_response();
-            }
-            return (StatusCode::SERVICE_UNAVAILABLE,
-                "Model Not Ready: No local model is currently loaded. Please go to the Models page and activate a model by clicking \"Active Model\".").into_response();
-        }
+        });
+    }
+    // A cloud answer never touched the local engine's slot.
+    let is_cloud = cloud.is_some();
+    let kv_state = state.shared_state.clone();
+    let kv_session = session_id.clone();
 
+    {
         let llm_worker = state.llm_worker.clone();
         
-        match llm_worker.stream_response(context_messages, max_tokens, temperature).await {
+        // One stream type for both routes, so everything below is shared.
+        type TokenStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<String, anyhow::Error>> + Send>>;
+        let started: anyhow::Result<TokenStream> = match &cloud {
+            Some((provider, key, model)) => llm_worker
+                .stream_cloud(provider, key, model, context_messages, max_tokens, temperature)
+                .await
+                .map(|s| Box::pin(s) as TokenStream),
+            None => llm_worker
+                .stream_response(context_messages, max_tokens, temperature)
+                .await
+                .map(|s| Box::pin(s) as TokenStream),
+        };
+        match started {
             Ok(llm_stream) => {
                 // Wrap the LLM stream to collect the full response for DB persistence
                 let output_stream = async_stream::stream! {
+                    // Background indexing yields compute while this streams.
+                    let _generation = crate::rag::GenerationGuard::new();
+                    let _model_lease = model_lease;
+                    let _stream_permit = stream_permit;
+                    let kv_slot = kv_slot;
+                    let mut stream_ok = true;
                     let mut full_response = String::new();
+
+                    // The passages this answer was built on, sent BEFORE the
+                    // first token so the UI can show what it is reading from
+                    // while the answer is still being written.
+                    //
+                    // A frame of its own, carrying no `choices`, so a client
+                    // that does not know about it parses it and finds no
+                    // content — the old shape of this stream still works.
+                    if !retrieved_passages.is_empty() {
+                        let sources: Vec<serde_json::Value> = retrieved_passages
+                            .iter()
+                            .map(|p| serde_json::json!({
+                                "document_id": p.document_id,
+                                "filename": p.filename,
+                                "page_start": p.page_start,
+                                "page_end": p.page_end,
+                                "section_label": p.section_label,
+                                "citation": p.citation,
+                                "text": p.text,
+                                "version_label": p.version_label,
+                            }))
+                            .collect();
+                        let frame = serde_json::json!({ "sources": sources });
+                        yield Ok::<_, Infallible>(Event::default().data(frame.to_string()));
+                    }
+
+                    // The blocks themselves, so the client can cut a reprint
+                    // out of the LIVE stream. The backend cuts the same text
+                    // before saving, but that is far too late for a reply being
+                    // rendered token by token, and the client cannot be given
+                    // the shape of a block to guess at - it is given the block.
+                    if !folded_blocks.is_empty() {
+                        let frame = serde_json::json!({ "scaffold": folded_blocks });
+                        yield Ok::<_, Infallible>(Event::default().data(frame.to_string()));
+                    }
 
                     futures_util::pin_mut!(llm_stream);
 
@@ -2606,6 +2988,18 @@ pub async fn generate_stream(
                                 // Extract content from SSE data for persistence
                                 if sse_line.starts_with("data: ") && !sse_line.contains("[DONE]") {
                                     if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(&sse_line[6..].trim()) {
+                                        // llama-server's per-request timings: how many prompt
+                                        // tokens it computed versus took from its cache.
+                                        if let Some(t) = chunk.get("timings") {
+                                            let computed = t.get("prompt_n").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let cached = t.get("cache_n").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let ms = t.get("prompt_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            crate::model_runtime::kv_store::observe_prefill(computed, ms);
+                                            info!(
+                                                "Prompt for {}: {} tokens reused from cache, {} computed in {:.0} ms",
+                                                session_id_for_persist, cached, computed, ms
+                                            );
+                                        }
                                         if let Some(content) = chunk
                                             .get("choices")
                                             .and_then(|c| c.get(0))
@@ -2624,6 +3018,7 @@ pub async fn generate_stream(
                             }
                             Err(e) => {
                                 error!("Stream error: {}", e);
+                                stream_ok = false;
                                 yield Ok(Event::default().data(
                                     format!("{{\"error\": \"{}\"}}", e)
                                 ));
@@ -2631,6 +3026,46 @@ pub async fn generate_stream(
                             }
                         }
                     }
+
+                    // Exactly what the engine generated: what its slot holds,
+                    // and what history replays next turn.
+                    let generated = full_response.clone();
+
+                    // Check the answer's citations against what it was based on;
+                    // problems are appended under the answer (and stored with it).
+                    if !full_response.is_empty() {
+                        let report = crate::rag::citations::verify(&db_for_persist, &full_response, &citation_inputs);
+                        if report.checked > 0 {
+                            info!(
+                                "Citation check for session {}: {} checked, {} issue(s)",
+                                session_id_for_persist, report.checked, report.issues.len()
+                            );
+                        }
+                        if let Some(note) = report.note() {
+                            let chunk = serde_json::json!({ "choices": [{ "index": 0, "delta": { "content": note } }] });
+                            yield Ok::<_, Infallible>(Event::default().data(chunk.to_string()));
+                            full_response.push_str(&note);
+                        }
+                    }
+
+                    // A small model often reprints the excerpt block it was
+                    // given before answering. The instructions forbid it; this
+                    // is the guard for when they are ignored, so what is SAVED
+                    // is the answer rather than a copy of the prompt. The live
+                    // stream is cleaned the same way on the client, which is
+                    // the only place a reprint can be caught token by token.
+                    let full_response = crate::rag::echo_guard::strip_all(&full_response, &folded_blocks);
+
+                    // The slot now holds this prompt and its reply. Keyed by the
+                    // reply as saved, which is what the client sends back next turn.
+                    if is_cloud {
+                        // Nothing to record or reset.
+                    } else if stream_ok && !full_response.is_empty() {
+                        crate::model_runtime::kv_store::record_served(&kv_slot, &kv_state, &kv_session, &kv_sent, &generated).await;
+                    } else {
+                        crate::model_runtime::kv_store::engine_reset();
+                    }
+                    drop(kv_slot);
 
                     // Persist assistant response to database after stream completes
                     if !full_response.is_empty() {
@@ -2641,6 +3076,20 @@ pub async fn generate_stream(
                             Ok(_stored_msgs) => {
                                 debug!("Persisted assistant response ({} chars) for session {}",
                                     full_response.len(), session_id_for_persist);
+                                if stream_ok {
+                                    if let Err(e) = db_for_persist.conversations.set_prompt_content(
+                                        &session_id_for_persist, msg_index, "assistant", &generated,
+                                    ) {
+                                        warn!("Could not record the reply for replay: {}", e);
+                                    }
+                                }
+                                if let Some(question) = topic_question.as_deref() {
+                                    if let Err(e) = crate::context_engine::topic_memory::record_turn(
+                                        &db_for_persist, &session_id_for_persist, question, &full_response,
+                                    ) {
+                                        warn!("Could not update topic memory: {}", e);
+                                    }
+                                }
                             }
                             Err(e) => {
                                 error!("Failed to persist assistant message: {}", e);
@@ -2657,6 +3106,9 @@ pub async fn generate_stream(
                     .into_response();
             }
             Err(e) => {
+                if !is_cloud {
+                    crate::model_runtime::kv_store::engine_reset();
+                }
                 let error_msg = format!("{}", e);
                 error!("Failed to start LLM stream: {}", error_msg);
                 // Logged separately at error level with the raw text, so the

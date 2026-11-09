@@ -28,7 +28,7 @@ use anyhow::{anyhow, Context, Result};
 use pdfium_render::prelude::*;
 use tracing::{debug, info};
 
-use super::view_model::{wrong_format, DraftPatch, DraftViewModel, PdfAnnotation, PdfPage};
+use super::view_model::{wrong_format, DraftPatch, DraftViewModel, PdfAnnotation, PdfBookmark, PdfPage};
 use crate::utils::pdf_text::bind_pdfium;
 
 /// Highlighter yellow, used when the client does not name a colour.
@@ -57,11 +57,19 @@ pub fn build(bytes: &[u8], version: i64) -> Result<DraftViewModel> {
                 .bounds()
                 .map(|b| [b.left().value, b.bottom().value, b.right().value, b.top().value])
                 .unwrap_or([0.0; 4]);
+            // Markup annotations draw in their stroke colour, boxes and notes
+            // in their fill; whichever is readable is what the page shows.
+            let color = annotation
+                .stroke_color()
+                .or_else(|_| annotation.fill_color())
+                .ok()
+                .map(|c| [c.red(), c.green(), c.blue()]);
             annotations.push(PdfAnnotation {
                 index: a_index,
                 kind: format!("{:?}", annotation.annotation_type()),
                 rect,
                 contents: annotation.contents(),
+                color,
             });
         }
 
@@ -76,8 +84,24 @@ pub fn build(bytes: &[u8], version: i64) -> Result<DraftViewModel> {
     if pages.is_empty() {
         return Err(anyhow!("This PDF contains no pages."));
     }
-    debug!("PDF view model: {} pages", pages.len());
-    Ok(DraftViewModel::Pdf { version, pages })
+
+    let mut bookmarks = Vec::new();
+    for bookmark in doc.bookmarks().iter() {
+        // pdfium-render only knows a bookmark's immediate parent during a
+        // walk, so depth is reported as top-level (0) or nested (1).
+        bookmarks.push(PdfBookmark {
+            title: bookmark.title().unwrap_or_default(),
+            page: bookmark.destination().and_then(|d| d.page_index().ok()).map(|i| i as usize),
+            level: usize::from(bookmark.parent().is_some()),
+        });
+        // A malformed outline can loop; a real one is never this long.
+        if bookmarks.len() >= 2000 {
+            break;
+        }
+    }
+
+    debug!("PDF view model: {} pages, {} bookmarks", pages.len(), bookmarks.len());
+    Ok(DraftViewModel::Pdf { version, pages, bookmarks })
 }
 
 pub fn apply(bytes: &[u8], patches: &[DraftPatch]) -> Result<Vec<u8>> {
@@ -261,6 +285,20 @@ fn rotate_page(doc: &mut PdfDocument, page_index: usize, degrees: i32) -> Result
     });
     info!("Rotated page {} by {}°", page_index + 1, degrees);
     Ok(())
+}
+
+/// The text layer of every page, for comparing two PDFs.
+///
+/// A scanned page with no text layer yields an empty string rather than an
+/// error, so a comparison of two scans reports "no text" instead of failing.
+pub fn page_texts(bytes: &[u8]) -> Result<Vec<String>> {
+    let pdfium = bind_pdfium()?;
+    let doc = pdfium.load_pdf_from_byte_slice(bytes, None).map_err(|e| password_aware_error(e))?;
+    Ok(doc
+        .pages()
+        .iter()
+        .map(|page| page.text().map(|t| t.all()).unwrap_or_default())
+        .collect())
 }
 
 /// Render one page to PNG bytes at `scale` times its natural size.

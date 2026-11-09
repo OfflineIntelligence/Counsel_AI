@@ -4,7 +4,7 @@
 //! and hardware capabilities (Intel, Apple Silicon, NVIDIA CUDA).
 
 use std::sync::OnceLock;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Platform {
@@ -61,6 +61,39 @@ pub struct HardwareCapabilities {
     /// Enables the llama.cpp OpenCL-Adreno engine as an available option.
     #[serde(default)]
     pub has_adreno_gpu: bool,
+    /// Windows build number (e.g. 19045 for Win10 22H2, 26100 for Win11 24H2).
+    /// `None` off Windows or when the registry probe fails.
+    ///
+    /// Diagnostics only — the supported-platform gate lives in the installer,
+    /// which can refuse before anything is downloaded. By the time this process
+    /// is running, refusing would achieve nothing the installer has not already
+    /// achieved. Reported so a support conversation starts with the real build.
+    #[serde(default)]
+    pub windows_build: Option<u32>,
+    /// True when the display adapter looks like a virtualized one (Hyper-V,
+    /// VMware, VirtualBox, Parallels, QXL/virtio, Basic Display Adapter, or an
+    /// RDP session).
+    ///
+    /// DELIBERATELY not used to gate engine selection. A VM with real GPU
+    /// passthrough is common and works fine, so demoting on a name match would
+    /// wrongly deny those machines their GPU. The backend-load check is strictly
+    /// better evidence than a string comparison and already handles the case
+    /// where the virtual adapter genuinely cannot run Vulkan. This flag exists
+    /// so logs and support reports say "this was a VM", nothing more.
+    #[serde(default)]
+    pub is_virtual_machine: bool,
+    /// True when all three MSVC runtime DLLs the llama.cpp engines import are
+    /// present: `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll`.
+    ///
+    /// All three are required, not just the two the main binary imports:
+    /// `ggml-vulkan.dll` and `ggml-cuda.dll` additionally import
+    /// `VCRUNTIME140_1.dll` (verified from the b8037 PE import directories),
+    /// which only ships with redist 14.20+. When it is absent the engine starts
+    /// and the CPU backend loads, but `LoadLibrary` on the GPU backend fails
+    /// SILENTLY — indistinguishable from a broken driver unless checked here.
+    /// `false` on non-Windows, where the concept does not apply.
+    #[serde(default)]
+    pub vc_redist_ok: bool,
 }
 
 // Static cache for hardware capabilities to avoid repeated detection
@@ -93,11 +126,25 @@ impl HardwareCapabilities {
             None
         };
         let has_adreno_gpu = Self::detect_adreno_gpu(&architecture);
+        let windows_build = Self::detect_windows_build();
+        let is_virtual_machine = Self::detect_virtual_machine();
+        let vc_redist_ok = Self::detect_vc_redist();
 
         info!(
-            "Detected platform: {:?}, architecture: {:?}, CUDA: {}, Metal: {}, Vulkan: {}, NVIDIA driver: {:?}, Adreno: {}",
-            platform, architecture, has_cuda, has_metal, has_vulkan, nvidia_driver, has_adreno_gpu
+            "Detected platform: {:?}, architecture: {:?}, CUDA: {}, Metal: {}, Vulkan: {}, \
+             NVIDIA driver: {:?}, Adreno: {}, Windows build: {:?}, VM: {}, VC++ runtime: {}",
+            platform, architecture, has_cuda, has_metal, has_vulkan, nvidia_driver,
+            has_adreno_gpu, windows_build, is_virtual_machine, vc_redist_ok
         );
+
+        if cfg!(target_os = "windows") && !vc_redist_ok {
+            warn!(
+                "The Microsoft Visual C++ 2015-2022 Redistributable is missing or incomplete. \
+                 GPU acceleration backends (ggml-vulkan.dll, ggml-cuda.dll) import \
+                 VCRUNTIME140_1.dll and will fail to load SILENTLY without it; the engine \
+                 itself may not start at all if VCRUNTIME140.dll or MSVCP140.dll is also absent."
+            );
+        }
 
         let capabilities = Self {
             platform,
@@ -107,6 +154,9 @@ impl HardwareCapabilities {
             has_vulkan,
             nvidia_driver,
             has_adreno_gpu,
+            windows_build,
+            is_virtual_machine,
+            vc_redist_ok,
         };
 
         // Cache the result (ignore if already set by another thread)
@@ -411,6 +461,86 @@ impl HardwareCapabilities {
         }
     }
 
+    /// Read the Windows build number from the registry. `None` off Windows or
+    /// when the value cannot be read/parsed — a failed probe is reported as
+    /// unknown, never guessed.
+    fn detect_windows_build() -> Option<u32> {
+        #[cfg(target_os = "windows")]
+        {
+            let output = Self::run_reg_query(&[
+                "query",
+                r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+                "/v",
+                "CurrentBuildNumber",
+            ])?;
+            // reg.exe prints: "    CurrentBuildNumber    REG_SZ    19045"
+            for line in output.lines() {
+                if line.contains("CurrentBuildNumber") {
+                    if let Some(value) = line.split_whitespace().last() {
+                        return value.trim().parse::<u32>().ok();
+                    }
+                }
+            }
+            None
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
+    /// Detect a virtualized display adapter. Diagnostics only — see the
+    /// `is_virtual_machine` field doc for why this must not gate selection.
+    fn detect_virtual_machine() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(output) = Self::run_reg_query(&[
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}",
+                "/s",
+                "/v",
+                "DriverDesc",
+            ]) {
+                let lower = output.to_lowercase();
+                return ["hyper-v", "vmware", "virtualbox", "parallels", "qxl",
+                        "virtio", "basic display", "basic render", "remote display"]
+                    .iter()
+                    .any(|needle| lower.contains(needle));
+            }
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
+    /// Check for the three MSVC runtime DLLs the llama.cpp engines import.
+    ///
+    /// The files themselves are checked rather than the redist's registry
+    /// version key: a version key can survive a partially removed or repaired
+    /// install, whereas what actually has to load is the DLL. All three are
+    /// required — see the `vc_redist_ok` field doc for why VCRUNTIME140_1
+    /// matters even though the main binary does not import it.
+    fn detect_vc_redist() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            // This process is native x86_64/ARM64 (unlike the 32-bit NSIS
+            // installer), so System32 is already the native one — no Sysnative
+            // redirection dance is needed here.
+            let system_root =
+                std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+            let system32 = std::path::Path::new(&system_root).join("System32");
+            ["VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll"]
+                .iter()
+                .all(|dll| system32.join(dll).exists())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
     fn detect_metal_support() -> bool {
         // Metal is available on Apple Silicon and newer Intel Macs
         cfg!(target_os = "macos")
@@ -649,6 +779,9 @@ mod tests {
             has_vulkan: true,
             nvidia_driver: None, // presence probe passed, detail query failed
             has_adreno_gpu: false,
+            windows_build: None,
+            is_virtual_machine: false,
+            vc_redist_ok: true,
         };
         // Without confirmed driver details, CUDA must not be selected
         assert!(!caps.cuda12_usable());

@@ -457,8 +457,16 @@ fn distinctive_filename_words(filename: &str) -> Vec<String> {
     stem.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.chars().count() >= 3)
         .filter(|w| !w.chars().all(|c| c.is_numeric()))
+        .filter(|w| is_identifying_word(w))
         .map(|w| w.to_string())
         .collect()
+}
+
+/// A word of a file name that can identify it. Filler ("the", "about",
+/// "and") and determiners never do: "about-the-knowledge-library.txt" must
+/// not be matched by "the lease says the ...".
+fn is_identifying_word(w: &str) -> bool {
+    !crate::memory_db::fts::is_stop_word(w) && !DEFINITE_DETERMINERS.contains(&w)
 }
 
 /// Does the query refer to `filename` by a definite noun phrase?
@@ -519,6 +527,7 @@ fn describes_filename(lower_query: &str, filename: &str) -> Option<String> {
     let words: Vec<&str> = stem
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.chars().count() >= 3)
+        .filter(|w| is_identifying_word(w))
         .collect();
     if words.is_empty() {
         return None;
@@ -912,6 +921,21 @@ mod tests {
             intent.named_files
         );
         assert!(!intent.refers_to_past());
+    }
+
+    #[test]
+    fn filler_words_in_a_file_name_never_make_a_reference() {
+        let files = vec!["about-the-knowledge-library.txt".to_string()];
+        let q = "My client's warehouse lease says the tenant must give notice. What notice period applies?";
+        let intent = detect_reference(q, &files, now());
+        assert!(
+            !intent.signals.iter().any(|s| matches!(s, ReferenceSignal::DescribedDocument { .. })),
+            "{:?}",
+            intent.signals
+        );
+        // The identifying words still work.
+        let intent = detect_reference("What does the knowledge library say?", &files, now());
+        assert!(intent.signals.iter().any(|s| matches!(s, ReferenceSignal::DescribedDocument { .. })));
     }
 
     #[test]

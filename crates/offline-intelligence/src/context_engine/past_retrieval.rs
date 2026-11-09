@@ -44,7 +44,7 @@ const MAX_DOCUMENTS: i64 = 3;
 const MAX_MESSAGES: i64 = 6;
 /// Share of this block's budget given to documents; the rest goes to messages.
 /// Documents carry the substance, messages the context around it.
-const DOCUMENT_SHARE_PCT: usize = 70;
+const DOCUMENT_SHARE_PCT: usize = 50;
 /// Most earlier conversations summarised when a question asks about the
 /// conversation itself. Three is enough to answer "what did we discuss" for a
 /// normal working session without burying the current question.
@@ -61,8 +61,9 @@ const MAX_TURNS_PER_SESSION: usize = 4;
 const BLOCK_INTRO: &str = "[MATERIAL FROM EARLIER, retrieved because this question refers back to it]\n\
      This is SUPPLEMENTARY context from previous conversations and documents, not \
      the subject of this turn. Prefer any document attached to this conversation \
-     over the excerpts below. Cite the source name when you use one, and if what \
-     the user is asking for is not here, say so rather than inferring it.\n";
+     over the excerpts below. When an excerpt answers the question, answer from it \
+     and cite the source name. Only if none of them bears on the question, say that \
+     it was not found.\n";
 
 /// Completeness note used when a document had to be cut.
 const NOTE_EXCERPTED: &str = "One or more documents below are shown only as an EXCERPT - the rest of the file \
@@ -117,6 +118,20 @@ pub fn build_past_context(
     intent: &ReferenceIntent,
     budget_chars: usize,
 ) -> PastContext {
+    build_past_context_with(database, session_id, user_query, intent, budget_chars, &[])
+}
+
+/// As `build_past_context`, merging `semantic_messages` (earlier messages
+/// found by meaning, already scoped to this chat's matter) with the keyword
+/// matches.
+pub fn build_past_context_with(
+    database: &MemoryDatabase,
+    session_id: &str,
+    user_query: &str,
+    intent: &ReferenceIntent,
+    budget_chars: usize,
+    semantic_messages: &[(crate::memory_db::StoredMessage, f64)],
+) -> PastContext {
     if !intent.refers_to_past() {
         return PastContext::none(format!("no retrieval: {}", intent.explain()));
     }
@@ -168,20 +183,44 @@ pub fn build_past_context(
     }
 
     let doc_budget = usable * DOCUMENT_SHARE_PCT / 100;
-    let msg_budget = usable.saturating_sub(doc_budget);
 
-    let documents = find_documents(database, user_query, intent, &in_session);
-    let messages = match database.conversations.search_messages_fulltext(
+    let scope = crate::rag::scope::resolve(database, session_id);
+    let documents = find_documents(database, user_query, intent, &in_session, &scope);
+    let allowed_sessions = crate::rag::scope::allowed_sessions(database, session_id);
+    let keyword_messages = match database.conversations.search_messages_fulltext_scoped(
         user_query,
         MAX_MESSAGES,
         Some(session_id),
         intent.time_range,
+        allowed_sessions.as_ref(),
     ) {
         Ok(m) => m,
         Err(e) => {
             debug!("Past-message search failed: {}", e);
             Vec::new()
         }
+    };
+    // Reciprocal-rank fusion of keyword and meaning matches.
+    let messages: Vec<(crate::memory_db::StoredMessage, f64)> = {
+        let mut scores: std::collections::HashMap<i64, (crate::memory_db::StoredMessage, f64)> = std::collections::HashMap::new();
+        for list in [&keyword_messages[..], semantic_messages] {
+            for (rank, (m, _)) in list.iter().enumerate() {
+                if m.session_id == session_id {
+                    continue;
+                }
+                if let Some(ref allowed) = allowed_sessions {
+                    if !allowed.contains(&m.session_id) {
+                        continue;
+                    }
+                }
+                let entry = scores.entry(m.id).or_insert_with(|| (m.clone(), 0.0));
+                entry.1 += 1.0 / (60.0 + rank as f64 + 1.0);
+            }
+        }
+        let mut v: Vec<(crate::memory_db::StoredMessage, f64)> = scores.into_values().collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.id.cmp(&b.0.id)));
+        v.truncate(MAX_MESSAGES as usize);
+        v
     };
 
     if documents.is_empty() && messages.is_empty() {
@@ -211,7 +250,7 @@ pub fn build_past_context(
         if remaining <= heading.len() + 120 {
             break;
         }
-        let (excerpt, truncated) = excerpt(&doc.extracted_text, remaining - heading.len());
+        let (excerpt, truncated) = relevant_excerpt(database, doc, user_query, remaining - heading.len());
         any_truncated |= truncated;
         doc_used += heading.len() + excerpt.len();
         block.push_str(&heading);
@@ -223,6 +262,8 @@ pub fn build_past_context(
         );
     }
 
+    // Messages get whatever the documents left, not a fixed remainder.
+    let msg_budget = usable.saturating_sub(doc_used);
     let mut msg_used = 0usize;
     let mut msgs_included = 0usize;
     if !messages.is_empty() {
@@ -230,13 +271,20 @@ pub fn build_past_context(
         if msg_budget > heading.len() + 120 {
             block.push_str(heading);
             msg_used += heading.len();
-            for (msg, _score) in &messages {
-                let line = format!(
-                    "[{}, {}]: {}\n",
-                    msg.timestamp.format("%Y-%m-%d"),
-                    msg.role,
-                    one_line(&msg.content, 400)
-                );
+            // Whole exchanges: each match comes back with its question or
+            // answer, so the model knows what an answer was answering.
+            let hits: Vec<crate::memory_db::StoredMessage> = messages.iter().map(|(m, _)| m.clone()).collect();
+            let terms = crate::memory_db::fts::content_tokens(user_query);
+            let current = super::duplicates::Current::load(database, session_id, user_query);
+            let pairs = super::duplicates::filter_pairs(database, &current, super::conversation_memory::pairs_for(database, &hits));
+            for pair in pairs {
+                let when = pair
+                    .user
+                    .as_ref()
+                    .or(pair.assistant.as_ref())
+                    .map(|m| m.timestamp.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default();
+                let line = pair.render(&format!("Earlier conversation, {}", when), &terms);
                 if msg_used + line.len() > msg_budget {
                     break;
                 }
@@ -290,6 +338,7 @@ fn build_recall_context(
     intent: &ReferenceIntent,
     budget_chars: usize,
 ) -> PastContext {
+    let allowed_sessions = crate::rag::scope::allowed_sessions(database, current_session_id);
     let sessions = match database.conversations.get_all_sessions() {
         Ok(s) => s,
         Err(e) => {
@@ -306,6 +355,9 @@ fn build_recall_context(
 
     let mut body = String::new();
     let mut included = 0usize;
+    // A conversation that repeats this one is a copy, not earlier material.
+    let current = super::duplicates::Current::load(database, current_session_id, "");
+    let duplicates = current.duplicate_sessions(database, sessions.iter().map(|s| &s.id));
 
     // get_all_sessions is ordered by last_accessed DESC, so this is
     // most-recent-first without a second sort.
@@ -313,8 +365,13 @@ fn build_recall_context(
         if included >= MAX_RECALL_SESSIONS || header.len() + body.len() >= budget_chars {
             break;
         }
-        if session.id == current_session_id {
+        if session.id == current_session_id || duplicates.contains(&session.id) {
             continue;
+        }
+        if let Some(ref allowed) = allowed_sessions {
+            if !allowed.contains(&session.id) {
+                continue;
+            }
         }
         // A date in the question ("what did we discuss yesterday") narrows
         // which conversations are eligible at all.
@@ -400,23 +457,30 @@ fn find_documents(
     user_query: &str,
     intent: &ReferenceIntent,
     in_session: &std::collections::HashSet<i64>,
+    scope: &crate::rag::scope::Scope,
 ) -> Vec<(crate::memory_db::DocumentRecord, f64)> {
     let mut out: Vec<(crate::memory_db::DocumentRecord, f64)> = Vec::new();
+    let in_range = |doc: &crate::memory_db::DocumentRecord| match intent.time_range {
+        Some((start, end)) => doc.last_referenced_at >= start && doc.last_referenced_at <= end,
+        None => true,
+    };
 
+    // Files named or described in the question, by file name.
     for filename in &intent.named_files {
-        match database.documents.search_documents_fulltext(filename, MAX_DOCUMENTS, None) {
+        let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
+        match database.documents.search_documents(stem, MAX_DOCUMENTS * 4) {
             Ok(hits) => {
-                for (doc, score) in hits {
+                for doc in hits {
                     let named = doc.original_filename.eq_ignore_ascii_case(filename)
-                        || doc
-                            .original_filename
-                            .to_lowercase()
-                            .contains(&filename.to_lowercase());
+                        || doc.original_filename.to_lowercase().contains(&filename.to_lowercase());
                     if named
+                        && doc.extraction_status == "ok"
+                        && !doc.extracted_text.trim().is_empty()
                         && !in_session.contains(&doc.id)
+                        && scope.allows(doc.id)
                         && !out.iter().any(|(d, _)| d.id == doc.id)
                     {
-                        out.push((doc, score));
+                        out.push((doc, f64::MAX));
                     }
                 }
             }
@@ -429,40 +493,109 @@ fn find_documents(
         return out;
     }
 
-    // Fetch extra candidates: some will be filtered out as already-in-session or
-    // already-collected, and requesting exactly the remaining count would then
-    // under-fill.
-    let want = MAX_DOCUMENTS - out.len() as i64;
-    match database
-        .documents
-        .search_documents_fulltext(user_query, want + MAX_DOCUMENTS, intent.time_range)
-    {
-        Ok(hits) => {
-            for (doc, score) in hits {
-                if out.len() as i64 >= MAX_DOCUMENTS {
-                    break;
-                }
-                if in_session.contains(&doc.id) || out.iter().any(|(d, _)| d.id == doc.id) {
-                    continue;
-                }
+    // Documents whose passages match the question, within this chat's scope.
+    let Some(fts) = crate::memory_db::fts::fts_query_from_user_text(user_query) else {
+        return out;
+    };
+    let terms = crate::memory_db::fts::content_tokens(user_query);
+    let beyond = scope.beyond_session(database);
+    let hits = database.rag.keyword_search(&fts, beyond.as_ref(), 60).unwrap_or_default();
+    let mut best: Vec<(i64, f64)> = Vec::new();
+    for (_, doc_id, score) in hits {
+        if in_session.contains(&doc_id) {
+            continue;
+        }
+        match best.iter_mut().find(|(d, _)| *d == doc_id) {
+            Some(entry) => entry.1 = entry.1.max(score),
+            None => best.push((doc_id, score)),
+        }
+    }
+    best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (doc_id, score) in best {
+        if out.len() as i64 >= MAX_DOCUMENTS {
+            break;
+        }
+        if out.iter().any(|(d, _)| d.id == doc_id) {
+            continue;
+        }
+        if let Ok(doc) = database.documents.get_document(doc_id) {
+            if in_range(&doc) && covers_enough(&doc.extracted_text, &terms) {
                 out.push((doc, score));
             }
         }
-        Err(e) => debug!("Past-document search failed: {}", e),
     }
     out
 }
 
-/// Head excerpt with an explicit announcement when text was cut.
-///
-/// Silence about truncation is what lets a model present a fragment as a whole
-/// document — the same failure `document_memory` guards against, and the same
-/// remedy: say so, in the prompt, where the model will read it.
-/// Returns the excerpt and whether anything was cut.
-///
-/// The caller needs the flag, not just the text: the block's header has to
-/// state whether what follows is complete, and it cannot know that by
-/// inspecting the strings afterwards.
+/// Whether `text` contains enough of the question's content words to be worth
+/// showing: at least half of them (rounded up, and at least one), matched by
+/// their first five letters. The keyword index ORs every term, so a document
+/// that shares one common word with a question still ranks; this keeps such a
+/// document (for example a placeholder file) out of the prompt.
+pub(crate) fn covers_enough(text: &str, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let lower = text.to_lowercase();
+    let hit = terms
+        .iter()
+        .filter(|t| lower.contains(&t.chars().take(5).collect::<String>()))
+        .count();
+    hit >= terms.len().div_ceil(2).max(1)
+}
+
+/// The whole document when it fits; otherwise the passages that match the
+/// question (in document order, with citations), marked as an excerpt.
+fn relevant_excerpt(
+    database: &MemoryDatabase,
+    doc: &crate::memory_db::DocumentRecord,
+    user_query: &str,
+    budget: usize,
+) -> (String, bool) {
+    let full = crate::rag::chunker::clean_text(&doc.extracted_text);
+    if full.len() <= budget {
+        return excerpt(&full, budget);
+    }
+    let _ = database.rag.ensure_chunked(&[doc.id]);
+    let scope: std::collections::HashSet<i64> = [doc.id].into_iter().collect();
+    let hits = crate::memory_db::fts::fts_query_from_user_text(user_query)
+        .map(|q| database.rag.keyword_search(&q, Some(&scope), 12).unwrap_or_default())
+        .unwrap_or_default();
+    if hits.is_empty() {
+        return excerpt(&full, budget);
+    }
+    let ids: Vec<i64> = hits.iter().map(|(id, _, _)| *id).collect();
+    let mut rows = database.rag.chunks_by_ids(&ids).unwrap_or_default();
+    rows.sort_by_key(|c| ids.iter().position(|id| *id == c.id).unwrap_or(usize::MAX));
+    let content_budget = budget.saturating_sub(EXCERPT_MARKER_RESERVE);
+    let mut picked: Vec<crate::rag::store::ChunkRow> = Vec::new();
+    let mut used = 0usize;
+    for c in rows {
+        let (s, e) = (c.byte_start as usize, (c.byte_end as usize).min(doc.extracted_text.len()));
+        if s >= e || !doc.extracted_text.is_char_boundary(s) || !doc.extracted_text.is_char_boundary(e) {
+            continue;
+        }
+        let len = c.text(&doc.extracted_text).len() + 24;
+        if used + len > content_budget {
+            continue;
+        }
+        used += len;
+        picked.push(c);
+    }
+    if picked.is_empty() {
+        return excerpt(&full, budget);
+    }
+    picked.sort_by_key(|c| c.ord);
+    let mut body = String::new();
+    for c in &picked {
+        let text = c.text(&doc.extracted_text);
+        body.push_str(&format!("{} {}
+", c.citation(), text));
+    }
+    (format!("{}[... excerpt ends here; matching passages shown from a {}-character document ...]
+", body, full.len()), true)
+}
+
 fn excerpt(text: &str, budget: usize) -> (String, bool) {
     let trimmed = text.trim();
     if trimmed.len() <= budget {
@@ -1016,5 +1149,37 @@ mod tests {
 
         let skipped = build(&db, "What is an escrow account?", 8000);
         assert!(skipped.reason.contains("no retrieval"), "{}", skipped.reason);
+    }
+}
+
+#[cfg(test)]
+mod relevance_bar_tests {
+    use super::*;
+
+    fn t(q: &str) -> Vec<String> {
+        crate::memory_db::fts::content_tokens(q)
+    }
+
+    #[test]
+    fn a_placeholder_sharing_one_word_with_the_question_is_kept_out() {
+        let placeholder = "About the Knowledge Library. This is a placeholder document included so the \
+            Knowledge Library works end to end while official legal reference documents are prepared.";
+        assert!(!covers_enough(placeholder, &t("What is the name of the playlist I created on Spotify?")));
+        assert!(!covers_enough(placeholder, &t("Which documents did the landlord send about the deposit refund?")));
+    }
+
+    #[test]
+    fn a_document_about_the_question_passes() {
+        let lease = "The tenant shall pay a deposit equal to two months of rent. The deposit refund is due \
+            within thirty days after the landlord inspects the premises.";
+        assert!(covers_enough(lease, &t("When is the deposit refund due from the landlord?")));
+        // Inflections still count: the first five letters are compared.
+        assert!(covers_enough(lease, &t("refunding deposits")));
+    }
+
+    #[test]
+    fn the_intro_asks_for_an_answer_from_the_excerpts() {
+        assert!(!BLOCK_INTRO.contains("rather than inferring"));
+        assert!(BLOCK_INTRO.contains("answer from it"));
     }
 }

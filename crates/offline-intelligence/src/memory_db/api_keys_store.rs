@@ -2,11 +2,11 @@
 //!
 //! Stores and manages API keys for:
 //! - HuggingFace (for gated model downloads)
+//! - Cloud model providers (see crate::cloud_providers), keyed by provider id
 //!
 //! Keys are encrypted at rest and persist across sessions.
 
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -16,22 +16,25 @@ use std::sync::Arc;
 use tracing::info;
 
 /// Type of API key
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiKeyType {
     HuggingFace,
+    /// A cloud model provider, by its id in `crate::cloud_providers`.
+    Cloud(&'static str),
 }
 
 impl ApiKeyType {
     pub fn as_str(&self) -> &'static str {
         match self {
             ApiKeyType::HuggingFace => "huggingface",
+            ApiKeyType::Cloud(id) => id,
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "huggingface" | "hf" => Some(ApiKeyType::HuggingFace),
-            _ => None,
+            other => crate::cloud_providers::find(other).map(|p| ApiKeyType::Cloud(p.id)),
         }
     }
 }
@@ -59,8 +62,9 @@ impl ApiKeysStore {
     }
 
     /// Initialize the api_keys table if it doesn't exist
-    pub fn initialize_schema(&self) -> Result<()> {
-        let conn = self.pool.get()?;
+    /// Schema DDL for this store. Only ever called from the migration
+    /// chain (`migration::get_migrations`), the single schema route.
+    pub(crate) fn create_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +79,12 @@ impl ApiKeysStore {
         )?;
         info!("API keys table initialized");
         Ok(())
+    }
+
+    /// Bring the database this store uses up to the current schema. Goes
+    /// through the migration chain like every other caller.
+    pub fn initialize_schema(&self) -> anyhow::Result<()> {
+        super::migration::ensure_schema(&self.pool)
     }
 
     /// Save or update an API key
@@ -196,47 +206,47 @@ impl ApiKeysStore {
     }
 }
 
-/// Simple XOR-based encryption for API keys
-/// NOTE: For production, consider using a proper encryption library like `ring` or `sodiumoxide`
-pub struct SimpleEncryption;
+/// Encryption of stored API keys: AES-256-GCM under a DPAPI-wrapped
+/// per-install master key (see `utils::secret_box`).
+pub struct KeyEncryption;
 
-impl SimpleEncryption {
-    // Derived from system-specific data for basic obfuscation
-    fn get_key() -> Vec<u8> {
-        // Simple key derivation - in production use proper key management
-        let machine_id = whoami::devicename();
-        let mut key = Vec::new();
-        for byte in machine_id.bytes() {
-            key.push(byte);
-        }
-        // Pad to at least 32 bytes
-        while key.len() < 32 {
-            key.push((key.len() as u8).wrapping_mul(17));
-        }
-        key.truncate(32);
-        key
+impl KeyEncryption {
+    pub fn encrypt(plaintext: &str) -> Result<String> {
+        crate::utils::secret_box::encrypt(plaintext)
     }
 
-    pub fn encrypt(plaintext: &str) -> String {
-        let key = Self::get_key();
-        let bytes = plaintext.as_bytes();
-        let encrypted: Vec<u8> = bytes
-            .iter()
-            .enumerate()
-            .map(|(i, &b)| b ^ key[i % key.len()])
-            .collect();
-        BASE64.encode(&encrypted)
+    pub fn decrypt(stored: &str) -> Result<String> {
+        crate::utils::secret_box::decrypt(stored)
     }
+}
 
-    pub fn decrypt(encrypted: &str) -> Result<String> {
-        let key = Self::get_key();
-        let encrypted_bytes = BASE64.decode(encrypted)?;
-        let decrypted: Vec<u8> = encrypted_bytes
-            .iter()
-            .enumerate()
-            .map(|(i, &b)| b ^ key[i % key.len()])
-            .collect();
-        Ok(String::from_utf8(decrypted)?)
+impl ApiKeysStore {
+    /// Re-encrypt rows still in the old XOR format. Runs at startup; a row
+    /// that cannot be read is left alone (the user re-enters that key).
+    pub fn upgrade_legacy_encryption(&self) -> Result<usize> {
+        let conn = self.pool.get()?;
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT id, encrypted_value FROM api_keys")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut upgraded = 0;
+        for (id, value) in rows {
+            if crate::utils::secret_box::is_encrypted(&value) {
+                continue;
+            }
+            match crate::utils::secret_box::decrypt_legacy(&value) {
+                Ok(plain) => {
+                    let enc = crate::utils::secret_box::encrypt(&plain)?;
+                    conn.execute("UPDATE api_keys SET encrypted_value = ?1 WHERE id = ?2", params![enc, id])?;
+                    upgraded += 1;
+                }
+                Err(e) => tracing::warn!("API key {} could not be upgraded: {}", id, e),
+            }
+        }
+        if upgraded > 0 {
+            info!("Re-encrypted {} API key(s) with AES-256-GCM", upgraded);
+        }
+        Ok(upgraded)
     }
 }
 
@@ -247,8 +257,9 @@ mod tests {
     #[test]
     fn test_encryption_roundtrip() {
         let original = "hf_1234567890abcdef";
-        let encrypted = SimpleEncryption::encrypt(original);
-        let decrypted = SimpleEncryption::decrypt(&encrypted).unwrap();
+        let encrypted = KeyEncryption::encrypt(original).unwrap();
+        assert!(!encrypted.contains(original));
+        let decrypted = KeyEncryption::decrypt(&encrypted).unwrap();
         assert_eq!(original, decrypted);
     }
 }

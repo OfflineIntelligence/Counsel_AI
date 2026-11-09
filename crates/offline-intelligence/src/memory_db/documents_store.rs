@@ -115,8 +115,9 @@ impl DocumentsStore {
         Self { pool }
     }
 
-    pub fn initialize_schema(&self) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
+    /// Schema DDL for this store. Only ever called from the migration
+    /// chain (`migration::get_migrations`), the single schema route.
+    pub(crate) fn create_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(SCHEMA_SQL)?;
         // Provenance-anchor columns (migration 008). Normally added once by
         // MigrationManager against the shared production database before
@@ -140,6 +141,12 @@ impl DocumentsStore {
             }
         }
         Ok(())
+    }
+
+    /// Bring the database this store uses up to the current schema. Goes
+    /// through the migration chain like every other caller.
+    pub fn initialize_schema(&self) -> anyhow::Result<()> {
+        super::migration::ensure_schema(&self.pool)
     }
 
     /// Content-identity hash. Same bytes anywhere = the same document.
@@ -252,31 +259,23 @@ impl DocumentsStore {
         // provenance (page/slide/sheet, heading, paragraph range) computed by
         // doc_context::chunk_text.
         if doc.extraction_status == "ok" && !doc.extracted_text.trim().is_empty() {
-            let chunks = crate::utils::doc_context::chunk_text(&doc.extracted_text);
-            for (idx, chunk) in chunks.iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO document_chunks
-                        (document_id, chunk_index, content, page_start, page_end,
-                         section_label, location_label, paragraph_start, paragraph_end)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                    rusqlite::params![
-                        document_id,
-                        idx as i32,
-                        chunk.content,
-                        chunk.page_start,
-                        chunk.page_end,
-                        chunk.section_label,
-                        chunk.location_label,
-                        chunk.paragraph_start,
-                        chunk.paragraph_end,
-                    ],
-                )?;
-            }
+            let chunks = crate::rag::store::index_document_text(
+                &conn,
+                document_id,
+                doc.original_filename,
+                &doc.extracted_text,
+            )?;
             info!(
                 "Document '{}' recorded (id {}, {} chars, {} chunks)",
-                doc.original_filename, document_id, char_count, chunks.len()
+                doc.original_filename, document_id, char_count, chunks
             );
         } else {
+            let _ = crate::rag::store::clear_document_index(
+                &conn,
+                document_id,
+                "failed",
+                doc.extraction_error.as_deref(),
+            );
             warn!(
                 "Document '{}' recorded with extraction_status='{}' ({}); no chunks created",
                 doc.original_filename,
@@ -332,34 +331,19 @@ impl DocumentsStore {
             ],
         )?;
 
-        conn.execute("DELETE FROM document_chunks WHERE document_id = ?1", [document_id])?;
-
         if extraction_status == "ok" && !extracted_text.trim().is_empty() {
-            let chunks = crate::utils::doc_context::chunk_text(extracted_text);
-            for (idx, chunk) in chunks.iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO document_chunks
-                        (document_id, chunk_index, content, page_start, page_end,
-                         section_label, location_label, paragraph_start, paragraph_end)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                    rusqlite::params![
-                        document_id,
-                        idx as i32,
-                        chunk.content,
-                        chunk.page_start,
-                        chunk.page_end,
-                        chunk.section_label,
-                        chunk.location_label,
-                        chunk.paragraph_start,
-                        chunk.paragraph_end,
-                    ],
-                )?;
-            }
+            let filename: String = conn.query_row(
+                "SELECT original_filename FROM documents WHERE id = ?1",
+                [document_id],
+                |r| r.get(0),
+            )?;
+            let chunks = crate::rag::store::index_document_text(&conn, document_id, &filename, extracted_text)?;
             info!(
                 "Document {} extraction repaired: {} chars, {} chunks rebuilt",
-                document_id, char_count, chunks.len()
+                document_id, char_count, chunks
             );
         } else {
+            crate::rag::store::clear_document_index(&conn, document_id, "failed", extraction_error)?;
             warn!(
                 "Document {} re-extraction still unusable (status='{}'): {}",
                 document_id,
@@ -413,6 +397,11 @@ impl DocumentsStore {
 
     /// Link a document to a session (idempotent). This is what makes a
     /// document attached in one chat browsable/known from any other.
+    ///
+    /// The turn a link belongs to is stamped afterwards by
+    /// `stamp_message_index`, not passed in here: linking happens down half a
+    /// dozen paths (paperclip, Local Storage, an @-reference resolved out of
+    /// the message text) and only the request that owns them knows the turn.
     pub fn link_session(
         &self,
         session_id: &str,
@@ -426,6 +415,50 @@ impl DocumentsStore {
             rusqlite::params![session_id, document_id, Utc::now().to_rfc3339(), attachment_source],
         )?;
         Ok(())
+    }
+
+    /// Record which turn this session's newest links arrived on.
+    ///
+    /// Called once per request, after every attachment path has run, with the
+    /// timestamp taken before they did. Only rows linked since then and not yet
+    /// stamped are touched, which leaves two things alone that must be left
+    /// alone: rows from earlier turns (already stamped), and rows written
+    /// before migration 20 (no turn was ever recorded, and guessing one now
+    /// would put a chip on a message that never carried the file).
+    ///
+    /// `link_session` is `INSERT OR IGNORE` on (session_id, document_id), so
+    /// re-attaching a file keeps the first turn it arrived on. That is what the
+    /// user did: the document entered the conversation once.
+    pub fn stamp_message_index(
+        &self,
+        session_id: &str,
+        msg_index: i32,
+        linked_since: DateTime<Utc>,
+    ) -> anyhow::Result<usize> {
+        let conn = self.pool.get()?;
+        let n = conn.execute(
+            "UPDATE session_documents SET msg_index = ?1
+             WHERE session_id = ?2 AND msg_index IS NULL AND attached_at >= ?3",
+            rusqlite::params![msg_index, session_id, linked_since.to_rfc3339()],
+        )?;
+        Ok(n)
+    }
+
+    /// Which turn each of this session's documents was attached to.
+    ///
+    /// Returned as (document_id, msg_index) so the chat transcript can put the
+    /// attachment chips on the right message without loading every document's
+    /// extracted text to do it.
+    pub fn session_document_turns(&self, session_id: &str) -> anyhow::Result<Vec<(i64, Option<i32>)>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT document_id, msg_index FROM session_documents
+             WHERE session_id = ?1 ORDER BY attached_at ASC",
+        )?;
+        let rows = stmt
+            .query_map([session_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// All documents ever linked to this session, most recently attached first.
@@ -560,6 +593,30 @@ impl DocumentsStore {
         .map_err(Into::into)
     }
 
+    /// Remove a document and its chunks from the index, so chat no longer
+    /// finds it. Chunks are deleted explicitly rather than trusting the
+    /// cascade, which only fires when the connection has foreign keys on.
+    pub fn delete_document(&self, id: i64) -> anyhow::Result<()> {
+        let conn = self.pool.get()?;
+        conn.execute("DELETE FROM document_chunks WHERE document_id = ?1", [id])?;
+        conn.execute("DELETE FROM documents WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// A document without its extracted text (cheap listing/labelling).
+    pub fn get_document_meta(&self, id: i64) -> anyhow::Result<DocumentRecord> {
+        let conn = self.pool.get()?;
+        conn.query_row(
+            "SELECT id, content_hash, original_filename, source_path, source_kind,
+                    mime_type, size_bytes, '' AS extracted_text, extraction_status,
+                    extraction_error, char_count, local_file_id, created_at, last_referenced_at
+             FROM documents WHERE id = ?1",
+            [id],
+            Self::row_to_record,
+        )
+        .map_err(|e| anyhow::anyhow!("document {} not found: {}", id, e))
+    }
+
     pub fn get_document(&self, id: i64) -> anyhow::Result<DocumentRecord> {
         let conn = self.pool.get()?;
         conn.query_row(
@@ -613,6 +670,9 @@ impl DocumentsStore {
     /// Filtering in SQL rather than post-hoc in Rust matters: a post-filter
     /// applied after `LIMIT` would silently drop the best in-window match
     /// whenever more recent out-of-window documents outranked it.
+    /// Documents whose passages match `user_text`, best first, scored by their
+    /// best-matching chunk (file names and section headings weigh more than
+    /// body text).
     pub fn search_documents_fulltext(
         &self,
         user_text: &str,
@@ -623,65 +683,53 @@ impl DocumentsStore {
             return Ok(Vec::new());
         };
         let conn = self.pool.get()?;
-        let (filename_weight, body_weight) = crate::memory_db::fts::documents_bm25_weights();
-        // Bound the window to strings even when absent, so one statement serves
-        // both cases and the parameter positions never shift.
         let (range_start, range_end) = match time_range {
             Some((s, e)) => (Some(s.to_rfc3339()), Some(e.to_rfc3339())),
             None => (None, None),
         };
-
-        // Only documents with usable content are candidates: a failed
-        // extraction has nothing to retrieve, and surfacing it as a "match"
-        // would put a "[Could not read ...]" marker in front of the model as
-        // though it were an answer.
-        let mut stmt = conn.prepare(
-            "SELECT d.id, d.content_hash, d.original_filename, d.source_path, d.source_kind,
-                    d.mime_type, d.size_bytes, d.extracted_text, d.extraction_status,
-                    d.extraction_error, d.char_count, d.local_file_id, d.created_at,
-                    d.last_referenced_at,
-                    bm25(documents_fts, ?2, ?3) AS rank
-             FROM documents_fts
-             JOIN documents d ON d.id = documents_fts.rowid
-             WHERE documents_fts MATCH ?1
-               AND d.extraction_status = 'ok'
-               AND TRIM(d.extracted_text) != ''
-               AND (?4 IS NULL OR d.last_referenced_at >= ?4)
-               AND (?5 IS NULL OR d.last_referenced_at <= ?5)
-             ORDER BY rank ASC
-             LIMIT ?6",
+        let mut hits_stmt = conn.prepare(
+            "SELECT c.document_id, bm25(rag_chunks_fts, 8.0, 1.0) AS rank
+             FROM rag_chunks_fts JOIN rag_chunks c ON c.id = rag_chunks_fts.rowid
+             WHERE rag_chunks_fts MATCH ?1
+             ORDER BY rank ASC LIMIT 2000",
         )?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params![
-                    query,
-                    filename_weight,
-                    body_weight,
-                    range_start,
-                    range_end,
-                    limit
-                ],
-                |row| {
-                    let record = Self::row_to_record(row)?;
-                    let rank: f64 = row.get(14)?;
-                    Ok((record, -rank))
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        let mut best: Vec<(i64, f64)> = Vec::new();
+        let mut rows = hits_stmt.query([query])?;
+        while let Some(row) = rows.next()? {
+            let doc: i64 = row.get(0)?;
+            let score = -row.get::<_, f64>(1)?;
+            match best.iter_mut().find(|(d, _)| *d == doc) {
+                Some(e) => e.1 = e.1.max(score),
+                None => best.push((doc, score)),
+            }
+        }
+        drop(rows);
+        best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut out = Vec::new();
+        let mut doc_stmt = conn.prepare(
+            "SELECT id, content_hash, original_filename, source_path, source_kind,
+                    mime_type, size_bytes, extracted_text, extraction_status,
+                    extraction_error, char_count, local_file_id, created_at, last_referenced_at
+             FROM documents WHERE id = ?1
+               AND extraction_status = 'ok' AND TRIM(extracted_text) != ''
+               AND (?2 IS NULL OR last_referenced_at >= ?2)
+               AND (?3 IS NULL OR last_referenced_at <= ?3)",
+        )?;
+        for (doc, score) in best {
+            if out.len() as i64 >= limit {
+                break;
+            }
+            if let Some(record) = doc_stmt
+                .query_row(rusqlite::params![doc, range_start, range_end], Self::row_to_record)
+                .optional()?
+            {
+                out.push((record, score));
+            }
+        }
+        Ok(out)
     }
 
-    /// Filenames only, most recently referenced first.
-    ///
-    /// Exists because the reference detector needs to know WHICH documents are
-    /// stored (so "the merger agreement" can resolve to merger-agreement.pdf)
-    /// and nothing more — and it needs that on EVERY turn.
-    ///
-    /// Using `all_documents` for this was a real cost, not a style point: that
-    /// query pulls `extracted_text` for every row it returns, so asking it for
-    /// 500 filenames loads 500 whole contracts into memory and throws the text
-    /// away, before the model has produced a single token. This returns a few KB
-    /// for the same library.
     pub fn all_document_filenames(&self, limit: i64) -> anyhow::Result<Vec<String>> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
@@ -712,24 +760,37 @@ impl DocumentsStore {
     /// provenance (page/slide/sheet, heading, paragraph range).
     pub fn get_chunks(&self, document_id: i64) -> anyhow::Result<Vec<DocumentChunkRecord>> {
         let conn = self.pool.get()?;
+        let text: String = conn
+            .query_row("SELECT extracted_text FROM documents WHERE id = ?1", [document_id], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
         let mut stmt = conn.prepare(
-            "SELECT id, document_id, chunk_index, content, page_start, page_end,
-                    section_label, location_label, paragraph_start, paragraph_end
-             FROM document_chunks WHERE document_id = ?1 ORDER BY chunk_index ASC",
+            "SELECT id, document_id, ord, byte_start, byte_end, page_start, page_end,
+                    section_label, location_label, para_start, para_end, prefix_start, prefix_end
+             FROM rag_chunks WHERE document_id = ?1 ORDER BY ord ASC",
         )?;
         let rows = stmt
             .query_map([document_id], |row| {
+                let s: i64 = row.get(3)?;
+                let e: i64 = row.get(4)?;
+                let ps: Option<i64> = row.get(11)?;
+                let pe: Option<i64> = row.get(12)?;
+                let prefix = match (ps, pe) {
+                    (Some(a), Some(b)) if b > a && a >= 0 => Some((a as usize, b as usize)),
+                    _ => None,
+                };
+                let content = crate::rag::chunker::chunk_text_with_prefix(&text, s as usize, e as usize, prefix);
                 Ok(DocumentChunkRecord {
                     id: row.get(0)?,
                     document_id: row.get(1)?,
-                    chunk_index: row.get(2)?,
-                    content: row.get(3)?,
-                    page_start: row.get(4)?,
-                    page_end: row.get(5)?,
-                    section_label: row.get(6)?,
-                    location_label: row.get(7)?,
-                    paragraph_start: row.get(8)?,
-                    paragraph_end: row.get(9)?,
+                    chunk_index: row.get::<_, i64>(2)? as i32,
+                    content,
+                    page_start: row.get(5)?,
+                    page_end: row.get(6)?,
+                    section_label: row.get(7)?,
+                    location_label: row.get(8)?,
+                    paragraph_start: row.get(9)?,
+                    paragraph_end: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

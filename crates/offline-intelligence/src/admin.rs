@@ -13,6 +13,19 @@ pub async fn stop_backend(
 ) -> impl IntoResponse {
     info!("Graceful shutdown initiated");
 
+    // Pause downloads first, so each writes what it has and stops cleanly.
+    // Their pending records stay on disk and the next launch offers to resume
+    // them from the partial files.
+    if let Some(mm) = state.shared_state.model_manager.as_ref() {
+        let paused = mm.downloader.progress_tracker().pause_all_active().await;
+        if paused > 0 {
+            info!("Paused {} download(s) for shutdown; they will be offered for resume next launch", paused);
+            // One chunk interval is enough for every loop to see the pause
+            // and flush.
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+    }
+
     // Clone runtime manager Arc outside the lock
     let rt_mgr = state.shared_state.runtime_manager.read()
         .ok()
@@ -24,7 +37,25 @@ pub async fn stop_backend(
         // attempted after shutdown has nothing to read. Best-effort by design
         // - a warm start is an optimisation, and failing to write one must
         // never delay or block the user closing the app.
-        save_warm_start(&state, &rt_mgr).await;
+        if crate::model_runtime::kv_store::enabled() {
+            // Waits for a reply that is still streaming, but never long.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::model_runtime::kv_store::save_active(&state.shared_state),
+            )
+            .await;
+        } else {
+            // Same 5 s cap: closing the app must never wait on a slow save.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::model_runtime::lifecycle::save_warm_start(&state.shared_state, &rt_mgr),
+            )
+            .await;
+        }
+
+        if let Some(llama) = crate::rag::runtime().llama.clone() {
+            llama.shutdown().await;
+        }
 
         info!("Shutting down runtime manager...");
         if let Err(e) = rt_mgr.shutdown().await {
@@ -36,81 +67,4 @@ pub async fn stop_backend(
 
     metrics::inc_request("admin_stop", "ok");
     (StatusCode::OK, "System shutdown initiated".to_string())
-}
-
-/// Persist the active conversation's slot for a warm start next launch.
-///
-/// Gathers the identity the restore path will check against - which model,
-/// which engine, what context size - from the RUNNING runtime rather than from
-/// configuration, so a saved blob is described by what actually produced it.
-///
-/// Every early return is a normal condition (nothing generated yet, no engine
-/// registered, runtime already gone), so they are logged at debug and the
-/// shutdown continues.
-async fn save_warm_start(
-    state: &crate::shared_state::UnifiedAppState,
-    rt_mgr: &std::sync::Arc<crate::model_runtime::RuntimeManager>,
-) {
-    use tracing::debug;
-
-    let session_id = match state.shared_state.last_active_session.read() {
-        Ok(guard) => match guard.clone() {
-            Some(id) => id,
-            None => {
-                debug!("No warm start saved: no conversation generated during this run");
-                return;
-            }
-        },
-        Err(_) => return,
-    };
-
-    let base_url = match rt_mgr.get_base_url().await {
-        Some(url) => url,
-        None => {
-            debug!("No warm start saved: the runtime is not serving");
-            return;
-        }
-    };
-
-    let runtime_config = match rt_mgr.get_current_config().await {
-        Some(c) => c,
-        None => {
-            debug!("No warm start saved: no active runtime configuration");
-            return;
-        }
-    };
-
-    // The runtime knows a model PATH; its directory is named after the
-    // sanitised model id, which is the identity the restore check compares.
-    let model_id = runtime_config
-        .model_path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let engine_id = match state.shared_state.engine_manager {
-        Some(ref em) => {
-            let registry = em.registry.read().await;
-            registry.get_default_engine().map(|e| e.id.clone()).unwrap_or_default()
-        }
-        None => String::new(),
-    };
-
-    // The context size the slot actually holds, read back from the running
-    // server where available - the requested value can be clamped at load.
-    let ctx_size = rt_mgr
-        .get_effective_context()
-        .await
-        .unwrap_or(runtime_config.context_size);
-
-    crate::model_runtime::slot_cache::save_active_slot(
-        &state.shared_state.database_pool,
-        &base_url,
-        &session_id,
-        &model_id,
-        &engine_id,
-        ctx_size,
-    )
-    .await;
 }

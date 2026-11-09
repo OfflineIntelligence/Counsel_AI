@@ -4,6 +4,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default server slots. One slot: half the KV cache of two, and the only
+/// mode in which slot save/restore (warm start) works. Chat and Aurora
+/// requests take turns in it; the engine queues the second.
+pub const DEFAULT_PARALLEL_SLOTS: u32 = 1;
+
+fn default_parallel_slots() -> u32 {
+    DEFAULT_PARALLEL_SLOTS
+}
+
 /// Supported model formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModelFormat {
@@ -79,14 +88,36 @@ pub struct RuntimeConfig {
     /// `/slots/{id}?action=save|restore` endpoints entirely - they return an
     /// error without it.
     ///
-    /// Setting this also forces `--parallel 1`. Slot save/restore addresses a
-    /// slot by index, and with more than one slot there is no way to know
-    /// which one served a given conversation: llama-server assigns slots by
-    /// prompt similarity, not by client. One slot makes "slot 0" a stable
-    /// target. It also means `--ctx-size` is the context of that single slot
-    /// rather than a total divided among several.
+    /// Requires `parallel_slots == 1`, and `build_runtime_config` enforces
+    /// that by clearing this whenever more slots are requested. Slot
+    /// save/restore addresses a slot by index, and with more than one slot
+    /// there is no way to know which one served a given conversation:
+    /// llama-server assigns slots by prompt similarity, not by client. One
+    /// slot makes "slot 0" a stable target.
     #[serde(default)]
     pub slot_save_path: Option<PathBuf>,
+
+    /// Number of server slots (`--parallel`), i.e. how many requests the
+    /// engine will serve at once.
+    ///
+    /// 2 is the product default: the main discussion and the AI Assistant are
+    /// two independent clients, and with one slot an assistant question asked
+    /// while a chat answer is streaming simply waits, with nothing in the UI
+    /// saying so.
+    ///
+    /// Above 1 this is always paired with `--kv-unified` in the spawned
+    /// command, and that pairing is the whole reason 2 slots are usable here.
+    /// WITHOUT it llama.cpp partitions `--ctx-size` evenly, giving each slot
+    /// half the window — which would hand the assistant 50%, directly
+    /// contradicting the 75/25 split the application applies, and would halve
+    /// the room a chat conversation has for its documents. WITH it there is
+    /// one shared KV buffer that both sequences draw from, so the split is
+    /// decided by how much prompt each client is allowed to build
+    /// (shared_state::context_budget_for) rather than by a fixed partition.
+    ///
+    /// The cost of going above 1 is warm start: see `slot_save_path`.
+    #[serde(default = "default_parallel_slots")]
+    pub parallel_slots: u32,
     /// Path to the multimodal projector file (`--mmproj`) for vision-capable
     /// GGUF models. `None` omits the flag entirely — the runtime is text-only,
     /// exactly as before this field existed. When set, llama-server loads the
@@ -96,6 +127,21 @@ pub struct RuntimeConfig {
     /// never guessed.
     #[serde(default)]
     pub mmproj_path: Option<PathBuf>,
+    /// Whether the engine is started WITH the projector. A vision model runs
+    /// text-only by default: llama-server refuses slot save/restore while a
+    /// projector is loaded ("not supported by multimodal"), which would
+    /// disable the KV store. lifecycle::with_projector loads it for image
+    /// reading and releases it when images stop.
+    #[serde(default)]
+    pub projector_loaded: bool,
+    /// KV cache element type for K and V (`--cache-type-k/-v`), e.g. "q8_0".
+    /// `None` or "f16" omits the flags (engine default f16).
+    #[serde(default)]
+    pub kv_cache_type: Option<String>,
+    /// Cap on the engine's RAM prompt cache in MiB (`--cache-ram`). `None`
+    /// omits the flag (engine default 8192).
+    #[serde(default)]
+    pub cache_ram_mb: Option<i64>,
     /// Path to runtime binary (e.g., llama-server.exe)
     pub runtime_binary: Option<PathBuf>,
     /// Additional runtime-specific configuration
@@ -116,7 +162,11 @@ impl Default for RuntimeConfig {
             gpu_layers: 0,
             cache_reuse: 0,
             slot_save_path: None,
+            parallel_slots: default_parallel_slots(),
             mmproj_path: None,
+            projector_loaded: false,
+            kv_cache_type: None,
+            cache_ram_mb: None,
             runtime_binary: None,
             extra_config: serde_json::json!({}),
         }

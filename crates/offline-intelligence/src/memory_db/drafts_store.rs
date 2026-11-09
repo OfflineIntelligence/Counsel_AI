@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 const SCHEMA_SQL: &str = include_str!("migrations/014_drafts.sql");
+const FOLDERS_SQL: &str = include_str!("migrations/015_draft_folders.sql");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftRecord {
@@ -30,6 +31,25 @@ pub struct DraftRecord {
     pub source_document_id: Option<i64>,
     pub source_local_file_id: Option<i64>,
     pub current_version: i64,
+    /// The folder this draft sits in. `None` is the root.
+    pub folder_id: Option<i64>,
+    /// The matter this draft is filed under. `None` is Unfiled.
+    pub matter_id: Option<i64>,
+    /// draft | in_review | completed
+    pub status: String,
+    /// Marked as important by the user.
+    pub starred: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A node in the workspace tree. Holds no drafts itself — `drafts.folder_id`
+/// points the other way, so moving a draft is a one-row update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftFolderRecord {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -68,10 +88,75 @@ impl DraftsStore {
     /// test databases never run the migration chain, so a store that relied on
     /// migrations alone would exist in production and be missing in tests —
     /// the exact drift that forced migration 010 to special-case itself.
-    pub fn initialize_schema(&self) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
+    /// Schema DDL for this store. Only ever called from the migration
+    /// chain (`migration::get_migrations`), the single schema route.
+    pub(crate) fn create_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(SCHEMA_SQL)?;
+        conn.execute_batch(FOLDERS_SQL)?;
+
+        // `drafts.folder_id` is added here rather than in 015 because this
+        // function runs on EVERY startup and SQLite has no
+        // `ADD COLUMN IF NOT EXISTS` — a second run would fail with "duplicate
+        // column name". Guarding on pragma makes the add idempotent, and makes
+        // this the one path that upgrades both a live database (already past
+        // migration 14) and a fresh in-memory test database, which never runs
+        // the migration chain at all.
+        // Deliberately no REFERENCES clauses: SQLite cannot add a column with a
+        // foreign key to an existing table. The stores enforce the
+        // relationships instead — see `delete_folder` and `MattersStore::delete`,
+        // both of which return orphans to the root rather than leave dangling
+        // ids behind.
+        let columns = |table: &str| -> anyhow::Result<Vec<String>> {
+            Ok(conn
+                .prepare(&format!("PRAGMA table_info({})", table))?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?)
+        };
+
+        let draft_cols = columns("drafts")?;
+        for (name, ddl) in [
+            ("folder_id", "ALTER TABLE drafts ADD COLUMN folder_id INTEGER"),
+            ("matter_id", "ALTER TABLE drafts ADD COLUMN matter_id INTEGER"),
+            (
+                "status",
+                "ALTER TABLE drafts ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'",
+            ),
+            (
+                "starred",
+                "ALTER TABLE drafts ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !draft_cols.iter().any(|c| c == name) {
+                conn.execute(ddl, [])?;
+                info!("drafts.{} added", name);
+            }
+        }
+
+        if !columns("draft_folders")?.iter().any(|c| c == "matter_id") {
+            conn.execute("ALTER TABLE draft_folders ADD COLUMN matter_id INTEGER", [])?;
+            info!("draft_folders.matter_id added");
+        }
+
+        let converted = conn.execute(
+            "UPDATE drafts SET status = 'completed' WHERE status IN ('sent', 'executed')",
+            [],
+        )?;
+        if converted > 0 {
+            info!("drafts: {} sent/executed statuses converted to completed", converted);
+        }
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_drafts_folder ON drafts (folder_id);
+             CREATE INDEX IF NOT EXISTS idx_drafts_matter ON drafts (matter_id);
+             CREATE INDEX IF NOT EXISTS idx_draft_folders_matter ON draft_folders (matter_id);",
+        )?;
         Ok(())
+    }
+
+    /// Bring the database this store uses up to the current schema. Goes
+    /// through the migration chain like every other caller.
+    pub fn initialize_schema(&self) -> anyhow::Result<()> {
+        super::migration::ensure_schema(&self.pool)
     }
 
     /// Create a draft along with its version 1 row in one transaction, so a
@@ -149,7 +234,7 @@ impl DraftsStore {
         let conn = self.pool.get()?;
         conn.query_row(
             "SELECT id, title, format, origin_kind, source_document_id, source_local_file_id,
-                    current_version, created_at, updated_at
+                    current_version, folder_id, matter_id, status, created_at, updated_at, starred
              FROM drafts WHERE id = ?1",
             [id],
             Self::row_to_draft,
@@ -162,7 +247,7 @@ impl DraftsStore {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, title, format, origin_kind, source_document_id, source_local_file_id,
-                    current_version, created_at, updated_at
+                    current_version, folder_id, matter_id, status, created_at, updated_at, starred
              FROM drafts ORDER BY updated_at DESC",
         )?;
         let rows = stmt
@@ -312,6 +397,207 @@ impl DraftsStore {
         Ok(())
     }
 
+    // ---------------------------------------------------------------- folders
+
+    /// Create a folder. `parent_id` of `None` puts it at the root.
+    pub fn create_folder(&self, name: &str, parent_id: Option<i64>) -> anyhow::Result<DraftFolderRecord> {
+        let conn = self.pool.get()?;
+        if let Some(parent) = parent_id {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM draft_folders WHERE id = ?1)",
+                [parent],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(anyhow::anyhow!("folder {} does not exist", parent));
+            }
+        }
+
+        conn.execute(
+            "INSERT INTO draft_folders (name, parent_id) VALUES (?1, ?2)",
+            rusqlite::params![name, parent_id],
+        )
+        .map_err(|e| {
+            // The partial unique indexes in 015 surface as a constraint
+            // violation; turn it into something a user can act on.
+            if e.to_string().contains("UNIQUE") {
+                anyhow::anyhow!("A folder named \"{}\" is already here.", name)
+            } else {
+                e.into()
+            }
+        })?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+
+        info!("Created draft folder {} '{}'", id, name);
+        self.get_folder(id)?
+            .ok_or_else(|| anyhow::anyhow!("folder vanished immediately after creation"))
+    }
+
+    pub fn get_folder(&self, id: i64) -> anyhow::Result<Option<DraftFolderRecord>> {
+        let conn = self.pool.get()?;
+        conn.query_row(
+            "SELECT id, name, parent_id, created_at, updated_at FROM draft_folders WHERE id = ?1",
+            [id],
+            Self::row_to_folder,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Every folder, in one flat list. The tree is small and the client builds
+    /// the hierarchy for breadcrumbs anyway, so paging it by parent would cost
+    /// a round trip per level for no benefit.
+    pub fn list_folders(&self) -> anyhow::Result<Vec<DraftFolderRecord>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, parent_id, created_at, updated_at
+             FROM draft_folders ORDER BY name COLLATE NOCASE",
+        )?;
+        let rows = stmt
+            .query_map([], Self::row_to_folder)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn rename_folder(&self, id: i64, name: &str) -> anyhow::Result<()> {
+        let conn = self.pool.get()?;
+        let changed = conn
+            .execute(
+                "UPDATE draft_folders SET name = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                rusqlite::params![name, id],
+            )
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE") {
+                    anyhow::anyhow!("A folder named \"{}\" is already here.", name)
+                } else {
+                    anyhow::Error::from(e)
+                }
+            })?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("folder {} does not exist", id));
+        }
+        Ok(())
+    }
+
+    /// Re-parent a folder, refusing any move that would detach a subtree.
+    ///
+    /// Moving a folder into its own descendant would cut the whole subtree off
+    /// from the root — it would still exist, reachable from nothing, and no
+    /// listing would ever show it again. SQLite enforces no such rule, so the
+    /// check is here.
+    pub fn move_folder(&self, id: i64, new_parent: Option<i64>) -> anyhow::Result<()> {
+        if new_parent == Some(id) {
+            return Err(anyhow::anyhow!("A folder cannot contain itself."));
+        }
+        if let Some(parent) = new_parent {
+            // The subtree of the folder BEING MOVED, checked for the proposed
+            // parent — not the other way round. Asking whether the new parent's
+            // descendants include this folder answers a different question and
+            // is always false for the case that actually matters: moving a
+            // folder down into something it already contains.
+            let descendants = self.folder_subtree(id)?;
+            if descendants.contains(&parent) {
+                return Err(anyhow::anyhow!(
+                    "That would move a folder inside one of its own subfolders."
+                ));
+            }
+        }
+        let conn = self.pool.get()?;
+        let changed = conn.execute(
+            "UPDATE draft_folders SET parent_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+            rusqlite::params![new_parent, id],
+        )?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("folder {} does not exist", id));
+        }
+        Ok(())
+    }
+
+    /// A folder and every folder beneath it.
+    fn folder_subtree(&self, root: i64) -> anyhow::Result<Vec<i64>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE sub(id) AS (
+                 SELECT id FROM draft_folders WHERE id = ?1
+                 UNION ALL
+                 SELECT f.id FROM draft_folders f JOIN sub ON f.parent_id = sub.id
+             )
+             SELECT id FROM sub",
+        )?;
+        let ids = stmt
+            .query_map([root], |r| r.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Delete a folder and its subfolders, returning their drafts to the root.
+    ///
+    /// Deleting a LABEL must never delete DOCUMENTS. The drafts are moved to
+    /// the root first, in the same transaction, so there is no window in which
+    /// a draft points at a folder that no longer exists.
+    ///
+    /// Returns how many drafts were moved, so the caller can say so.
+    pub fn delete_folder(&self, id: i64) -> anyhow::Result<usize> {
+        let subtree = self.folder_subtree(id)?;
+        if subtree.is_empty() {
+            return Err(anyhow::anyhow!("folder {} does not exist", id));
+        }
+
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let placeholders = subtree.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            subtree.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+
+        let moved = tx.execute(
+            &format!("UPDATE drafts SET folder_id = NULL WHERE folder_id IN ({})", placeholders),
+            params.as_slice(),
+        )?;
+
+        // The subfolders go with it via ON DELETE CASCADE.
+        tx.execute("DELETE FROM draft_folders WHERE id = ?1", [id])?;
+        tx.commit()?;
+
+        info!("Deleted draft folder {} ({} drafts returned to root)", id, moved);
+        Ok(moved)
+    }
+
+    /// Move a draft into a folder, or to the root with `None`.
+    pub fn move_draft(&self, draft_id: i64, folder_id: Option<i64>) -> anyhow::Result<()> {
+        let conn = self.pool.get()?;
+        if let Some(folder) = folder_id {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM draft_folders WHERE id = ?1)",
+                [folder],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(anyhow::anyhow!("folder {} does not exist", folder));
+            }
+        }
+        let changed = conn.execute(
+            "UPDATE drafts SET folder_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+            rusqlite::params![folder_id, draft_id],
+        )?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("draft {} does not exist", draft_id));
+        }
+        debug!("Moved draft {} to folder {:?}", draft_id, folder_id);
+        Ok(())
+    }
+
+    fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<DraftFolderRecord> {
+        Ok(DraftFolderRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            parent_id: row.get(2)?,
+            created_at: parse_ts(row.get::<_, String>(3)?),
+            updated_at: parse_ts(row.get::<_, String>(4)?),
+        })
+    }
+
     fn row_to_draft(row: &rusqlite::Row) -> rusqlite::Result<DraftRecord> {
         Ok(DraftRecord {
             id: row.get(0)?,
@@ -321,9 +607,27 @@ impl DraftsStore {
             source_document_id: row.get(4)?,
             source_local_file_id: row.get(5)?,
             current_version: row.get(6)?,
-            created_at: parse_ts(row.get::<_, String>(7)?),
-            updated_at: parse_ts(row.get::<_, String>(8)?),
+            folder_id: row.get(7)?,
+            matter_id: row.get(8)?,
+            status: row.get(9)?,
+            created_at: parse_ts(row.get::<_, String>(10)?),
+            updated_at: parse_ts(row.get::<_, String>(11)?),
+            starred: row.get::<_, i64>(12)? != 0,
         })
+    }
+
+    /// Mark or unmark a document as important. Deliberately leaves
+    /// `updated_at` alone: starring is not an edit to the document.
+    pub fn set_draft_starred(&self, id: i64, starred: bool) -> anyhow::Result<()> {
+        let conn = self.pool.get()?;
+        let changed = conn.execute(
+            "UPDATE drafts SET starred = ?1 WHERE id = ?2",
+            rusqlite::params![starred as i64, id],
+        )?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("draft {} does not exist", id));
+        }
+        Ok(())
     }
 
     fn row_to_version(row: &rusqlite::Row) -> rusqlite::Result<DraftVersionRecord> {
@@ -341,7 +645,7 @@ impl DraftsStore {
 
 /// SQLite writes CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS" while our own
 /// inserts use RFC-3339; accept both rather than losing a timestamp.
-fn parse_ts(s: String) -> DateTime<Utc> {
+pub(crate) fn parse_ts(s: String) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(&s)
         .map(|d| d.with_timezone(&Utc))
         .or_else(|_| {
@@ -467,4 +771,96 @@ mod tests {
         assert_eq!(ids.first(), Some(&a.id), "most recently updated first");
         assert!(ids.contains(&b.id));
     }
+
+    // ------------------------------------------------------------ folders
+
+    #[test]
+    fn a_new_draft_starts_at_the_root() {
+        let (s, _p) = store();
+        assert_eq!(sample(&s).folder_id, None);
+    }
+
+    #[test]
+    fn drafts_move_between_folders_and_back_to_the_root() {
+        let (s, _p) = store();
+        let d = sample(&s);
+        let f = s.create_folder("Contracts", None).unwrap();
+
+        s.move_draft(d.id, Some(f.id)).unwrap();
+        assert_eq!(s.get_draft(d.id).unwrap().unwrap().folder_id, Some(f.id));
+
+        s.move_draft(d.id, None).unwrap();
+        assert_eq!(s.get_draft(d.id).unwrap().unwrap().folder_id, None);
+    }
+
+    #[test]
+    fn siblings_cannot_share_a_name_at_the_root_or_under_a_parent() {
+        let (s, _p) = store();
+        let parent = s.create_folder("Matters", None).unwrap();
+
+        // The root case is the one a plain UNIQUE(parent_id, name) would miss,
+        // because SQLite treats NULL parent_ids as distinct from each other.
+        s.create_folder("Matters", None).unwrap_err();
+
+        s.create_folder("Acme", Some(parent.id)).unwrap();
+        s.create_folder("Acme", Some(parent.id)).unwrap_err();
+
+        // The same name under a DIFFERENT parent is fine, as in a filesystem.
+        s.create_folder("Acme", None).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_folder_keeps_its_drafts_and_returns_them_to_the_root() {
+        let (s, _p) = store();
+        let d = sample(&s);
+        let f = s.create_folder("Contracts", None).unwrap();
+        s.move_draft(d.id, Some(f.id)).unwrap();
+
+        let moved = s.delete_folder(f.id).unwrap();
+
+        assert_eq!(moved, 1);
+        let survivor = s.get_draft(d.id).unwrap().expect("the draft must survive its folder");
+        assert_eq!(survivor.folder_id, None, "and be reachable at the root");
+    }
+
+    #[test]
+    fn deleting_a_folder_takes_its_subfolders_and_frees_their_drafts_too() {
+        let (s, _p) = store();
+        let d = sample(&s);
+        let parent = s.create_folder("Matters", None).unwrap();
+        let child = s.create_folder("Acme", Some(parent.id)).unwrap();
+        s.move_draft(d.id, Some(child.id)).unwrap();
+
+        let moved = s.delete_folder(parent.id).unwrap();
+
+        assert_eq!(moved, 1, "a draft nested two levels down is still freed");
+        assert_eq!(s.get_draft(d.id).unwrap().unwrap().folder_id, None);
+        assert!(s.get_folder(child.id).unwrap().is_none(), "subfolder cascades");
+    }
+
+    #[test]
+    fn a_folder_cannot_be_moved_inside_itself_or_its_own_descendant() {
+        let (s, _p) = store();
+        let parent = s.create_folder("Matters", None).unwrap();
+        let child = s.create_folder("Acme", Some(parent.id)).unwrap();
+        let grandchild = s.create_folder("2026", Some(child.id)).unwrap();
+
+        s.move_folder(parent.id, Some(parent.id)).unwrap_err();
+        // The interesting one: legal at a glance, but it would detach the whole
+        // subtree from the root and no listing would ever reach it again.
+        s.move_folder(parent.id, Some(grandchild.id)).unwrap_err();
+
+        // Moving DOWNWARD in the other direction is perfectly legal.
+        s.move_folder(grandchild.id, None).unwrap();
+        assert_eq!(s.get_folder(grandchild.id).unwrap().unwrap().parent_id, None);
+    }
+
+    #[test]
+    fn moving_a_draft_into_a_folder_that_does_not_exist_is_refused() {
+        let (s, _p) = store();
+        let d = sample(&s);
+        s.move_draft(d.id, Some(9999)).unwrap_err();
+        assert_eq!(s.get_draft(d.id).unwrap().unwrap().folder_id, None);
+    }
 }
+

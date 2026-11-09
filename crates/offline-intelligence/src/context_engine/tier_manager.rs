@@ -116,11 +116,19 @@ impl TierManager {
         }
 
         // Search across ALL sessions except current one
-        self.database.conversations.search_messages_by_topic_across_sessions(
+let allowed = crate::rag::scope::allowed_sessions(&self.database, current_session_id);
+        let widened = if allowed.is_some() { limit.saturating_mul(5).max(limit) } else { limit };
+        let mut found = self.database.conversations.search_messages_by_topic_across_sessions(
             &keywords,
-            limit,
-            Some(current_session_id), // Exclude current session
-        ).await
+            widened,
+            Some(current_session_id),
+        ).await?;
+        // Recall stays inside this chat's matter.
+        if let Some(allowed) = allowed {
+            found.retain(|m| allowed.contains(&m.session_id));
+        }
+        found.truncate(limit);
+        Ok(found)
     }
 
     fn extract_keywords(&self, text: &str) -> Vec<String> {

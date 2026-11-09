@@ -140,10 +140,29 @@ async fn transcribe_with_restart_retry(
 pub async fn extract_image_text(bytes: Vec<u8>, filename: &str) -> Result<String> {
     let state = SHARED_STATE.get().cloned();
 
-    let vision_ready = match &state {
-        Some(s) => s.vision_active().await,
-        None => false,
-    };
+    // A vision model that is merely asleep is woken for the image, and kept
+    // loaded by the lease until the transcription is done.
+    // On Cloud, the chosen cloud model reads images; the local model is not
+    // woken for it.
+    let on_cloud = state.as_ref().map(|s| s.llm_worker.cloud().is_some()).unwrap_or(false);
+
+    // The engine runs text-only between images (so its KV state can be
+    // saved); loading the projector restarts it with one.
+    let mut _lease = None;
+    if let Some(s) = state.as_ref().filter(|_| !on_cloud) {
+        if s.vision_chosen().await {
+            match crate::model_runtime::lifecycle::with_projector(s).await {
+                Ok(lease) => _lease = Some(lease),
+                Err(e) => warn!("Could not load the vision model for '{}': {}", filename, e),
+            }
+        }
+    }
+
+    let vision_ready = on_cloud
+        || match &state {
+            Some(s) => s.vision_active().await,
+            None => false,
+        };
 
     if !vision_ready {
         // No vision model: Windows OCR, labelled as such. The UI reads
@@ -153,12 +172,16 @@ pub async fn extract_image_text(bytes: Vec<u8>, filename: &str) -> Result<String
     }
 
     let state = state.expect("vision_ready implies state");
-    let model_name = active_model_name(&state).await;
+    let cloud_now = state.llm_worker.cloud();
+    let model_name = match &cloud_now {
+        Some(c) => format!("{} on {}", c.model, c.provider.name),
+        None => active_model_name(&state).await,
+    };
     let _gate = VISION_GATE.lock().await;
 
     // Re-check after waiting at the gate: a model switch may have happened
     // while an earlier transcription ran.
-    if !state.vision_active().await {
+    if cloud_now.is_none() && !state.vision_active().await {
         warn!(
             "Vision model deactivated while '{}' waited for transcription — using Windows OCR",
             filename
@@ -222,6 +245,12 @@ pub async fn extract_image_text(bytes: Vec<u8>, filename: &str) -> Result<String
                     filename, VISION_MARKER, model_name, text
                 ))
             }
+        }
+        Err(e) if cloud_now.is_some() => {
+            // Not every cloud model takes images (many are text-only). Read
+            // it with OCR instead; its header says so, so nothing is hidden.
+            warn!("Cloud image reading failed for '{}', using OCR: {}", filename, e);
+            crate::utils::image_ocr::extract_image_text(bytes, filename).await
         }
         Err(e) => {
             // Vision is the selected engine; its failure is THE failure.

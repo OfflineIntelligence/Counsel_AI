@@ -9,10 +9,9 @@ pub mod extraction_scheduler;
 pub mod win_ocr;
 pub mod image_ocr;
 pub mod vision_extraction;
-pub mod text_utils;
 pub mod storage_governor;
+pub mod secret_box;
 pub mod thesaurus;
-pub mod topic_extractor;
 
 // Re-export commonly used utilities
 pub use file_processor::{
@@ -21,5 +20,3 @@ pub use file_processor::{
 };
 pub use extraction_coordinator::{ExtractionCoordinator, ExtractionPermit};
 pub use extraction_scheduler::{ExtractionScheduler, Lane, LanePermit};
-pub use text_utils::TextUtils;
-pub use topic_extractor::TopicExtractor;

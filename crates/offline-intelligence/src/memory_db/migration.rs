@@ -19,7 +19,7 @@ impl<'a> MigrationManager<'a> {
     }
 
     /// Initialize database with current schema
-    pub fn initialize_database(&mut self) -> Result<()> {
+    pub fn initialize_database(&mut self) -> anyhow::Result<()> {
         info!("Initializing memory database schema...");
 
         // Create schema version table if it doesn't exist
@@ -50,7 +50,7 @@ impl<'a> MigrationManager<'a> {
     }
 
     /// Apply all pending migrations
-    fn apply_migrations(&mut self, current_version: i32) -> Result<()> {
+    fn apply_migrations(&mut self, current_version: i32) -> anyhow::Result<()> {
         let migrations = get_migrations();
 
         for (version, migration_sql) in migrations.iter() {
@@ -61,7 +61,11 @@ impl<'a> MigrationManager<'a> {
                 let tx = self.conn.transaction()?;
 
                 // Apply migration
-                if let Err(e) = tx.execute_batch(migration_sql) {
+                let applied = match migration_sql {
+                    Step::Sql(sql) => tx.execute_batch(sql).map_err(anyhow::Error::from),
+                    Step::Code(f) => f(&tx),
+                };
+                if let Err(e) = applied {
                     error!("Failed to apply migration {}: {}", version, e);
                     return Err(e);
                 }
@@ -80,19 +84,10 @@ impl<'a> MigrationManager<'a> {
     }
 
     /// Create database connection with migrations applied
-    pub fn create_connection(db_path: &Path) -> Result<Connection> {
+    pub fn create_connection(db_path: &Path) -> anyhow::Result<Connection> {
         // Open or create database
         let mut conn = Connection::open(db_path)?;
-
-        // Enable foreign keys and WAL mode for better performance
-        conn.execute_batch(
-            "
-            PRAGMA foreign_keys = ON;
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA cache_size = -2000; -- 2MB cache
-        ",
-        )?;
+        super::prepare_connection(&mut conn)?;
 
         // Apply migrations - need mutable access
         let mut migrator = MigrationManager::new(&mut conn);
@@ -147,23 +142,76 @@ impl<'a> MigrationManager<'a> {
     }
 }
 
-/// Get all migration SQL scripts
-fn get_migrations() -> Vec<(i32, &'static str)> {
+/// One step of the migration chain: a SQL script or a Rust function for
+/// changes SQL alone cannot express idempotently (guarded ALTER TABLE).
+pub(crate) enum Step {
+    Sql(&'static str),
+    Code(fn(&Connection) -> anyhow::Result<()>),
+}
+
+/// Step 20: every table that used to be created outside the chain, by the
+/// stores' own `initialize_schema` on each start. Written to be idempotent so
+/// it upgrades an installed database (which already has these tables from
+/// the old route) and builds a fresh one identically.
+fn store_schemas(conn: &Connection) -> anyhow::Result<()> {
+    use crate::memory_db::*;
+    LibraryStore::create_schema(conn)?;
+    MattersStore::create_schema(conn)?;
+    SearchStore::create_schema(conn)?;
+    DraftsStore::create_schema(conn)?;
+    DocumentsStore::create_schema(conn)?;
+    crate::rag::store::create_schema(conn)?;
+    LocalFilesStore::create_schema(conn)?;
+    SettingsStore::create_schema(conn)?;
+    ApiKeysStore::create_schema(conn)?;
+    UsersStore::create_schema(conn)?;
+    ConversationStore::create_memory_schema(conn)?;
+    super::fts::ensure_fts_schema(conn)?;
+    Ok(())
+}
+
+/// Bring the database behind `pool` up to the current schema. This is the
+/// only way any schema is created: on-disk, in-memory and per-store tests all
+/// end up here.
+pub fn ensure_schema(pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> anyhow::Result<()> {
+    let mut conn = pool.get()?;
+    MigrationManager::new(&mut conn).initialize_database()?;
+    Ok(())
+}
+
+/// The migration chain
+fn get_migrations() -> Vec<(i32, Step)> {
+    use Step::Sql;
     vec![
-        (1, include_str!("migrations/001_initial.sql")),
-        (2, include_str!("migrations/002_add_embeddings.sql")),
-        (3, include_str!("migrations/003_add_kv_snapshots.sql")),
-        (4, include_str!("migrations/004_local_files.sql")),
-        (5, include_str!("migrations/005_curated_files.sql")),
-        (6, include_str!("migrations/006_all_files.sql")),
-        (7, include_str!("migrations/007_documents.sql")),
-        (8, include_str!("migrations/008_document_chunk_anchors.sql")),
-        (9, include_str!("migrations/009_document_chunk_locations.sql")),
-        (10, include_str!("migrations/010_drop_embeddings.sql")),
-        (11, include_str!("migrations/011_drop_summaries.sql")),
-        (12, include_str!("migrations/012_drop_kv_cache.sql")),
-        (13, include_str!("migrations/013_app_settings.sql")),
-        (14, include_str!("migrations/014_drafts.sql")),
+        (1, Sql(include_str!("migrations/001_initial.sql"))),
+        (2, Sql(include_str!("migrations/002_add_embeddings.sql"))),
+        (3, Sql(include_str!("migrations/003_add_kv_snapshots.sql"))),
+        (4, Sql(include_str!("migrations/004_local_files.sql"))),
+        (5, Sql(include_str!("migrations/005_curated_files.sql"))),
+        (6, Sql(include_str!("migrations/006_all_files.sql"))),
+        (7, Sql(include_str!("migrations/007_documents.sql"))),
+        (8, Sql(include_str!("migrations/008_document_chunk_anchors.sql"))),
+        (9, Sql(include_str!("migrations/009_document_chunk_locations.sql"))),
+        (10, Sql(include_str!("migrations/010_drop_embeddings.sql"))),
+        (11, Sql(include_str!("migrations/011_drop_summaries.sql"))),
+        (12, Sql(include_str!("migrations/012_drop_kv_cache.sql"))),
+        (13, Sql(include_str!("migrations/013_app_settings.sql"))),
+        (14, Sql(include_str!("migrations/014_drafts.sql"))),
+        (15, Sql(include_str!("migrations/015_draft_folders.sql"))),
+        // NOTE: from here the chain step and the FILE NAME diverge — step 16
+        // is 017_workspace_search, step 17 is 016_matters. The step number is
+        // what lands in `schema_version` and decides what a live database has
+        // already run; the filename is only a name. Renumbering these to make
+        // them line up would re-run or skip a migration on every installed
+        // copy. Add new entries at the end and leave existing ones alone.
+        (16, Sql(include_str!("migrations/017_workspace_search.sql"))),
+        (17, Sql(include_str!("migrations/016_matters.sql"))),
+        (18, Sql(include_str!("migrations/018_library.sql"))),
+        (19, Sql(include_str!("migrations/020_session_document_message.sql"))),
+        // 019_rag.sql runs inside this step (rag::store::create_schema).
+        (20, Step::Code(store_schemas)),
+        (21, Sql(include_str!("migrations/021_prompt_replay.sql"))),
+        (22, Sql(include_str!("migrations/022_topic_memory.sql"))),
     ]
 }
 
@@ -205,7 +253,8 @@ pub fn get_database_stats(conn: &Connection) -> Result<schema::DatabaseStats> {
 /// Get database statistics with connection creation
 /// Useful when you don't have an existing connection
 pub fn get_database_stats_from_path(db_path: &Path) -> Result<schema::DatabaseStats> {
-    let conn = Connection::open(db_path)?;
+    let mut conn = Connection::open(db_path)?;
+    super::prepare_connection(&mut conn)?;
     get_database_stats(&conn)
 }
 
@@ -340,7 +389,8 @@ mod tests {
             )",
         )
         .unwrap();
-        for (version, sql) in get_migrations().into_iter().filter(|(v, _)| *v <= 9) {
+        for (version, step) in get_migrations().into_iter().filter(|(v, _)| *v <= 9) {
+            let Step::Sql(sql) = step else { unreachable!("steps 1-9 are SQL") };
             conn.execute_batch(sql)
                 .unwrap_or_else(|e| panic!("migration {} failed: {}", version, e));
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", [version])

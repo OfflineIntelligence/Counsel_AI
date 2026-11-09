@@ -24,6 +24,9 @@ pub struct SessionMetadata {
     pub user_defined: HashMap<String, String>,
     #[serde(default)]  // Handle old records missing this field
     pub pinned: bool,
+    // Chats used to carry `matter_id` / `search_all_matters`. They were
+    // removed with the chat matter picker; serde ignores the keys in old
+    // records, so existing chats load as General chats.
 }
 
 /// Represents a single message in a conversation

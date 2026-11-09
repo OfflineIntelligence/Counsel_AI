@@ -99,14 +99,12 @@ pub async fn db_stats(
     let cache_misses = shared_state.conversations.counters.cache_misses.load(Ordering::Relaxed);
     let total_summaries = cache_hits + cache_misses; // Approximation
     
-    // Get database file size from the database path
-    let database_size_bytes = match std::fs::metadata("data/conversations.db") {
-        Ok(metadata) => metadata.len(),
-        Err(_) => match std::fs::metadata("conversations.db") {
-            Ok(metadata) => metadata.len(),
-            Err(_) => 0,
-        }
-    };
+    // The real database (memory.db), not a guessed relative path.
+    let database_size_bytes = shared_state
+        .database_pool
+        .get_stats()
+        .map(|s| s.database_size_bytes.max(0) as u64)
+        .unwrap_or(0);
     
     Ok((
         StatusCode::OK,
@@ -124,57 +122,69 @@ pub async fn maintenance(
     State(shared_state): State<Arc<SharedState>>,
     Json(payload): Json<MaintenanceRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // Sessions not used for this long leave the in-memory mirror (the
+    // database keeps them). parameters.idle_seconds overrides; default 1 hour.
+    let idle = payload
+        .parameters
+        .as_ref()
+        .and_then(|p| p.get("idle_seconds"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
     match payload.operation.as_str() {
-        "cleanup_expired_sessions" => {
-            // Clear expired/inactive sessions from memory
-            // In a real implementation, we would remove sessions that haven't been accessed recently
-            let initial_count = shared_state.conversations.sessions.len();
-            
+        "cleanup_expired_sessions" | "clear_inactive_sessions" => {
+            let sessions = &shared_state.conversations.sessions;
+            let initial_count = sessions.len();
+            let limit = std::time::Duration::from_secs(idle);
+            sessions.retain(|_, s| match s.read() {
+                Ok(s) => s.pinned || s.last_accessed.elapsed() < limit,
+                Err(_) => false,
+            });
+            let removed = initial_count - sessions.len();
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
-                    "message": "Expired sessions cleanup completed",
-                    "operation": "cleanup_expired_sessions",
+                    "message": format!("Removed {} session(s) idle for {} s from memory", removed, idle),
+                    "operation": payload.operation,
                     "initial_session_count": initial_count,
+                    "removed": removed,
                     "status": "completed"
-                })),
-            ))
-        },
-        "optimize_database" => {
-            // In a real implementation, we would perform database optimization
-            // For now, we'll just return a success message
-            Ok((
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "message": "Database optimization completed",
-                    "operation": "optimize_database",
-                    "status": "completed"
-                })),
-            ))
-        },
-        "clear_inactive_sessions" => {
-            // Clear inactive sessions from memory
-            let initial_count = shared_state.conversations.sessions.len();
-            
-            Ok((
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "message": "Inactive sessions cleared",
-                    "operation": "clear_inactive_sessions",
-                    "initial_session_count": initial_count,
-                    "status": "completed"
-                })),
-            ))
-        },
-        _ => {
-            Ok((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "message": format!("Unknown maintenance operation: {}", payload.operation),
-                    "supported_operations": ["cleanup_expired_sessions", "optimize_database", "clear_inactive_sessions"],
-                    "status": "error"
                 })),
             ))
         }
+        "optimize_database" => {
+            let db = Arc::clone(&shared_state.database_pool);
+            let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let mut conn = db.conversations.get_conn_public()?;
+                crate::memory_db::migration::run_maintenance(&mut conn)?;
+                Ok(())
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => Ok((
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "message": "Database optimized",
+                        "operation": "optimize_database",
+                        "status": "completed"
+                    })),
+                )),
+                Ok(Err(e)) => Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "message": e.to_string(), "status": "error" })),
+                )),
+                Err(e) => Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "message": e.to_string(), "status": "error" })),
+                )),
+            }
+        }
+        _ => Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "message": format!("Unknown maintenance operation: {}", payload.operation),
+                "supported_operations": ["cleanup_expired_sessions", "optimize_database", "clear_inactive_sessions"],
+                "status": "error"
+            })),
+        )),
     }
 }
