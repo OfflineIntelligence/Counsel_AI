@@ -9,7 +9,8 @@
 import { getApiBaseSync } from './backendUrl';
 import { getHfToken } from './hfToken';
 
-export type ApiKeyType = 'huggingface';
+// 'huggingface', or a cloud provider id (see api/cloud.ts).
+export type ApiKeyType = 'huggingface' | (string & {});
 
 export interface ApiKeyResponse {
   key_type: string;

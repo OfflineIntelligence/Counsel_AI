@@ -4,7 +4,7 @@
 import React, { createContext, useContext, useReducer, useCallback } from 'react';
 
 // Notification types
-export type NotificationType = 'success' | 'error' | 'warning' | 'info' | 'download';
+export type NotificationType = 'success' | 'error' | 'warning' | 'info' | 'download' | 'feedback';
 
 // Notification interface
 export interface Notification {
@@ -14,6 +14,17 @@ export interface Notification {
   message: string;
   duration?: number; // milliseconds, 0 for persistent
   timestamp: Date;
+  /** Not added while a notification with the same tag is still queued or showing. */
+  tag?: string;
+  /** Buttons under the message. Each closes the toast after running. */
+  actions?: NotificationActionButton[];
+}
+
+export interface NotificationActionButton {
+  label: string;
+  onClick: () => void;
+  /** The one action the notification is asking for. */
+  primary?: boolean;
 }
 
 // Action types
@@ -36,6 +47,7 @@ const initialState: NotificationState = {
 function notificationReducer(state: NotificationState, action: NotificationAction): NotificationState {
   switch (action.type) {
     case 'ADD_NOTIFICATION': {
+      if (action.payload.tag && state.notifications.some(n => n.tag === action.payload.tag)) return state;
       return {
         ...state,
         notifications: [...state.notifications, action.payload],
@@ -182,4 +194,27 @@ export const useNotificationHelpers = () => {
     showInfo,
     showDownload,
   };
+};
+/**
+ * Show an error as a notification instead of an inline banner, so every page
+ * reports problems the same way. Fires once per new message; `clear` resets the
+ * caller's error state so the same message can be shown again later.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export const useErrorNotification = (
+  error: string | null | undefined,
+  title: string,
+  clear?: () => void,
+) => {
+  const { addNotification } = useNotifications();
+  const add = React.useRef(addNotification);
+  add.current = addNotification;
+  const clearRef = React.useRef(clear);
+  clearRef.current = clear;
+
+  React.useEffect(() => {
+    if (!error) return;
+    add.current({ type: 'error', title, message: error, duration: 8000 });
+    clearRef.current?.();
+  }, [error, title]);
 };

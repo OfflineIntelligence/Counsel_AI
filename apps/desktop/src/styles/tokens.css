@@ -14,17 +14,22 @@
       caller to know the elevation ramp; a name like "--bg-field" tells them
       what it is for, and can be retuned without touching a single component.
 
-   ── Palette direction: MONOCHROME PAPER ────────────────────────────────────
-   Warm near-neutrals on a paper-white ground, and no chromatic accent at all
-   in the chrome. The single loudest element on any screen is a near-black
-   fill on the one primary action; everything else is separated by hairline
-   borders and one-step fill shifts.
+   ── Palette direction: TRUE NEUTRAL (2026-10-24) ─────────────────────────
+   Pure greys with zero hue — R = G = B on every neutral — the premium
+   monochrome of current AI-lab and big-tech products. The earlier cool zinc
+   carried a faint blue cast that read as "tool" rather than "product". Even
+   the focus ring and the chat accent are achromatic now; colour survives
+   only in status (success/warning/danger), where it carries meaning.
 
-   This is a deliberate reversal of the previous "ink blue accent" direction.
-   A saturated accent competes with document content for attention, and in a
-   product whose entire job is reading legal text, the interface should
-   recede. Colour is therefore reserved for STATUS (success/warning/danger),
-   where it carries information, and spent nowhere else.
+   ── Previous direction: COOL NEUTRAL (2026-09-19) ────────────────────────
+   One cool zinc/graphite family across the whole app, chat and every other
+   page alike: a near-white ground in light mode, graphite in dark. It
+   replaces the earlier warm "paper" palette, which made the chat (already
+   cool) and the rest of the app two different temperatures. The single
+   loudest element on any screen is a near-black fill on the one primary
+   action; everything else is separated by hairline borders and one-step fill
+   shifts. The one hue in the chrome is the blue focus ring; otherwise colour
+   is reserved for STATUS (success/warning/danger), where it carries meaning.
 
    ── Accent = ink ───────────────────────────────────────────────────────────
    --accent is the primary-action FILL: near-black on light, near-white on
@@ -72,23 +77,20 @@
      hairlines, narrow set — and Times New Roman / Liberation Serif are the
      faces that actually ship on the target platforms with those qualities.
      Palatino stays as a fallback rather than a first choice. */
-  /* PRODUCT DECISION (2026-08-08): one family everywhere — Arial. The
-     previous mixed system (Times-class serif for headings/wordmark, Segoe UI
-     for body) read as inconsistent across the Models / Local Storage /
-     Metrics pages. All four family tokens now resolve to the same Arial
-     stack so every page, heading, badge and numeral matches. Only
-     --font-mono stays monospace (code blocks need fixed-width). */
-  --font-display: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
-    sans-serif;
+  /* PRODUCT DECISION (2026-09-18): Inter everywhere. One family for UI,
+     headings, badges and numerals. It is bundled with the app
+     (@fontsource-variable/inter, imported in main.tsx) because the app is
+     offline and its CSP only allows fonts it ships with. The variable file
+     carries the optical-size axis, so large headings automatically get
+     Inter Display's tighter cut. Only --font-mono stays monospace. */
+  --font-display: 'Inter Variable', 'Segoe UI', Arial, sans-serif;
 
-  /* UI text — same Arial stack, kept as a separate token so a future
+  /* UI text — same Inter stack, kept as a separate token so a future
      re-split of display vs body only touches this file. */
-  --font-sans: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
-    sans-serif;
+  --font-sans: 'Inter Variable', 'Segoe UI', Arial, sans-serif;
 
-  /* Large-size cut — same Arial stack (see product decision above). */
-  --font-display-sans: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans',
-    sans-serif;
+  /* Large-size cut — same Inter stack (see product decision above). */
+  --font-display-sans: 'Inter Variable', 'Segoe UI', Arial, sans-serif;
 
   --font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'SF Mono', Menlo,
     'Roboto Mono', monospace;
@@ -109,7 +111,7 @@
      reference gets its calm from restraint in size, not from whitespace
      alone. Fractional pixel values land closer to a true modular scale than
      integers do, and subpixel text rendering resolves them cleanly. */
-  --fs-2xs: 10.5px;
+  --fs-2xs: 11px; /* the floor: nothing in the app is set smaller */
   --fs-xs: 11.5px;
   --fs-sm: 12.5px;
   --fs-md: 13.5px; /* body default */
@@ -134,8 +136,37 @@
 
   --fw-light: 300;
   --fw-regular: 400;
-  --fw-medium: 500;
-  --fw-semibold: 600;
+  /* Tuned for Inter, which sets darker than Arial at the same number: a
+     medium of 500 and a semibold of 600 read as heavy in buttons. These
+     keep emphasis visible while staying light. Inter is variable, so the
+     in-between values render exactly. */
+  --fw-medium: 460;
+  --fw-semibold: 540;
+  --fw-bold: 620;
+
+  /* Weight for DISPLAY-size headings only (--fs-2xl and up).
+     ─────────────────────────────────────────────────────────────────────
+     The reference sets its 48px headings at weight 400 with -0.6px of
+     tracking, and that combination — large, light, tightly tracked — is
+     most of what makes it read as considered rather than loud.
+
+     It is a separate token from --fw-semibold rather than a change to it
+     because the effect does not survive being applied everywhere: Arial at
+     400 goes weak below about 20px, so a button label or a table header
+     set this way reads as thin, not as restrained. Anything at --fs-xl or
+     smaller keeps --fw-medium / --fw-semibold. */
+  --fw-display: var(--fw-regular);
+
+  /* Pairs with --fw-display. A large face needs tracking pulled in further
+     than --ls-tight to hold together; at 27px this is ≈ -0.6px, matching
+     the measurement. */
+  --ls-display: -0.022em;
+
+  /* The two brand moments. Inter is variable, so these sit between the
+     named steps: a touch heavier than the text around them, never bold. */
+  --fw-brand-title: 360;      /* the words of "Offline Counsel | AI"; the mark and | keep their own weight */
+  --ls-brand-title: -0.028em;
+  --fw-brand-name: 580;       /* "Counsel AI" at the top of the sidebar */
 
   /* ── Geometry ──────────────────────────────────────────────────────────
      4px base. Named by size so a component picks an intent, not a number. */
@@ -151,13 +182,33 @@
   --sp-12: 48px;
   --sp-16: 64px;
 
+  /* Three values, not six.
+     ─────────────────────────────────────────────────────────────────────
+     Measured off the reference: it uses 4px, 8px and a pill, and nothing
+     else. Six steps was a ramp nobody can actually perceive — 6px against
+     8px is invisible at rest and only ever produced drift between
+     components that should have matched. The names survive so no caller
+     changes; they now resolve to the three real values. */
   --r-xs: 4px;
-  --r-sm: 6px;
+  --r-sm: 4px;
   --r-md: 8px;
-  --r-lg: 10px;
-  --r-xl: 14px;
-  --r-2xl: 18px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 8px;
   --r-pill: 999px;
+
+  /* The exception, and it is a role rather than a fourth rung on the ramp.
+     ─────────────────────────────────────────────────────────────────────
+     The argument above is about CONTROLS: nobody can see 6px against 8px on
+     a 28px button, and pretending otherwise only produced drift. It does not
+     hold for a large floating SHEET. Corner radius reads relative to the box
+     it is on, so the 8px that looks generous on a chip looks like a
+     manufacturing defect on a 920px panel — almost square, but not quite.
+
+     One token, used by both of the app's large floating surfaces (the modal
+     in surfaces.css and the Aurora panel in assistant/assistant.css), so
+     they cannot disagree about how soft a floating thing is. */
+  --r-sheet: 16px;
 
   /* ── Motion ────────────────────────────────────────────────────────────
      One easing curve does most of the work: a decelerating curve with no
@@ -166,16 +217,79 @@
      things that ARRIVE (toasts, popovers), never for state changes. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-entrance: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-entrance: var(--spring-bouncy);
+  /* Aurora's reveal and dissolve: the soft spring Apple uses for sheets. */
+  --ease-agent: cubic-bezier(0.32, 0.72, 0, 1);
 
   --dur-1: 110ms; /* hover, focus — must feel instant */
   --dur-2: 180ms; /* the default for state changes */
   --dur-3: 260ms; /* panels, disclosure */
   --dur-4: 400ms; /* entrances, progress fills */
 
+  /* ── THE APP MOTION RULE ───────────────────────────────────────────────
+     Every ANIMATION in this app runs --dur-anim, entrance and exit alike, and
+     moves transform/opacity only. It is a deliberately long, single cadence:
+     one duration everywhere is what makes a dense product feel composed
+     rather than twitchy, and using it for exits as well as entrances means
+     nothing ever snaps away.
+
+     This is distinct from --dur-1..4 above, which govern TRANSITIONS on
+     interaction (hover, focus, press) and must stay short to feel
+     responsive. Animation = something arriving or leaving; transition =
+     something responding.
+
+     The literal `var(--dur-anim)` was already duplicated across assistant.css,
+     drafting.css, editors.css and workspace.css before this token existed;
+     those keep working, and new CSS names the token. */
+  --dur-anim: 420ms;
+
+  /* ── SPRINGS (2026-10-24) ──────────────────────────────────────────────
+     Apple's interfaces move on springs, not on bezier curves, and that is
+     most of why they feel physical. CSS linear() lets a pre-sampled spring
+     run as an ordinary easing function: the browser interpolates between
+     the points on the compositor, so a spring costs exactly what a
+     cubic-bezier costs — nothing per frame in JavaScript.
+
+     --spring-smooth  critically damped: arrives fast, settles with no
+                      overshoot. State changes, sheets, panels.
+     --spring-bouncy  ~4% overshoot. Only for things that ARRIVE and have
+                      a physical "landing": the notification island,
+                      popovers, toasts.
+
+     The cadence itself moved from 880ms to 420ms with this change: 880ms
+     read as composed but slow on every open/close; a spring gets the same
+     calm at half the time because its tail is soft rather than long. */
+  --spring-smooth: linear(0, 0.03 2%, 0.12 5%, 0.33 11%, 0.56 18%, 0.74 26%,
+    0.86 34%, 0.93 43%, 0.97 53%, 0.99 66%, 1);
+  --spring-bouncy: linear(0, 0.02 1.5%, 0.09 3.5%, 0.3 8%, 0.58 14%, 0.8 20%,
+    0.93 26%, 1 32%, 1.035 38%, 1.045 44%, 1.04 50%, 1.025 58%, 1.01 68%,
+    1.002 80%, 1);
+
+  /* ── GLASS ──────────────────────────────────────────────────────────────
+     Geometry for the app's translucent surfaces. The COLOURS are per theme
+     (see --glass-bg and friends in each theme block); only the measurements
+     are here, because a pane of glass should be the same thickness whichever
+     way the lights are pointing.
+
+     Two numbers, and both matter:
+
+     --glass-blur is deliberately moderate. backdrop-filter is the most
+     expensive property in this stylesheet — the compositor re-samples
+     everything behind the element on every frame it is visible, and the cost
+     scales with the blur radius AND the area. 20px over a 920px sheet is
+     readable as glass without being a space heater; 40px looks barely
+     different and costs roughly twice as much.
+
+     --glass-saturate is what stops glass looking like fog. Blurring alone
+     washes colour out of what is behind; pushing saturation back up is what
+     makes it read as a lens rather than as a dirty window. */
+  --glass-blur: 20px;
+  --glass-saturate: 180%;
+
   --z-content: 1;
   --z-rail: 90;
   --z-rail-toggle: 100;
+  --z-banner: 80;
   --z-popover: 1000;
   --z-modal: 1100;
   --z-toast: 1200;
@@ -192,100 +306,153 @@
      the same WEIGHT in both. That inverts, and this chip must not — it is a
      persistent identity marker, and having it flip from black-on-paper to
      white-on-charcoal makes it read as a different control. */
-  --inverse-bg: #161614;
-  --inverse-bg-hover: #26251f;
-  --inverse-text: #f8f7f4;
-  --inverse-text-dim: #9d9a91;
-  --inverse-border: #2b2a24;
+  --inverse-bg: #111111;
+  --inverse-bg-hover: #222222;
+  --inverse-text: #fafafa;
+  --inverse-text-dim: #9e9e9e;
+  --inverse-border: #2a2a2a;
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
    LIGHT THEME  (also the default — :root carries it so a missing data-theme
    attribute renders correctly instead of unstyled)
    ───────────────────────────────────────────────────────────────────────────
-   Warm paper rather than #ffffff everywhere. A pure-white canvas with pure-
-   white cards has no elevation to work with; here the canvas is a shade
-   softer than the cards that sit on it, which is what lets a card read as a
-   plane without needing a shadow.
+   A near-white canvas (#fafafa) rather than #ffffff everywhere: pure-white
+   cards on a pure-white canvas have no elevation to work with; here the
+   canvas is a shade softer than the cards that sit on it, which is what lets
+   a card read as a plane without needing a shadow.
    ─────────────────────────────────────────────────────────────────────────── */
+/* `.ws-surface` is listed here deliberately, and it is the only component in
+   the app that appears in this file.
+
+   It is the document card in the Workspace editor — the page as it will print
+   and as it will open in Word — and it is pinned to paper in BOTH themes,
+   because rendering a document as light text on a dark ground is the interface
+   misrepresenting the file (the reasoning is written out in full at
+   `.ws-surface` in components/workspace/workspace.css).
+
+   It used to pin itself by re-declaring eighteen of these tokens with the
+   light theme's literal values copied across, which made every light-palette
+   retune a two-file change that nothing would catch if you forgot the second
+   file. Naming the selector here instead means the pin IS the light theme, by
+   construction, and cannot drift from it. A component in this file is a cost;
+   a silently diverging copy of the palette is a bigger one.
+
+   `.ws-slide-canvas` is here for exactly the same reason: a slide is paper. */
 :root,
-[data-theme='light'] {
+[data-theme='light'],
+.ws-surface,
+.ws-slide-canvas {
   color-scheme: light;
 
   /* Surfaces, by role */
-  --bg-canvas: #fcfcfb; /* the app's ground plane */
+  --bg-canvas: #fafafa; /* the app's ground plane, every page and the chat */
   --bg-surface: #ffffff; /* cards, panels, modals */
-  --bg-surface-alt: #f7f7f5; /* secondary panels, table headers */
+  --bg-surface-alt: #f7f7f7; /* secondary panels, table headers */
   --bg-raised: #ffffff; /* popovers, dropdowns — above surface */
-  --bg-field: #f1f0ee; /* inputs, the composer — a filled well, no border */
-  --bg-field-focus: #eceae7;
-  --bg-hover: #f2f1ef;
-  --bg-active: #e9e8e5;
-  --bg-selected: #edece9;
-  --bg-overlay: rgba(24, 24, 22, 0.28); /* modal scrim */
-  --bg-inset: #f5f4f2; /* wells, code blocks, progress troughs */
+  --bg-field: #f3f3f3; /* inputs, the composer — a filled well, no border */
+  --bg-field-focus: #eeeeee;
+  --bg-hover: #f0f0f0;
+  --bg-active: #e8e8e8;
+  --bg-selected: #ebebeb;
+  --bg-overlay: rgba(0, 0, 0, 0.32); /* modal scrim */
+  --bg-inset: #f3f3f3; /* wells, code blocks, progress troughs */
 
   /* Text, by emphasis */
-  --text-heading: #141413;
-  --text-primary: #1f1f1d;
-  --text-secondary: #6b6a65;
-  --text-muted: #8f8d87;
-  --text-faint: #b0aea8;
+  --text-heading: #0a0a0a;
+  --text-primary: #171717;
+  --text-secondary: #5e5e5e;
+  --text-muted: #8f8f8f;
+  --text-faint: #a3a3a3;
   --text-on-accent: #ffffff; /* on the near-black accent fill */
   --text-on-solid: #ffffff; /* text on the ink solid fill */
 
   /* Borders, by weight. Deliberately faint — these carry the structure. */
-  --border-strong: #d4d2cd;
-  --border: #e6e5e1;
-  --border-subtle: #f0efec;
+  --border-strong: #d6d6d6; /* measured reference rule colour */
+  --border: #e6e6e6;
+  --border-subtle: #efefef;
 
   /* Accent = ink. Achromatic by design; see the header note. */
-  --accent: #1a1a18;
-  --accent-hover: #2e2e2a;
+  --accent: #0a0a0a;
+  --accent-hover: #262626;
   --accent-active: #000000;
-  --accent-quiet: rgba(26, 26, 24, 0.06);
-  --accent-fg: #1f1f1d; /* accent AS text — pair with an underline */
-  --accent-border: rgba(26, 26, 24, 0.22);
+  --accent-quiet: rgba(0, 0, 0, 0.05);
+  --accent-fg: #0a0a0a; /* accent AS text — pair with an underline */
+  --accent-border: rgba(0, 0, 0, 0.2);
 
-  /* Status. The only chromatic tokens in the system, and muted at that. */
-  --success: #3d7a52;
-  --success-quiet: rgba(61, 122, 82, 0.10);
-  --success-fg: #2f6642;
+  /* Status. Monochrome like everything else: a state is told by its glyph
+     and its words (see .ws-chip-dot shapes), never by hue. Weight carries
+     urgency — danger is full ink, warning a step lighter, success quieter. */
+  --success: #4a4a4a;
+  --success-quiet: rgba(0, 0, 0, 0.05);
+  --success-fg: #3d3d3d;
 
-  --warning: #8a6d1f;
-  --warning-quiet: rgba(138, 109, 31, 0.11);
-  --warning-fg: #745913;
+  --warning: #2e2e2e;
+  --warning-quiet: rgba(0, 0, 0, 0.06);
+  --warning-fg: #262626;
 
-  --danger: #a33a2c;
-  --danger-hover: #8a2f23;
-  --danger-quiet: rgba(163, 58, 44, 0.09);
-  --danger-fg: #8f3226;
-  --danger-border: rgba(163, 58, 44, 0.26);
+  --danger: #0a0a0a;
+  --danger-hover: #000000;
+  --danger-quiet: rgba(0, 0, 0, 0.07);
+  --danger-fg: #0a0a0a;
+  --danger-border: rgba(0, 0, 0, 0.45);
 
   /* Neutral solid fill — the "secondary button" surface.
      In light mode this is INK, not paper, otherwise a "secondary" button
      would be invisible against a white card. */
-  --solid: #1f1f1d;
-  --solid-hover: #141413;
+  --solid: #0a0a0a;
+  --solid-hover: #000000;
 
   /* Elevation — near-flat. */
-  --shadow-xs: 0 1px 1px rgba(20, 20, 19, 0.04);
-  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.05), 0 1px 1px rgba(20, 20, 19, 0.03);
+  /* In-page surfaces are flat; their hairline border separates them.
+     Shadows are for floating layers (md, lg). */
+  --shadow-xs: none;
+  --shadow-sm: none;
   --shadow-md: 0 2px 8px rgba(20, 20, 19, 0.06), 0 1px 2px rgba(20, 20, 19, 0.04);
   --shadow-lg: 0 8px 28px rgba(20, 20, 19, 0.10), 0 2px 6px rgba(20, 20, 19, 0.05);
   --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
-  --ring: rgba(26, 26, 24, 0.32);
+  --ring: rgba(0, 0, 0, 0.38);
+  /* Search hits and marked text: a gray wash, not a highlighter yellow. */
+  --highlight: rgba(0, 0, 0, 0.14);
 
-  --scrollbar-thumb: #dcdad5;
-  --scrollbar-thumb-hover: #c6c4be;
+  /* ── Glass, light ───────────────────────────────────────────────────────
+     Light glass is the harder of the two, and the reason is contrast: on a
+     near-white canvas a translucent white pane has almost nothing to
+     separate it from the page, so the opacity has to carry the text and the
+     EDGE has to carry the object. Hence a fill at 0.72 rather than the 0.5
+     that looks right in a mockup over a photograph, and a border that is a
+     real hairline rather than a white sheen.
+
+     --glass-highlight is the inset top edge — the line where light catches
+     the lip of the pane. It is what stops the panel reading as a flat
+     rectangle of fog. */
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  /* The bars are denser than the pane on purpose, and the number is measured
+     rather than chosen: the text on them sits over whatever the panel happens
+     to be floating above, so its contrast is a range, not a value. At 0.86 the
+     app's secondary text holds ~4.4:1 against the worst backdrop it can
+     realistically meet (a dark card, a saturated header), and the pane itself
+     stays at 0.72 where the glass is actually seen. */
+  --glass-bg-strong: rgba(255, 255, 255, 0.86);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.85);
+  --glass-shadow: 0 24px 56px rgba(20, 20, 19, 0.14), 0 2px 8px rgba(20, 20, 19, 0.06);
+  /* A quiet fill ON glass — hovers, the composer well. Must be a tint rather
+     than an opaque token, or it punches a hole in the pane. */
+  --glass-fill: rgba(0, 0, 0, 0.04);
+  --glass-fill-strong: rgba(0, 0, 0, 0.07);
+  /* The opaque stand-in wherever translucency is unavailable or unwanted —
+     see the @supports and prefers-reduced-transparency blocks in
+     components/assistant/assistant.css. */
+  --glass-solid: #ffffff;
+
+  --scrollbar-thumb: #d9d9d9;
+  --scrollbar-thumb-hover: #c2c2c2;
   --scrollbar-track: transparent;
 
-  /* ── THE RAIL ─────────────────────────────────────────────────────────
-     Deliberately NOT defined here. The rail is theme-INVARIANT — always
-     black — and lives in its own block after both theme blocks, so a
-     per-theme value cannot be reintroduced by accident. See "THE RAIL
-     (THEME-INVARIANT)" below. */
+  /* Chrome tokens (title bar, sidebar) are NOT defined per
+     theme — see "APP CHROME" below. */
 
 }
 
@@ -298,74 +465,102 @@
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --bg-canvas: #171716;
-  --bg-surface: #1e1e1c;
-  --bg-surface-alt: #1a1a19;
-  --bg-raised: #242422;
-  --bg-field: #232321;
-  --bg-field-focus: #292927;
-  --bg-hover: #262624;
-  --bg-active: #2f2f2c;
-  --bg-selected: #2b2b28;
-  --bg-overlay: rgba(8, 8, 7, 0.66);
-  --bg-inset: #131312;
+  /* Ground is the measured reference dark, which is materially deeper than
+     what was here before. The whole ramp is re-tuned UP from it rather than
+     the canvas alone being swapped: keeping the old surface values against a
+     darker ground would have widened every step at once, turning cards that
+     should sit quietly on the plane into objects that float off it. */
+  --bg-canvas: #0a0a0a;
+  --bg-surface: #161616;
+  --bg-surface-alt: #121212;
+  --bg-raised: #1c1c1c;
+  --bg-field: #171717;
+  --bg-field-focus: #1e1e1e;
+  --bg-hover: #1a1a1a;
+  --bg-active: #262626;
+  --bg-selected: #222222;
+  /* Deeper scrim to match: a 0.66 veil that read as "dimmed" over #171716
+     barely separates a modal from a #0f0e0d ground. */
+  --bg-overlay: rgba(0, 0, 0, 0.72);
+  --bg-inset: #0e0e0e;
 
   /* Never pure white — #fff on a dark field haloes. */
-  --text-heading: #f8f7f4;
-  --text-primary: #e8e7e3;
-  --text-secondary: #a3a19b;
-  --text-muted: #77756f;
-  --text-faint: #575651;
-  --text-on-accent: #171716; /* on the near-white accent fill */
-  --text-on-solid: #171716;
+  --text-heading: #fafafa;
+  --text-primary: #ededed;
+  --text-secondary: #a1a1a1;
+  --text-muted: #737373;
+  --text-faint: #595959;
+  --text-on-accent: #0a0a0a; /* on the near-white accent fill */
+  --text-on-solid: #0a0a0a;
 
-  --border-strong: #3d3d38;
-  --border: #2d2d2a;
-  --border-subtle: #232321;
+  --border-strong: #383838;
+  --border: #262626;
+  --border-subtle: #1c1c1c;
 
   /* Accent = paper here, for the same reason it is ink in light mode: the
      primary action is whatever contrasts hardest with the canvas. */
-  --accent: #eceae5;
+  --accent: #ededed;
   --accent-hover: #ffffff;
-  --accent-active: #d8d6d1;
-  --accent-quiet: rgba(236, 234, 229, 0.10);
-  --accent-fg: #e8e7e3; /* accent AS text — pair with an underline */
-  --accent-border: rgba(236, 234, 229, 0.24);
+  --accent-active: #d4d4d4;
+  --accent-quiet: rgba(255, 255, 255, 0.08);
+  --accent-fg: #ededed; /* accent AS text — pair with an underline */
+  --accent-border: rgba(255, 255, 255, 0.22);
 
-  --success: #6fa980;
-  --success-quiet: rgba(111, 169, 128, 0.15);
-  --success-fg: #8cc09c;
+  --success: #b8b8b8;
+  --success-quiet: rgba(255, 255, 255, 0.06);
+  --success-fg: #c4c4c4;
 
-  --warning: #c9a24a;
-  --warning-quiet: rgba(201, 162, 74, 0.15);
-  --warning-fg: #d9b767;
+  --warning: #dcdcdc;
+  --warning-quiet: rgba(255, 255, 255, 0.08);
+  --warning-fg: #e0e0e0;
 
-  --danger: #c96f62;
-  --danger-hover: #d58175;
-  --danger-quiet: rgba(201, 111, 98, 0.15);
-  --danger-fg: #dd8b7f;
-  --danger-border: rgba(221, 139, 127, 0.34);
+  --danger: #f5f5f5;
+  --danger-hover: #ffffff;
+  --danger-quiet: rgba(255, 255, 255, 0.10);
+  --danger-fg: #f5f5f5;
+  --danger-border: rgba(255, 255, 255, 0.5);
 
   /* Neutral solid fill — paper in dark mode, so a "secondary" button keeps
      the same WEIGHT it has in light mode. */
-  --solid: #e8e7e3;
-  --solid-hover: #f5f4f0;
+  --solid: #ededed;
+  --solid-hover: #fafafa;
 
   /* On a dark canvas a shadow mostly reads as a subtle border, so the top
      highlight does more work than the drop shadow. */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-xs: none;
+  --shadow-sm: none;
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.44), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.32);
   --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 
-  --ring: rgba(236, 234, 229, 0.42);
+  --ring: rgba(255, 255, 255, 0.45);
+  --highlight: rgba(255, 255, 255, 0.22);
 
-  --scrollbar-thumb: #35352f;
-  --scrollbar-thumb-hover: #45453e;
+  /* ── Glass, dark ────────────────────────────────────────────────────────
+     Not the light values inverted. Dark glass works the opposite way round:
+     the fill is a DARKENING veil rather than a lightening one, so it can sit
+     lower (0.64) and still hold its text, because the canvas beneath it is
+     already dark and the blur is doing more of the separating.
+
+     The highlight is the piece that must not be inverted. A dark pane still
+     catches light along its top lip — that white inset line is most of what
+     makes it read as glass rather than as a hole — it is simply much fainter
+     here (0.10 against light mode's 0.85). Dropping it, or flipping it to a
+     dark line, is what makes dark glassmorphism look like flat grey. */
+  --glass-bg: rgba(22, 22, 22, 0.66);
+  --glass-bg-strong: rgba(22, 22, 22, 0.86); /* measured, as in the light block */
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-highlight: rgba(255, 255, 255, 0.10);
+  --glass-shadow: 0 24px 56px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --glass-fill: rgba(255, 255, 255, 0.06);
+  --glass-fill-strong: rgba(255, 255, 255, 0.11);
+  --glass-solid: #161616;
+
+  --scrollbar-thumb: #333333;
+  --scrollbar-thumb-hover: #444444;
   --scrollbar-track: transparent;
 
-  /* The rail is NOT defined per theme — see "THE RAIL (THEME-INVARIANT)". */
+  /* Chrome tokens are NOT defined per theme — see "APP CHROME" below. */
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -381,54 +576,247 @@
    tokens that are already theme-aware — so an alias can never be the thing
    that breaks parity. */
 
-/* ───────────────────────────────────────────────────────────────────────────
-   THE RAIL (THEME-INVARIANT)
-   ───────────────────────────────────────────────────────────────────────────
-   The sidebar is ALWAYS black with white text and icons, in light mode and
-   dark mode alike (product decision, 2026-08-08). It is chrome, not content:
-   a fixed dark spine means the navigation never re-anchors when the theme
-   changes, and it is the app's constant frame around a canvas that does
-   change.
+/* The Workspace/Library/Vault/Models shell's vocabulary. Named --ws-* because
+   that is what ~40 call sites in workspace.css and ModelsPanel.css already
+   say; the roles they forward to are the real tokens.
 
-   Defined ONCE here, deliberately outside and AFTER both theme blocks, so a
-   per-theme rail value cannot be reintroduced without deleting this block —
-   the previous arrangement duplicated all fifteen tokens in both blocks and
-   they had already drifted (light: #f7f7f5 on #1f1f1d, i.e. a white rail).
+   They are at :root rather than on `.ws-landing`, where they used to live as
+   literal greys, because two of their consumers render OUTSIDE that element
+   and a custom property that does not resolve takes its whole declaration
+   with it — an undefined var() makes the property invalid at computed-value
+   time, so `background: var(--ws-fill)` is not a wrong colour, it is no
+   background at all:
 
-   #0b0b0a rather than #000: it is the same black the pre-React splash in
-   index.html and LoadingScreen.css already paint, so boot → app has no
-   visible seam. Text is near-white rather than #ffffff because pure white on
-   pure black haloes at small sizes; it reads as white while staying legible.
-   The steps below (hover → active → selected) are the tuned dark scale,
-   deepened to sit on this darker base. */
+     - `.models-page` (ModelsPanel's remove-confirmation) is its own
+       `app-view` root, a sibling of the landing shell, not a descendant.
+     - FileBrowser portals its row menus into `closest('.ws-landing')` and
+       falls back to `document.body` when there is none.
+
+   Both were already silently losing their fills under the old names. */
 :root {
-  --rail-bg: #0b0b0a;
-  --rail-bg-raised: #191917;      /* popups/menus floating above the rail */
-  --rail-hover: #1c1c1a;
-  --rail-active: #242422;
-  --rail-selected: #2a2a27;
-  --rail-text: #f2f1ed;           /* primary label + icon colour */
-  --rail-text-dim: #a8a69f;       /* secondary labels, inactive icons */
-  --rail-text-faint: #7a7872;     /* placeholders, section headings */
-  --rail-border: #232321;
-  --rail-accent: #ffffff;         /* active/selected emphasis */
-  --rail-ring: rgba(255, 255, 255, 0.42);
+  --ws-fill: var(--bg-hover);          /* resting fill on a quiet control */
+  --ws-fill-strong: var(--bg-active);  /* its hover / selected step */
+  --ws-line: var(--border);            /* hairlines between rows, around boxes */
+  --ws-line-strong: var(--border-strong);
 
-  /* Status and fill colours safe to use ON the rail surface — tuned for a
-     dark ground in both themes, for the same reason as everything above. */
-  --rail-warning: #d9b767;
-  --rail-danger: #dd8b7f;
-  --rail-accent-solid: #f2f1ed;
+  /* Label colours ON the accent fill. The dim step is how the solid pills
+     acknowledge a hover without moving or changing their fill. Mixed from the
+     role token, so it dims correctly whichever way round the accent is —
+     it was a literal #d1d5db, legible only while the fill happened to be
+     black. */
+  --ws-on-accent: var(--text-on-accent);
+  --ws-on-accent-dim: color-mix(in oklab, var(--text-on-accent) 72%, transparent);
+
+  /* Older spellings, still referenced. One job per token now: --ws-gray-200
+     used to serve as both a hover fill and a hairline, so retuning either one
+     moved the other. */
+  --ws-gray-100: var(--ws-fill);
+  --ws-gray-200: var(--ws-fill-strong);
+  --ws-gray-300: var(--ws-line-strong);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   APP CHROME — title bar, sidebar
+   ───────────────────────────────────────────────────────────────────────────
+   The one source of truth for how the app's frame looks. Every rule that
+   draws the chrome lives in the "APP CHROME" section at the end of App.css
+   and reads only these tokens, so a retune happens here and nowhere else.
+
+   The title bar and sidebar are dark in BOTH themes (the frame does not
+   re-anchor when the theme changes), so they are declared once, outside the
+   theme blocks. The chat window's own palette follows the theme; its
+   per-theme values are in the .chat-window blocks below. */
+:root {
+  /* Geometry */
+  --titlebar-h: 0px;
+  /* 52px, up from 38px: the band is where the notification island lives,
+     and the extra height gives it clear air above and below while moving
+     every page's content down by the same amount, so nothing ever sits
+     right under it. */
+  --window-band-h: 52px;
+  --rail-width: clamp(208px, 19vw, 260px);
+  --rail-collapsed-width: 56px;
+
+  /* Sidebar */
+  --rail-bg: #0a0a0a;
+  --rail-bg-raised: #171717;      /* popups/menus floating above the rail */
+  --rail-hover: #171717;
+  --rail-active: #212121;
+  --rail-selected: #212121;
+  --rail-text: #ededed;           /* primary label + icon colour */
+  --rail-text-dim: #8f8f8f;       /* secondary labels, inactive icons */
+  --rail-text-faint: #5c5c5c;     /* placeholders, section headings */
+  --rail-border: #1c1c1c;
+  --rail-accent: #ffffff;         /* active/selected emphasis */
+  --rail-icon: #b3b3b3;           /* icons at rest: a step under the labels */
+  --rail-icon-size: 18px;
+  --rail-brand-size: 15px;        /* "Counsel AI" beside the mark */
+  --rail-label-size: 14px;        /* navigation + Help/Settings labels */
+  --rail-row-size: 13px;          /* chat titles in the list */
+  --rail-ring: rgba(255, 255, 255, 0.42);
+  --rail-warning: #d4d4d4;
+  --rail-danger: #f2f2f2;
+  --rail-danger-strong: #ffffff;
+  --rail-danger-quiet: rgba(255, 255, 255, 0.12);
+  --rail-accent-solid: #f2f2f2;
   --rail-accent-solid-hover: #ffffff;
+
+  /* Status colours, for small dots only (connected, active, info). */
+  --status-ok: #28c840;
+  --status-info: #0a84ff;
+
+  /* Window lights: Apple's traffic-light colours. */
+  --light-close: #ff3b30;
+  --light-close-rim: #d70015;
+  --light-minimize: #febc2e;
+  --light-minimize-rim: #dea123;
+  --light-zoom: #28c840;
+  --light-zoom-rim: #1aab29;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CODEX PALETTE — overrides the theme blocks above.
+   Neutral greys modelled on the Codex desktop app: a white app with a soft
+   grey sidebar in light; charcoal (not black) with a slightly darker sidebar
+   in dark. Official Codex background/text; accent #4E4260 in both themes. The sidebar is black in both themes.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root,
+[data-theme='light'] {
+  --bg-canvas: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #f9f9f9;
+  --bg-raised: #ffffff;
+  --bg-field: #f4f4f4;
+  --bg-field-focus: #efefef;
+  --bg-hover: #f2f2f2;
+  --bg-active: #ececec;
+  --bg-selected: #ececec;
+  --bg-inset: #f4f4f4;
+  --text-heading: #000000;
+  --text-primary: #0d0d0d;
+  --text-secondary: #5d5d5d;
+  --text-muted: #8f8f8f;
+  --text-faint: #b4b4b4;
+  --border-strong: #d9d9d9;
+  --border: #e5e5e5;
+  --border-subtle: #efefef;
+  /* --accent is the ink for indicators (progress, toggles, scrollbars).
+     Buttons take their colours from --cap-* in buttons.css. */
+  --accent: #0d0d0d;
+  --accent-hover: #2f2f2f;
+  --accent-active: #000000;
+  --accent-quiet: rgba(78, 66, 96, 0.08);
+  --accent-fg: #4e4260;
+  --accent-border: rgba(78, 66, 96, 0.35);
+  --text-on-accent: #ffffff;
+  --ring: rgba(78, 66, 96, 0.5);
+  --solid: #0d0d0d;
+  --solid-hover: #2f2f2f;
+  --glass-solid: #ffffff;
+
+  --rail-bg: #000000;
+  --rail-bg-raised: #1c1c1c;
+  --rail-hover: #1a1a1a;
+  --rail-active: #262626;
+  --rail-selected: #262626;
+  --rail-text: #ececec;
+  --rail-text-dim: #afafaf;
+  --rail-text-faint: #6b6b6b;
+  --rail-border: #1a1a1a;
+  --rail-accent: #ffffff;
+  --rail-icon: #afafaf;
+  --rail-ring: rgba(255, 255, 255, 0.42);
+  --rail-warning: #d4d4d4;
+  --rail-danger: #f2f2f2;
+  --rail-danger-strong: #ffffff;
+  --rail-danger-quiet: rgba(255, 255, 255, 0.12);
+  --rail-accent-solid: #f2f2f2;
+  --rail-accent-solid-hover: #ffffff;
+}
+
+[data-theme='dark'] {
+  --bg-canvas: #181818;
+  --bg-surface: #212121;
+  --bg-surface-alt: #1c1c1c;
+  --bg-raised: #2a2a2a;
+  --bg-field: #262626;
+  --bg-field-focus: #2c2c2c;
+  --bg-hover: #2a2a2a;
+  --bg-active: #333333;
+  --bg-selected: #303030;
+  --bg-inset: #1c1c1c;
+  --text-heading: #ffffff;
+  --text-primary: #ffffff;
+  --text-secondary: #afafaf;
+  --text-muted: #8a8a8a;
+  --text-faint: #636363;
+  --border-strong: #444444;
+  --border: #333333;
+  --border-subtle: #2a2a2a;
+  /* --accent is the ink for indicators (progress, toggles, scrollbars).
+     Buttons take their colours from --cap-* in buttons.css. */
+  --accent: #ffffff;
+  --accent-hover: #ececec;
+  --accent-active: #d4d4d4;
+  --accent-quiet: rgba(78, 66, 96, 0.22);
+  /* As text on #181818 the accent itself is too dark to read; a lifted tint. */
+  --accent-fg: #b3a6c8;
+  --accent-border: rgba(157, 140, 184, 0.45);
+  --text-on-accent: #0d0d0d;
+  --ring: rgba(157, 140, 184, 0.6);
+  --solid: #ececec;
+  --solid-hover: #ffffff;
+  --glass-bg: rgba(33, 33, 33, 0.72);
+  --glass-bg-strong: rgba(33, 33, 33, 0.9);
+  --glass-solid: #212121;
+
+  --rail-bg: #000000;
+  --rail-bg-raised: #1c1c1c;
+  --rail-hover: #1a1a1a;
+  --rail-active: #262626;
+  --rail-selected: #262626;
+  --rail-text: #ececec;
+  --rail-text-dim: #afafaf;
+  --rail-text-faint: #6b6b6b;
+  --rail-border: #1a1a1a;
+  --rail-accent: #ffffff;
+  --rail-icon: #afafaf;
+  --rail-ring: rgba(255, 255, 255, 0.42);
+  --rail-warning: #d4d4d4;
+  --rail-danger: #f2f2f2;
+  --rail-danger-strong: #ffffff;
+  --rail-danger-quiet: rgba(255, 255, 255, 0.12);
+  --rail-accent-solid: #f2f2f2;
+  --rail-accent-solid-hover: #ffffff;
+}
+
+/* Chat composer and focus accent. Everything else the chat uses is the
+   global theme above, so the chat and every other page share one palette. */
+.chat-window {
+  --chat-accent: #4e4260;
+  --chat-accent-quiet: rgba(78, 66, 96, 0.08);
+  --chat-composer-bg: #ffffff;
+  --chat-composer-border: #e5e5e5;
+  --chat-composer-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.06);
+}
+
+[data-theme='dark'] .chat-window {
+  --chat-accent: #4e4260;
+  --chat-accent-quiet: rgba(78, 66, 96, 0.22);
+  --chat-composer-bg: #212121;
+  --chat-composer-border: #333333;
+  --chat-composer-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 :root {
   --bg-primary: var(--bg-surface);
   --bg-secondary: var(--bg-surface-alt);
   --bg-tertiary: var(--bg-inset);
-  --bg-chat: var(--bg-canvas);
   --bg-input: var(--bg-field);
-  --bg-bubble-user: var(--bg-inset);
+  /* The user's message bubble: one step darker than the canvas it sits on
+     (#efeff2 on #fafafa; #232328 on #141416). Retune the two together, or
+     the bubble disappears into the page. */
+  --bg-bubble-user: #f4f4f4;
   --bg-bubble-assistant: transparent;
   --bg-code: var(--bg-inset);
   --bg-code-header: var(--bg-surface-alt);
@@ -440,18 +828,123 @@
   --danger-bg: var(--danger-quiet);
 }
 
+/* The chat sits on the same ground as every other page, in both themes. */
+:root {
+  --bg-chat: var(--bg-canvas);
+}
+
+[data-theme='dark'] {
+  --bg-bubble-user: #2f2f2f;
+}
+
 /* ───────────────────────────────────────────────────────────────────────────
    REDUCED MOTION
    Durations collapse to ~0 rather than animations being disabled, so nothing
    depends on a transitionend that never fires — an animation-suppressing
    reset can leave an element stuck mid-entrance.
    ─────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────────────────
+   INCREASED CONTRAST
+   The OS "Increase contrast" setting. Apple's rule: every custom colour needs
+   a variant with markedly more separation. In a monochrome system that means
+   secondary text moves toward ink, hairlines become visible lines, and the
+   focus ring and selection firm up. Placed after both themes so it wins.
+   ─────────────────────────────────────────────────────────────────────────── */
+@media (prefers-contrast: more) {
+  :root,
+  [data-theme='light'],
+  .ws-surface,
+  .ws-slide-canvas {
+    --text-secondary: #333333;
+    --text-muted: #4d4d4d;
+    --text-faint: #5e5e5e;
+    --border-strong: #6b6b6b;
+    --border: #8a8a8a;
+    --border-subtle: #a6a6a6;
+    --bg-hover: #e3e3e3;
+    --bg-selected: #d9d9d9;
+    --ring: rgba(0, 0, 0, 0.85);
+    --glass-border: rgba(0, 0, 0, 0.45);
+    --highlight: rgba(0, 0, 0, 0.24);
+  }
+  [data-theme='dark'] {
+    --text-secondary: #d4d4d4;
+    --text-muted: #b3b3b3;
+    --text-faint: #9a9a9a;
+    --border-strong: #8a8a8a;
+    --border: #6b6b6b;
+    --border-subtle: #4d4d4d;
+    --bg-hover: #2a2a2a;
+    --bg-selected: #333333;
+    --ring: rgba(255, 255, 255, 0.9);
+    --glass-border: rgba(255, 255, 255, 0.45);
+    --highlight: rgba(255, 255, 255, 0.32);
+  }
+}
+
+/* Forced colours (Windows High Contrast): the OS replaces every colour, so
+   focus and boundaries must not rely on box-shadow or background alone. */
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid CanvasText !important; outline-offset: 2px; }
+}
+
+/* Reduced transparency: glass becomes a solid sheet (Apple's rule — every
+   material needs an opaque fallback). */
+@media (prefers-reduced-transparency: reduce) {
+  :root, [data-theme='light'], [data-theme='dark'] {
+    --glass-bg: var(--glass-solid);
+    --glass-bg-strong: var(--glass-solid);
+    --glass-blur: 0px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-1: 1ms;
     --dur-2: 1ms;
     --dur-3: 1ms;
     --dur-4: 1ms;
+    --dur-anim: 1ms;
     --ease-entrance: linear;
+    --spring-smooth: linear;
+    --spring-bouncy: linear;
   }
+
+  /* The tokens above only reach animations written against them. Loops and
+     literal durations (loaders, shimmers, the login backdrop) would keep
+     moving, so every animation is settled here: it jumps to its end state
+     and stays there. Ending (not removing) is what keeps entrances from
+     sticking at frame 0 — see the note above. Status words beside each
+     loader still say that something is happening. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── File-type glyph ─────────────────────────────────────────────────────
+   The page, its edge and its text rules in the shared document icon (see
+   FileBrowser's FileTypeIcon). Defined once, globally, because that icon is
+   drawn on four surfaces — the Vault, the Library, the Workspace and the chat
+   composer — and a page that is white on one and grey on another is two icons.
+
+   The BRAND colours in the glyph are deliberately not tokens: Word blue is
+   Word blue in both themes, and theming it away is the opposite of what it is
+   for. Only the paper around it follows the theme. */
+:root {
+  --ws-doc-page: #ffffff;
+  --ws-doc-edge: #d6d9de;
+  --ws-doc-rule: #c9cdd3;
+}
+
+:root[data-theme="dark"] {
+  /* Not pure white: a full-brightness page at 32px in a dark grid glares, and
+     thirty of them is a lightbox. Bright enough to still read as paper. */
+  --ws-doc-page: #e8eaed;
+  --ws-doc-edge: #b9bdc4;
+  --ws-doc-rule: #b0b5bc;
 }

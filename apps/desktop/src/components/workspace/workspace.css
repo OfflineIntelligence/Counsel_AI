@@ -1,132 +1,787 @@
 /*
  * Document workspace styling.
  *
- * Reuses the application's existing language — Arial, the black rail, grouped
- * cards, the same greys as Settings — rather than introducing a sixth visual
- * style. Three zones: draft rail, paper surface, context panel.
+ * ── Why this file was rewritten ───────────────────────────────────────────
+ * It previously carried ~90 hardcoded hex values and a hardcoded Arial stack,
+ * which made the workspace the one screen in the app that could not follow the
+ * theme: it rendered light-on-light no matter what the rest of the window did.
+ * Every value here now names a ROLE token from styles/tokens.css, so light and
+ * dark parity is structural rather than something to maintain by hand.
+ *
+ * ── The visual language ───────────────────────────────────────────────────
+ * Chrome recedes so the document can be the loudest thing on screen. Toolbars
+ * are borderless: a control shows a fill on hover and a solid accent fill when
+ * it is ON, and shows nothing at rest. Structure is carried by hairlines, not
+ * by boxes around every button.
+ *
+ * ── One toolbar, five editors ─────────────────────────────────────────────
+ * DocxEditor, XlsxEditor, PptxEditor, PdfEditor and TextEditor all render the
+ * same .ws-toolbar / .ws-tool / .ws-tool-divider / .ws-hint vocabulary. Styling
+ * it once here is what keeps them from drifting apart, so resist adding an
+ * editor-specific override — extend the shared class instead.
  */
 
+/*
+ * flex:1 is load-bearing, not cosmetic. .app-root is a flex row, and a flex
+ * item defaults to flex:0 1 auto — i.e. it shrinks to its CONTENT. Without
+ * this the whole workspace sized itself to the rail plus whatever the editor
+ * happened to be, everything crushed against the left edge, and the empty
+ * right-hand band was bare .app-root showing through. min-width:0 is its
+ * necessary other half: a flex item's default min-width:auto refuses to shrink
+ * below content, which is what lets a wide table or a long filename push the
+ * layout wider than the window instead of scrolling inside it.
+ */
 .ws-root {
+  /* The Aurora bar is positioned against this: on the drafts list it belongs
+     to the page, not to any one pane. */
+  position: relative;
   display: flex;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
-  background: #f5f5f5;
-  font-family: Arial, Helvetica, sans-serif;
-  color: #1a1a1a;
+  background: var(--bg-canvas);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
 }
 
-/* ------------------------------------------------------------ draft rail */
+/* ---------------------------------------------------------- landing page */
 
-.ws-rail {
-  width: 260px;
-  flex: 0 0 260px;
+/*
+ * With no draft open the workspace is a landing page, not a chrome column.
+ *
+ * The draft list used to be a permanent 264px rail down the left. It was
+ * carrying a list that is usually short and often empty, and it charged the
+ * document a quarter of the window for the privilege — on a 1400px screen the
+ * page lost more width to an empty list than to its own margins. As one
+ * centred column it costs nothing while editing and reads as a proper entry
+ * point when idle.
+ */
+/* Box geometry only. Padding, gap, type and colour are all in the one
+   authoritative `.ws-landing` block further down -- they used to be split
+   across three blocks in this file, each setting padding again (--sp-8, then
+   32px, then padding-left/right: 32px) and gap twice, so the page's own box
+   could not be read off any single rule. */
+.ws-landing {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #e0e0e0;
+}
+
+/* The three-column grid is gone with the side clusters it existed to balance:
+   the title is the header's only child now, so centring it is one property. */
+.ws-landing-head {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* The actions, under the search field and centred on the same axis so the
+   three stacked rows share one centre line. */
+.ws-landing-actions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.ws-landing-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  color: var(--text-heading);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- capsule */
+
+/* The two import sources, grouped as one control so they read as a single
+   choice of origin rather than two unrelated buttons. */
+.ws-capsule {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-field);
+  border-radius: var(--r-pill);
+  padding: 2px;
+}
+
+.ws-capsule-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  border: none;
+  background: transparent;
+  border-radius: var(--r-pill);
+  padding: 5px var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.ws-capsule-btn:hover:not(:disabled) { background: var(--bg-surface); }
+.ws-capsule-btn:disabled { opacity: 0.45; cursor: default; }
+.ws-capsule-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.ws-capsule-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-strong);
+  flex: 0 0 auto;
+}
+
+/* --------------------------------------------------------------- browser */
+
+.ws-browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  flex: 1;
   min-height: 0;
 }
 
-.ws-rail-head {
+/* ----------------------------------------------------------------- items */
+
+.ws-grid-items {
+  display: grid;
+  /* auto-fill, not auto-fit: auto-fit would stretch three files across a wide
+     window into three enormous tiles. */
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: var(--sp-3);
+  align-content: start;
+  padding-bottom: var(--sp-6);
+}
+
+.ws-item {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 16px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: transparent;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 
-.ws-rail-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+.ws-item:hover { background: var(--bg-hover); }
+
+/* A drag is over this item and it will accept it. */
+.ws-item-drop {
+  background: var(--accent-quiet);
+  border-color: var(--accent-border);
 }
 
-.ws-close {
+.ws-item-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: none;
+  font-family: inherit;
+  color: inherit;
   cursor: pointer;
-  font-size: 14px;
-  color: #666;
-  padding: 4px 6px;
-  border-radius: 4px;
+  text-align: left;
+  padding: var(--sp-3);
+  gap: var(--sp-3);
+  border-radius: var(--r-lg);
 }
 
-.ws-close:hover {
-  background: #f0f0f0;
-  color: #1a1a1a;
+.ws-item-open:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.ws-item-art {
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
 }
 
-.ws-rail-actions {
+.ws-item-label { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+
+.ws-item-name {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-item-meta {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Per-item actions stay hidden until the item is engaged: a grid of tiles each
+   showing two buttons reads as a grid of buttons, not a grid of documents.
+   Opacity rather than display, so they stay reachable by keyboard. */
+.ws-item-actions {
+  position: absolute;
+  top: var(--sp-1);
+  right: var(--sp-1);
   display: flex;
-  gap: 6px;
-  padding: 0 16px 12px;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
 }
 
+.ws-item:hover .ws-item-actions,
+.ws-item:focus-within .ws-item-actions { opacity: 1; }
+
+.ws-item-actions .ws-close {
+  width: 24px;
+  height: 24px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.ws-item-actions .ws-close:hover { background: var(--bg-active); }
+
+.ws-grid-items .ws-item-open {
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ws-grid-items .ws-item-label { align-items: center; text-align: center; width: 100%; }
+
+/* Letter proportions, the same ones the editor's page holds. */
+.ws-grid-items .ws-item-art-page { width: 108px; height: 140px; }
+
+.ws-grid-items .ws-item-folder .ws-item-art,
+.ws-grid-items .ws-item-up .ws-item-art { height: 140px; }
+
+/* ------------------------------------------------------------ thumbnails */
+
+.ws-thumb {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Paper in both themes. A thumbnail of a document is a picture of that
+   document, and the page it previews is white — see .ws-surface for the full
+   reasoning; this is the same rule at one-eighth scale. */
+.ws-thumb-page,
+.ws-thumb-sheet,
+.ws-thumb-slide { color: #1f1f1d; background: #ffffff; }
+
+.ws-thumb-idle,
+.ws-thumb-blank {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-inset);
+}
+
+.ws-thumb-scaler {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.ws-thumb-frame { width: 100%; overflow: hidden; }
+
+/* The stage is inert: a miniature is a picture, not a control surface. */
+.ws-thumb-stage { pointer-events: none; }
+
+.ws-thumb-raster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+}
+
+/* The miniature IS the real page — same width, same margins, same type size,
+   reduced by transform. Nothing here should be "small"; the scale does that. */
+.ws-thumb-page {
+  width: 100%;
+  height: 100%;
+  padding: 72px;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+}
+
+.ws-thumb-line {
+  margin: 0 0 10px;
+  font-size: 11pt;
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-thumb-line-heading {
+  font-family: var(--font-display);
+  font-size: 16pt;
+  font-weight: var(--fw-semibold);
+  margin: 0 0 14px;
+}
+
+.ws-thumb-sheet {
+  width: 100%;
+  height: 100%;
+  padding: 36px;
+  box-sizing: border-box;
+}
+
+.ws-thumb-sheet table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+
+.ws-thumb-sheet td {
+  border: 1px solid #e4e4e7;
+  padding: 8px 10px;
+  font-size: 11pt;
+  height: 40px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-thumb-slide {
+  width: 100%;
+  height: 100%;
+  padding: 90px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  font-family: var(--font-sans);
+}
+
+.ws-thumb-slide .ws-thumb-line { font-size: 20pt; margin: 0; }
+.ws-thumb-slide .ws-thumb-line-heading { font-size: 40pt; margin: 0 0 10px; }
+
+/* ------------------------------------------------------------ search bar */
+
+.ws-searchbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--bg-field);
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  height: 34px;
+  /* 520px + 45%. Wide enough that a real query -- a clause name, a party
+     and a term -- is visible in full rather than scrolling inside the field. */
+  max-width: 754px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.ws-searchbar:focus-within {
+  background: var(--bg-field-focus);
+  border-color: var(--accent-border);
+}
+
+.ws-search-icon { color: var(--text-muted); flex: 0 0 auto; }
+
+.ws-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
+}
+
+.ws-search-input::placeholder { color: var(--text-faint); }
+
+/* The clear control the browser draws for type=search duplicates ours and
+   cannot be themed, so it is suppressed rather than left sitting beside it. */
+.ws-search-input::-webkit-search-cancel-button { display: none; }
+
+/* --------------------------------------------------------- search results */
+
+.ws-search-results { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.ws-search-summary {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  letter-spacing: var(--ls-normal);
+}
+
+.ws-search-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ws-search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: none;
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.ws-search-hit:hover { background: var(--bg-hover); }
+.ws-search-hit:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.ws-search-hit-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+}
+
+.ws-search-hit-snippet {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+/* Weight, not a highlighter fill. A coloured block stripes the line and makes
+   the surrounding sentence harder to read than the term is to spot. */
+.ws-search-hit-snippet mark {
+  background: none;
+  color: var(--text-heading);
+  font-weight: var(--fw-semibold);
+}
+
+.ws-search-empty { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+.ws-search-pending {
+  margin: 0;
+  text-align: center;
+  font-size: var(--fs-2xs);
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------- selection */
+
+.ws-selection-count {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  padding-right: var(--sp-1);
+}
+
+.ws-check {
+  position: absolute;
+  top: var(--sp-1);
+  left: var(--sp-1);
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  padding: 0;
+  /* Hidden until the tile is engaged, for the same reason the per-item actions
+     are: a grid of tiles each wearing a checkbox reads as a form. */
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
+  z-index: 1;
+}
+
+.ws-item:hover .ws-check,
+.ws-item:focus-within .ws-check,
+.ws-check-on { opacity: 1; }
+
+.ws-check-on { background: var(--accent); border-color: var(--accent); }
+
+.ws-check:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; opacity: 1; }
+
+.ws-item-selected {
+  background: var(--accent-quiet);
+  border-color: var(--accent-border);
+}
+
+.ws-item-selected:hover { background: var(--accent-quiet); }
+
+/* --------------------------------------------------------------- compare */
+
+.ws-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.ws-compare .ws-header { grid-column: 1 / -1; }
+
+/* Both children are placed EXPLICITLY. With only the aside pinned to row 2,
+   auto-placement put it in column 1 and pushed the redline into the narrow
+   second column, where every line wrapped to one word. */
+.ws-compare-body {
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-compare-same { margin: auto; }
+
+.ws-diff-counts { display: inline-flex; align-items: center; gap: var(--sp-2); }
+
+.ws-diff-count {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-diff-count-ins { color: var(--success-fg); }
+.ws-diff-count-del { color: var(--danger-fg); }
+
+/* The diff sits on the paper card, so a redline is read on the surface the
+   document is written on rather than on app chrome. */
+.ws-diff {
+  padding: var(--sp-8) var(--sp-6);
+  font-size: 11pt;
+  line-height: var(--lh-relaxed);
+}
+
+.ws-diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-6);
+  align-items: start;
+}
+
+.ws-diff-cell,
+.ws-diff-para { margin: 0 0 10px; white-space: pre-wrap; }
+
+.ws-diff-cell-empty { min-height: 1px; }
+
+/* A stripe in the margin rather than a filled block: filling a whole paragraph
+   makes the words inside it harder to read, which is the opposite of the job. */
+.ws-diff-ins,
+.ws-diff-del,
+.ws-diff-touched {
+  padding-left: var(--sp-3);
+  border-left: 2px solid transparent;
+}
+
+.ws-diff-ins { border-left-color: var(--success); background: var(--success-quiet); }
+.ws-diff-del {
+  border-left-color: var(--danger);
+  background: var(--danger-quiet);
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+}
+.ws-diff-touched { border-left-color: var(--warning); }
+
+/* Word marks carry the detail inside a changed paragraph — the reason this
+   view is worth more than a list of removed and added paragraphs. */
+.ws-word-ins {
+  background: var(--success-quiet);
+  color: var(--success-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ws-word-del {
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+  text-decoration: line-through;
+}
+
+/* ------------------------------------------------------------ change list */
+
+.ws-diff-list {
+  grid-column: 2;
+  grid-row: 2;
+  /* A grid item takes its track width, so the flex-basis .ws-context carries
+     for the editor does nothing here. */
+  width: 288px;
+}
+
+.ws-diff-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding: var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+}
+
+.ws-diff-badge {
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ws-diff-badge-insert { color: var(--success-fg); }
+.ws-diff-badge-delete { color: var(--danger-fg); }
+.ws-diff-badge-change { color: var(--warning-fg); }
+
+.ws-diff-entry-text {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- skeleton */
+
+.ws-diff-skeleton {
+  padding: var(--sp-10) var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.ws-skeleton-line {
+  height: 12px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  animation: ws-pulse 1.4s var(--ease-in-out) infinite;
+}
+
+@keyframes ws-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-skeleton-line { animation: none; }
+}
+
+/* ----------------------------------------------------------- view segment */
+
+/* Restored for the comparison layout toggle. `.ws-segment .ws-tool` is two
+   classes and outranks the single-class `.ws-tool-active`, so the ON state has
+   to be restated here or the selected mode looks identical to the other. */
+.ws-segment {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-field);
+  border-radius: var(--r-sm);
+  padding: 2px;
+}
+
+.ws-segment .ws-tool { border-color: transparent; background: transparent; height: 26px; }
+
+.ws-segment .ws-tool-active { background: var(--accent); color: var(--text-on-accent); }
+.ws-segment .ws-tool-active:hover:not(:disabled) { background: var(--accent-hover); }
+
+/* On a narrow window the page's own margins yield before its measure does.
+   The draft list no longer competes for width here — it is a landing page, not
+   a permanent column — so this is now only about the document's gutters. */
+@media (max-width: 1280px) {
+  .ws-surface-host {
+    padding-inline: var(--sp-4);
+  }
+
+  .ws-page {
+    padding-inline: var(--sp-8);
+  }
+}
+
+/* Capped rather than flex:1 — in the landing card the list sizes to its
+   contents and only starts scrolling once it would push the explainer below
+   it off the page. */
 .ws-draft-list {
   list-style: none;
   margin: 0;
-  padding: 0 8px 16px;
+  padding: 0;
   overflow-y: auto;
-  flex: 1;
-  min-height: 0;
+  max-height: 320px;
 }
 
 .ws-draft {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   width: 100%;
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-2);
   border: none;
   background: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   text-align: left;
   font-family: inherit;
+  color: var(--text-primary);
+  transition: background var(--dur-1) var(--ease-out);
 }
 
-.ws-draft:hover {
-  background: #f5f5f5;
+.ws-draft:hover { background: var(--bg-hover); }
+
+.ws-draft-active,
+.ws-draft-active:hover { background: var(--bg-selected); }
+
+.ws-draft-active .ws-draft-title {
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
 }
 
-.ws-draft-active {
-  background: #eef2ff;
-}
-
+/* Format glyphs keep the vendors' own colours. These are the only literal
+   colours left in the file and they are deliberate: they are brand marks, not
+   theme surfaces, and a Word file is that blue in both themes. The white
+   lettering is legible on all five. */
 .ws-draft-glyph {
   flex: 0 0 30px;
   height: 30px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   display: grid;
   place-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  color: #fff;
-  background: #6b7280;
-  letter-spacing: 0.02em;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-on-solid);
+  background: var(--solid);
+  letter-spacing: var(--ls-wide);
 }
-
-.ws-draft-glyph-docx { background: #2b579a; }
-.ws-draft-glyph-xlsx { background: #217346; }
-.ws-draft-glyph-pptx { background: #c43e1c; }
-.ws-draft-glyph-pdf  { background: #b30b00; }
-.ws-draft-glyph-txt  { background: #4b5563; }
+/* One ink tile for every format: the format is the label on it, not a hue. */
 
 .ws-draft-body {
   display: flex;
   flex-direction: column;
+  gap: 1px;
   min-width: 0;
 }
 
 .ws-draft-title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .ws-draft-meta {
-  font-size: 11px;
-  color: #888;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  letter-spacing: var(--ls-normal);
 }
 
 /* ------------------------------------------------------------ main area */
@@ -143,53 +798,80 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-  background: #fff;
-  border-bottom: 1px solid #e0e0e0;
-  flex-wrap: wrap;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  min-height: 48px;
 }
 
+/* Centre, not baseline: the row now leads with a button, and baseline
+   alignment would hang it off the title's text baseline. */
 .ws-header-title {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: var(--sp-2);
   min-width: 0;
+}
+
+/* Holds its label against a long document title that wants the same row. */
+.ws-back {
+  flex: 0 0 auto;
 }
 
 .ws-header-title h1 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .ws-header-format {
-  font-size: 11px;
-  color: #888;
-  letter-spacing: 0.04em;
+  font-size: var(--fs-2xs);
+  color: var(--text-faint);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  flex: 0 0 auto;
 }
 
 .ws-header-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+/* A version marker, not a button: the mock's "Version 2" chip. Reads as a
+   fact about the document, so it gets a field fill and no hover. */
+.ws-version-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 3px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-normal);
+  white-space: nowrap;
 }
 
 .ws-status {
-  font-size: 12px;
-  color: #888;
-  min-width: 96px;
-  text-align: right;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-right: var(--sp-1);
 }
 
-.ws-status-saving { color: #2563eb; }
-.ws-status-pending { color: #92700c; }
-.ws-status-saved { color: #217346; }
-.ws-status-error { color: #b30b00; font-weight: 600; }
+.ws-status-saving  { color: var(--text-secondary); }
+.ws-status-pending { color: var(--warning-fg); }
+.ws-status-saved   { color: var(--success-fg); }
+.ws-status-error   { color: var(--danger-fg); font-weight: var(--fw-medium); }
 
 .ws-body {
   flex: 1;
@@ -197,54 +879,148 @@
   min-height: 0;
 }
 
+/* The canvas the document sits on. Deliberately NOT a surface: the paper card
+   has to read as an object resting on a ground, which needs the ground to be
+   one step back from it. */
 .ws-editor-host {
   flex: 1;
   min-width: 0;
   overflow: auto;
-  padding: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bg-canvas);
+}
+
+/* ------------------------------------------------------- document surface */
+
+/*
+ * The document card — toolbar strip and page as ONE object, centred on the
+ * canvas with air on both sides, the way every editor from Word to Docs
+ * arranges a page.
+ *
+ * The toolbar is pinned to paper along with the page rather than themed as
+ * chrome. That is the deliberate call: the toolbar acts ON the document and is
+ * physically attached to it, so a dark strip welded to a white page would read
+ * as two objects fused by mistake. Pinning the whole card keeps it one object
+ * in both themes — in dark mode it is a white card floating on a dark ground,
+ * which is exactly what the reference shows.
+ *
+ * ── Why the card is PAPER, and paper has no dark mode ─────────────────────
+ * This is the one surface in the workspace that deliberately does not follow
+ * the theme. What sits on it is the document as it will print and as it will
+ * open in Word — rendering it as light text on a dark ground would be the
+ * interface misrepresenting the file's actual appearance, which is the one
+ * thing a document editor must never do. Everything around the card themes.
+ *
+ * The pin itself is in styles/tokens.css: `.ws-surface` is named alongside
+ * `[data-theme='light']` there, so this subtree simply IS the light theme and
+ * resolves every role token from it. Twenty-three tokens used to be
+ * re-declared here with the light palette's literal values copied across,
+ * which made a palette retune a two-file change that nothing would catch if
+ * you forgot this file. Nothing to copy now.
+ *
+ * Every rule below stays written against roles, which is what keeps this
+ * surface readable and consistent with the rest of the file; only the
+ * resolution is forced.
+ */
+.ws-surface {
+  /* US Letter at 96dpi: 8.5in × 11in = 816 × 1056. Using the real figure
+     rather than a round 900 is what makes the card read as a page — the
+     proportion is the thing the eye recognises, and it also fixes the measure
+     at ~75 characters once the 72px margins are taken off, which is the line
+     length long-form prose is comfortable at. */
+  --paper-width: 816px;
+
+  /* Lets .ws-page size its height from the card's actual width in cqi units,
+     so the Letter proportion survives a window too narrow for the full 816px
+     instead of the page turning into a tall thin ribbon. */
+  container-type: inline-size;
+
+  width: min(var(--paper-width), 100%);
+  margin: 0 auto;
+  /* A flex item in a column container shrinks by default; the card must keep
+     its content height and let the host scroll instead. */
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  /* Height comes from .ws-page holding the Letter proportion, so the card is
+     only ever as tall as its content needs. */
+}
+
+/* Gutters live on the host, not the card, so they scroll with the document and
+   the card is never flush against the window edge. */
+.ws-surface-host {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-6) var(--sp-6) var(--sp-10);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+  /* Reserve the scrollbar on BOTH edges. Without this the bar is subtracted
+     from the right side only, the centred card is pushed left by half its
+     width, and the page sits visibly off-centre — 24px of air on one side and
+     39px on the other. */
+  scrollbar-gutter: stable both-edges;
+}
+
+/* The toolbar as the card's top strip: rounded to match, hairline beneath,
+   and sticky so it stays reachable in a long document. */
+.ws-surface > .ws-toolbar {
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-inline: var(--sp-4);
 }
 
 .ws-context {
-  width: 280px;
-  flex: 0 0 280px;
-  border-left: 1px solid #e0e0e0;
-  background: #fff;
+  width: 288px;
+  flex: 0 0 288px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-surface);
   overflow-y: auto;
 }
 
 .ws-placeholder {
   margin: auto;
   max-width: 520px;
-  padding: 40px;
+  padding: var(--sp-10);
   text-align: center;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .ws-placeholder h1 {
-  font-size: 20px;
-  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  color: var(--text-heading);
+  margin: 0 0 var(--sp-3);
 }
 
 .ws-placeholder p {
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: var(--fs-md);
+  line-height: var(--lh-relaxed);
+  margin: 0;
 }
 
 .ws-banner-error {
-  background: #fdecea;
-  border-bottom: 1px solid #f5c2bd;
-  color: #8a1c12;
-  padding: 10px 20px;
-  font-size: 12px;
+  background: var(--danger-quiet);
+  border-bottom: 1px solid var(--danger-border);
+  color: var(--danger-fg);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
 }
 
 .ws-empty,
 .ws-panel-empty {
-  padding: 24px;
-  color: #888;
-  font-size: 13px;
+  padding: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
   text-align: center;
 }
 
@@ -253,30 +1029,44 @@
 .ws-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e8e8e8;
+  gap: 2px;
+  padding: var(--sp-1) var(--sp-3);
+  min-height: 44px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: var(--z-content);
 }
 
 .ws-tool {
-  border: 1px solid #d6d6d6;
-  background: #fff;
-  border-radius: 5px;
-  padding: 5px 10px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  border-radius: var(--r-sm);
+  padding: 5px var(--sp-2);
+  font-size: var(--fs-sm);
   font-family: inherit;
+  letter-spacing: var(--ls-normal);
   cursor: pointer;
-  color: #1a1a1a;
-  min-width: 30px;
+  color: var(--text-primary);
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
 }
 
 .ws-tool:hover:not(:disabled) {
-  background: #f2f2f2;
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.ws-tool:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 
 .ws-tool:disabled {
@@ -284,89 +1074,221 @@
   cursor: default;
 }
 
-.ws-tool-active {
-  background: #1a1a1a;
-  color: #fff;
-  border-color: #1a1a1a;
+/* Inside a toolbar the same control loses its box. A row of twelve outlined
+   buttons reads as a form; a row of twelve glyphs reads as a toolbar. */
+.ws-toolbar .ws-tool {
+  border-color: transparent;
+  background: transparent;
+  min-width: 30px;
+  height: 30px;
+  justify-content: center;
+  padding: 0 var(--sp-2);
 }
 
-.ws-tool-danger:hover:not(:disabled) {
-  background: #fdecea;
-  border-color: #f5c2bd;
-  color: #8a1c12;
+.ws-toolbar .ws-tool:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: transparent;
+}
+
+/* Square for a lone glyph, so B / I / U are not three different widths. */
+.ws-tool-icon { padding: 0 !important; width: 30px; }
+
+.ws-tool-active,
+.ws-toolbar .ws-tool-active {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+
+.ws-tool-active:hover:not(:disabled),
+.ws-toolbar .ws-tool-active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--text-on-accent);
+  border-color: var(--accent-hover);
+}
+
+.ws-tool-danger:hover:not(:disabled),
+.ws-toolbar .ws-tool-danger:hover:not(:disabled) {
+  background: var(--danger-quiet);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+
+/* The primary action carries the one solid fill on the screen. */
+.ws-tool-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.ws-tool-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--text-on-accent);
+}
+
+.ws-close {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: var(--r-sm);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+
+.ws-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .ws-tool-divider {
   width: 1px;
   height: 18px;
-  background: #e0e0e0;
-  margin: 0 4px;
+  background: var(--border);
+  margin: 0 var(--sp-1);
+  flex: 0 0 auto;
 }
 
 .ws-select {
-  border: 1px solid #d6d6d6;
-  border-radius: 5px;
-  padding: 5px 8px;
-  font-size: 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 5px var(--sp-2);
+  font-size: var(--fs-sm);
   font-family: inherit;
-  background: #fff;
+  letter-spacing: var(--ls-normal);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  height: 30px;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
 }
 
+.ws-select:hover:not(:disabled) { background: var(--bg-field-focus); }
+.ws-select:disabled { opacity: 0.4; cursor: default; }
+.ws-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
 .ws-hint {
-  font-size: 11px;
-  color: #888;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  letter-spacing: var(--ls-normal);
+}
+
+/* --------------------------------------------------------- overflow menu */
+
+/* Everything that used to be a seventh button in the header. Anchored to the
+   ⋯ trigger, so the wrapper is the positioning context. */
+.ws-menu-anchor { position: relative; display: inline-flex; }
+
+.ws-menu {
+  position: absolute;
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  min-width: 184px;
+  padding: var(--sp-1);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ws-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  border: none;
+  background: none;
+  border-radius: var(--r-xs);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.ws-menu-item:hover { background: var(--bg-hover); }
+
+.ws-menu-item-danger { color: var(--danger-fg); }
+.ws-menu-item-danger:hover { background: var(--danger-quiet); }
+
+.ws-menu-separator {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: var(--sp-1) 0;
 }
 
 /* ------------------------------------------------------------ docx */
 
 .ws-docx { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
+/* The writing area inside the card. The card owns the paper; this owns the
+   measure — 72px side margins give roughly 80 characters at 11pt, which is the
+   line length long-form prose is actually comfortable at. */
 .ws-page {
-  background: #fff;
-  margin: 24px auto;
-  padding: 60px 72px;
-  width: min(816px, calc(100% - 48px));
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-  min-height: 400px;
+  flex: 1;
+  padding: var(--sp-12) 72px var(--sp-16);
+  /* 100cqi is the card's own width, so this is literally "11 units tall for
+     every 8.5 wide" — the Letter proportion held at ANY card width. A short
+     document still looks like a page rather than a squat band; a long one
+     grows past it and the canvas scrolls, exactly as a page does. */
+  min-height: calc(100cqi * 11 / 8.5);
+  box-sizing: border-box;
 }
 
 .ws-paragraph {
   font-size: 11pt;
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
   margin: 0 0 10px;
   outline: none;
   min-height: 1.6em;
   white-space: pre-wrap;
+  border-radius: var(--r-xs);
 }
 
+/* A focused paragraph is marked by a margin rule rather than a fill, so the
+   page never looks like it has a highlighted band across it while typing. */
 .ws-paragraph:focus {
-  background: #fbfbfd;
-  box-shadow: -8px 0 0 0 #eef2ff;
+  background: var(--bg-surface-alt);
+  box-shadow: -8px 0 0 0 var(--accent-quiet);
 }
 
 .ws-paragraph-heading {
+  font-family: var(--font-display);
   font-size: 16pt;
-  font-weight: 600;
-  margin: 22px 0 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  margin: var(--sp-6) 0 10px;
 }
 
-.ws-paragraph-listed { padding-left: 24px; position: relative; }
+.ws-paragraph-listed { padding-left: var(--sp-6); position: relative; }
 .ws-paragraph-listed::before {
   content: '•';
   position: absolute;
-  left: 8px;
-  color: #888;
+  left: var(--sp-2);
+  color: var(--text-faint);
 }
 
 .ws-table {
   border-collapse: collapse;
   width: 100%;
-  margin: 12px 0 18px;
+  margin: var(--sp-3) 0 var(--sp-5);
 }
 
 .ws-table td {
-  border: 1px solid #d6d6d6;
-  padding: 6px 10px;
+  border: 1px solid var(--border);
+  padding: var(--sp-2) var(--sp-3);
   vertical-align: top;
 }
 
@@ -377,23 +1299,37 @@
 .ws-xlsx { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 .ws-cell-ref {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
   min-width: 56px;
-  padding: 5px 8px;
-  border: 1px solid #d6d6d6;
-  border-radius: 5px;
-  background: #fafafa;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-field);
+  color: var(--text-secondary);
 }
 
 .ws-formula-bar {
   flex: 1;
   min-width: 160px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-family: Consolas, 'Courier New', monospace;
-  border: 1px solid #d6d6d6;
-  border-radius: 5px;
+  height: 30px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--bg-field);
+  color: var(--text-primary);
+}
+
+.ws-formula-bar:focus {
+  outline: none;
+  background: var(--bg-field-focus);
+  border-color: var(--accent-border);
 }
 
 .ws-grid-scroll {
@@ -401,23 +1337,23 @@
   overflow: auto;
   min-height: 0;
   outline: none;
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .ws-grid {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .ws-grid-head,
 .ws-grid-corner {
   position: sticky;
   top: 0;
-  background: #f2f2f2;
-  border: 1px solid #d6d6d6;
-  font-weight: 600;
-  color: #555;
-  padding: 4px 8px;
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+  padding: var(--sp-1) var(--sp-2);
   min-width: 32px;
   z-index: 1;
 }
@@ -430,21 +1366,22 @@
 }
 
 .ws-grid-cell {
-  border: 1px solid #e4e4e4;
-  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  padding: var(--sp-1) var(--sp-2);
   min-width: 96px;
   height: 24px;
   cursor: cell;
   white-space: nowrap;
   overflow: hidden;
   max-width: 240px;
+  color: var(--text-primary);
 }
 
 .ws-grid-cell-numeric { text-align: right; font-variant-numeric: tabular-nums; }
-.ws-grid-cell-formula { color: #1d4ed8; }
+.ws-grid-cell-formula { color: var(--text-secondary); font-family: var(--font-mono); }
 
 .ws-grid-cell-selected {
-  outline: 2px solid #217346;
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -455,33 +1392,38 @@
   font: inherit;
   padding: 0;
   background: transparent;
+  color: var(--text-primary);
 }
 
 .ws-sheet-tabs {
   display: flex;
   gap: 2px;
-  padding: 6px 12px;
-  background: #fff;
-  border-top: 1px solid #e0e0e0;
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
   overflow-x: auto;
 }
 
 .ws-sheet-tab {
-  border: 1px solid #d6d6d6;
-  border-bottom: none;
-  background: #f5f5f5;
-  padding: 5px 14px;
-  font-size: 12px;
+  border: none;
+  background: transparent;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-sm);
   font-family: inherit;
-  border-radius: 5px 5px 0 0;
+  color: var(--text-secondary);
+  border-radius: var(--r-sm);
   cursor: pointer;
   white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-out);
 }
 
-.ws-sheet-tab-active {
-  background: #fff;
-  font-weight: 600;
-  border-bottom: 2px solid #217346;
+.ws-sheet-tab:hover { background: var(--bg-hover); }
+
+.ws-sheet-tab-active,
+.ws-sheet-tab-active:hover {
+  background: var(--bg-selected);
+  color: var(--text-heading);
+  font-weight: var(--fw-medium);
 }
 
 /* ------------------------------------------------------------ pdf */
@@ -492,27 +1434,32 @@
   flex: 1;
   overflow: auto;
   min-height: 0;
-  padding: 24px;
+  padding: var(--sp-6);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
+  gap: var(--sp-6);
 }
 
 .ws-pdf-page-label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: #888;
-  margin-bottom: 6px;
+  gap: var(--sp-2);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-1);
 }
 
+/* A rendered PDF page is an image of paper and stays white in both themes —
+   there is nothing to re-colour, so the surface under it must not be dark or
+   the page edge disappears. */
 .ws-pdf-surface {
   position: relative;
   background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-lg);
   user-select: none;
+  overflow: hidden;
 }
 
 .ws-pdf-surface-drawing { cursor: crosshair; }
@@ -520,12 +1467,15 @@
 .ws-pdf-image { display: block; width: 100%; height: 100%; }
 
 .ws-pdf-page-failed {
-  padding: 40px;
-  font-size: 12px;
-  color: #8a1c12;
+  padding: var(--sp-10);
+  font-size: var(--fs-sm);
+  color: var(--danger-fg);
   text-align: center;
 }
 
+/* Annotation colours are the PDF spec's own conventions (yellow highlight,
+   red strikeout) and are read by other PDF viewers the same way, so they are
+   content rather than chrome and do not follow the theme. */
 .ws-pdf-annotation {
   position: absolute;
   pointer-events: auto;
@@ -558,28 +1508,37 @@
   width: 172px;
   flex: 0 0 172px;
   overflow-y: auto;
-  border-right: 1px solid #e0e0e0;
-  background: #fff;
-  padding: 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface);
+  padding: var(--sp-2);
 }
 
 .ws-slide-thumb {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 8px;
-  margin-bottom: 4px;
-  border: 1px solid #e4e4e4;
-  border-radius: 5px;
-  background: #fff;
+  padding: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   cursor: pointer;
   text-align: left;
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-xs);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 
-.ws-slide-thumb-active { border-color: #c43e1c; background: #fff7f5; }
-.ws-slide-thumb-number { color: #888; font-weight: 600; }
+.ws-slide-thumb:hover { background: var(--bg-hover); }
+
+.ws-slide-thumb-active,
+.ws-slide-thumb-active:hover {
+  border-color: var(--accent-border);
+  background: var(--bg-selected);
+}
+
+.ws-slide-thumb-number { color: var(--text-muted); font-weight: var(--fw-semibold); }
 .ws-slide-thumb-title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -591,94 +1550,133 @@
   min-width: 0;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: var(--sp-6);
   overflow: auto;
 }
 
+/* A slide is paper too — pinned for the same reason and by the same mechanism
+   as .ws-surface above, which carries the full rationale. It is named in the
+   light-theme selector in styles/tokens.css alongside .ws-surface, so it
+   resolves the whole light palette rather than the eight tokens it used to
+   copy; the shape chrome inside a slide (placeholder frames, their labels and
+   the hover/selected outlines) needed several of those copies, and they are
+   all covered now. */
 .ws-slide-canvas {
   position: relative;
   width: min(100%, 900px);
-  background: #fff;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
 }
 
 .ws-shape {
   position: absolute;
   border: 1px solid transparent;
-  padding: 4px;
+  padding: var(--sp-1);
   overflow: hidden;
   cursor: pointer;
+  border-radius: var(--r-xs);
 }
 
-.ws-shape:hover { border-color: #cfcfcf; }
-.ws-shape-selected { border: 1px solid #c43e1c; box-shadow: 0 0 0 2px rgba(196, 62, 28, 0.18); }
+.ws-shape:hover { border-color: var(--border-strong); }
+.ws-shape-selected {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-quiet);
+}
 
 .ws-shape-frame {
-  background: repeating-linear-gradient(45deg, #fafafa, #fafafa 8px, #f2f2f2 8px, #f2f2f2 16px);
+  background: var(--bg-inset);
   display: grid;
   place-items: center;
-  border-color: #d6d6d6;
+  border-color: var(--border);
 }
 
 .ws-shape-inherited { border-style: dashed; }
 
-.ws-shape-frame-label { font-size: 11px; color: #777; }
+.ws-shape-frame-label { font-size: var(--fs-xs); color: var(--text-muted); }
 
 .ws-shape-text {
   outline: none;
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: var(--fs-lg);
+  line-height: var(--lh-snug);
   min-height: 1.2em;
   white-space: pre-wrap;
+  color: var(--text-primary);
 }
 
 /* ------------------------------------------------------------ text */
 
 .ws-text { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
+/*
+ * Set in the UI sans at prose size, not the monospace face it used to use.
+ * These files are letters and memos — the reference document is a client
+ * letter — and a proportional face is what that content is written to be read
+ * in. The encoding and line-ending facts a plain-text file carries are still
+ * reported in the status strip, which is where they belong.
+ *
+ * The textarea does not scroll: it grows to its content and the card's host
+ * scrolls instead, so the caret never sits in a small scrolling well inside a
+ * tall page. TextEditor drives the height.
+ */
 .ws-textarea {
-  flex: 1;
+  width: 100%;
   border: none;
   outline: none;
   resize: none;
-  padding: 24px 32px;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  background: #fff;
+  overflow: hidden;
+  display: block;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 11pt;
+  line-height: var(--lh-relaxed);
+  letter-spacing: var(--ls-normal);
+  background: transparent;
+  color: var(--text-primary);
 }
 
+.ws-textarea::placeholder { color: var(--text-faint); }
+
+/* Sits on the card's own paper, so it is pinned with it rather than themed. */
 .ws-text-status {
   display: flex;
-  gap: 16px;
-  padding: 6px 16px;
-  border-top: 1px solid #e0e0e0;
-  background: #fafafa;
-  font-size: 11px;
-  color: #777;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
 }
 
 /* ------------------------------------------------------------ versions */
 
-.ws-versions { padding: 16px; }
+.ws-versions { padding: var(--sp-4); }
 
 .ws-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
-.ws-panel-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.ws-panel-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
 
 .ws-panel-error {
-  background: #fdecea;
-  color: #8a1c12;
-  padding: 8px 10px;
-  border-radius: 5px;
-  font-size: 12px;
-  margin-bottom: 10px;
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-3);
 }
 
 .ws-version-list { list-style: none; margin: 0; padding: 0; }
@@ -686,40 +1684,51 @@
 .ws-version {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 4px 8px;
-  padding: 10px;
-  border: 1px solid #e8e8e8;
-  border-radius: 6px;
-  margin-bottom: 6px;
-  font-size: 12px;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-sm);
   align-items: center;
+  background: var(--bg-surface);
 }
 
-.ws-version-current { border-color: #217346; background: #f6fbf8; }
+.ws-version-current {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-alt);
+}
 
-.ws-version-main { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
-.ws-version-no { font-weight: 600; color: #555; }
+.ws-version-main { display: flex; gap: var(--sp-2); align-items: baseline; min-width: 0; }
+
+.ws-version-no {
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .ws-version-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-primary);
 }
 
 .ws-version-meta {
   grid-column: 1;
   display: flex;
-  gap: 10px;
-  color: #999;
-  font-size: 11px;
+  gap: var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--fs-2xs);
 }
 
 .ws-version-badge {
   grid-row: 1 / span 2;
   grid-column: 2;
-  font-size: 10px;
-  color: #217346;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--ls-caps);
 }
 
 .ws-version-restore { grid-row: 1 / span 2; grid-column: 2; }
@@ -729,29 +1738,30 @@
 .ws-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--bg-overlay);
   display: grid;
   place-items: center;
-  z-index: 40;
+  z-index: var(--z-modal);
 }
 
 .ws-modal {
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
-  width: min(560px, calc(100vw - 48px));
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  width: min(560px, calc(100vw - var(--sp-12)));
   max-height: min(70vh, 640px);
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 10px;
+  padding: var(--sp-4);
+  gap: var(--sp-3);
 }
 
 .ws-modal-note {
   margin: 0;
-  font-size: 12px;
-  color: #666;
-  line-height: 1.5;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: var(--lh-normal);
 }
 
 .ws-vault-list {
@@ -766,16 +1776,2101 @@
 .ws-vault-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   width: 100%;
-  padding: 8px;
+  padding: var(--sp-2);
   border: none;
   background: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   text-align: left;
   font-family: inherit;
+  color: var(--text-primary);
+  transition: background var(--dur-1) var(--ease-out);
 }
 
-.ws-vault-row:hover:not(:disabled) { background: #f5f5f5; }
+.ws-vault-row:hover:not(:disabled) { background: var(--bg-hover); }
 .ws-vault-row:disabled { opacity: 0.5; cursor: default; }
+
+/* =========================================================================
+   Phase 2 — matters, document status and the library
+   ========================================================================= */
+
+/* The three root levels, as a quiet underline rather than a pill group: this
+   sits directly under the page title, and a second filled control there would
+   compete with "+ Draft" for the eye. */
+.ws-views {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+  margin: 0 auto var(--sp-4);
+  padding-bottom: 0;
+}
+
+.ws-view-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: var(--sp-2) var(--sp-1);
+  font: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.ws-view-tab:hover { color: var(--text-secondary); }
+.ws-view-tab.is-on {
+  color: var(--text-heading);
+  border-bottom-color: var(--text-heading);
+  font-weight: var(--fw-medium);
+}
+.ws-view-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ------------------------------------------------------- the current scope */
+
+/* Without this line, a matter holding two documents looks exactly like a
+   workspace holding two documents. It says what you are inside, and how to
+   get out. */
+.ws-scope {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ws-scope-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+}
+.ws-scope-clear {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.ws-scope-clear:hover { color: var(--text-heading); }
+
+/* --------------------------------------------------------- shared fragments */
+
+.ws-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface-alt);
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ws-chip-tag { color: var(--text-muted); }
+
+.ws-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.ws-icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.ws-icon-btn:disabled { opacity: 0.45; cursor: default; }
+.ws-icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.ws-icon-danger:hover:not(:disabled) { background: var(--danger-quiet); color: var(--danger-fg); }
+
+.ws-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.ws-field > input,
+.ws-field > textarea {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  resize: vertical;
+}
+.ws-field > input:focus,
+.ws-field > textarea:focus {
+  outline: none;
+  background: var(--bg-field-focus);
+  border-color: var(--border-strong);
+}
+
+/* A native select, restyled rather than replaced: a custom listbox here would
+   be a keyboard-navigation surface to maintain for four fixed options. */
+.ws-header-select,
+.ws-matter-status,
+.ws-library-matter,
+.ws-library-kind-select {
+  appearance: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 3px var(--sp-2);
+  cursor: pointer;
+  max-width: 160px;
+}
+.ws-header-select:hover,
+.ws-matter-status:hover,
+.ws-library-matter:hover,
+.ws-library-kind-select:hover { border-color: var(--border); color: var(--text-primary); }
+.ws-header-select:focus-visible,
+.ws-matter-status:focus-visible,
+.ws-library-matter:focus-visible,
+.ws-library-kind-select:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+
+/* ------------------------------------------------- document status on a tile */
+
+/* Deliberately separate from `.ws-status`, which is the editor's save
+   indicator. Same word, different thing: one is where the document is in its
+   life, the other is whether the last keystroke reached disk. */
+.ws-doc-status {
+  display: inline-flex;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  border: 1px solid transparent;
+}
+.ws-doc-status-in_review {
+  color: var(--warning-fg);
+  background: var(--warning-quiet);
+  border-color: var(--warning-quiet);
+}
+.ws-doc-status-completed {
+  color: var(--success-fg);
+  background: var(--success-quiet);
+  border-color: var(--success-quiet);
+}
+
+/* ------------------------------------------------------------------ matters */
+
+.ws-matters-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--sp-3);
+}
+
+.ws-matter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: var(--sp-3);
+}
+
+.ws-matter-card-wrap { position: relative; display: flex; }
+
+/* The four things that identify a matter — who it is for, where it runs, how
+   much is in it, when it last moved — do not survive being abbreviated into a
+   list row, so the card shows them whole. */
+.ws-matter-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-height: 132px;
+  padding: var(--sp-3);
+  text-align: left;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.ws-matter-card:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.ws-matter-card:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+
+.ws-matter-icon { color: var(--text-muted); }
+.ws-matter-name {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  overflow-wrap: anywhere;
+}
+.ws-matter-client {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ws-matter-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+.ws-matter-ref {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ws-matter-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+.ws-matter-when { font-variant-numeric: tabular-nums; }
+
+/* Outside the card's own button, or they would be a control inside a control
+   and every click on them would also open the matter. */
+.ws-matter-actions {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.ws-matter-card-wrap:hover .ws-matter-actions,
+.ws-matter-actions:focus-within { opacity: 1; }
+
+.ws-matter-unfiled { border-style: dashed; }
+
+.ws-matter-form {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.ws-matter-form-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--sp-3);
+}
+.ws-matter-form-head h2 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+.ws-matter-form-head .ws-close { margin-left: auto; }
+.ws-matter-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--sp-3);
+}
+.ws-matter-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+/* ------------------------------------------------------------------ library */
+
+.ws-library-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+.ws-capsule-btn.is-on {
+  background: var(--bg-selected);
+  color: var(--text-heading);
+  font-weight: var(--fw-medium);
+}
+
+.ws-library-filter {
+  flex: 1;
+  min-width: 180px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+.ws-library-filter:focus {
+  outline: none;
+  background: var(--bg-field-focus);
+  border-color: var(--border-strong);
+}
+
+.ws-library-add { display: flex; align-items: center; gap: var(--sp-2); }
+
+.ws-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: var(--sp-3);
+}
+
+.ws-library-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ws-library-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.ws-library-kind {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ws-library-format {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+.ws-library-card-head .ws-icon-btn { margin-left: auto; }
+
+.ws-library-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  overflow-wrap: anywhere;
+}
+.ws-library-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.ws-library-card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-2);
+}
+.ws-library-card-foot .ws-tool { margin-left: auto; }
+
+/* ------------------------------------------------------------------ clauses */
+
+/* A list, not a grid: a clause is judged by its text, and text in a narrow
+   column is text nobody can read. */
+.ws-clause-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.ws-clause {
+  padding: var(--sp-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ws-clause-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.ws-clause-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+.ws-clause-actions {
+  display: flex;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+.ws-clause-body {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ws-clause-form {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.ws-clause-form-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+}
+.ws-clause-form-head h2 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+.ws-clause-form-head .ws-close { margin-left: auto; }
+.ws-clause-form-foot { display: flex; justify-content: flex-end; }
+
+
+/* ------------------------------------------------------- landing theme */
+
+.ws-root:has(> .ws-main > .ws-landing) {
+  background: var(--bg-canvas);
+}
+
+/* ── The landing shell's local vocabulary ─────────────────────────────────
+   `.ws-landing` is the page shell for FOUR pages — Workspace, Library, Vault
+   and Models — so everything here is load-bearing well beyond the Workspace.
+
+   These used to be a private palette of literal Tailwind greys, and that one
+   decision cost ~500 lines: because the values were literals rather than
+   roles, dark mode had to be rebuilt by hand as a parallel
+   `:root[data-theme="dark"] .ws-landing …` mirror, which is exactly what
+   tokens.css rule #1 exists to prevent. They are now aliases of the role
+   tokens, which are already defined in both themes — so the mirror is gone
+   and the whole shell follows the theme for free.
+
+   The names survive deliberately: ~30 call sites in this file and 11 in
+   ModelsPanel.css reference them, and re-pointing the definition is a
+   reviewable change where rewriting 41 call sites is not. New rules should
+   name the role token directly.
+
+   One job per token, which the greys did not have: --ws-gray-200 was doing
+   duty as both a hover fill and a hairline, so retuning either one moved the
+   other. Fills and borders are separate roles now. */
+/* The colour vocabulary these pages use (--ws-fill, --ws-line, --ws-on-accent
+   and the older --ws-gray-* spellings) is defined at :root in
+   styles/tokens.css, which is also where the reason it cannot live here is
+   written out: two of its consumers render outside this element. What stays
+   here is the shell's own geometry and type. */
+.ws-landing {
+  --ws-radius: var(--r-xs);
+  --ws-column: 958px;
+  --ws-shadow: var(--shadow-sm);
+
+  background: var(--bg-canvas);
+  font-family: var(--font-sans);
+  /* These four pages read at a document size rather than the app's 13.5px UI
+     size — they are mostly file names and titles, not controls. Kept as a
+     deliberate, named step rather than the bare `16px` it was. */
+  font-size: var(--fs-lg);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  padding: var(--sp-6) 32px var(--sp-10);
+  gap: var(--sp-4);
+}
+
+/* NOTE: a blanket `.ws-landing *, button, input { letter-spacing: normal;
+   text-transform: none }` used to sit here, and it was actively harmful.
+
+   `.ws-landing *` has the SAME specificity (0,1,0) as the component classes
+   it collided with, so the winner was decided by source order alone: every
+   `text-transform: uppercase` declared earlier in the cascade lost to it,
+   and every one declared later won. Since ModelsPanel.tsx imports this file
+   AFTER ModelsPanel.css while LocalFilesPanel.tsx imports it BEFORE
+   VaultPanel.css, the Models page and the Vault page disagreed about whether
+   their own section labels uppercase — from one reset neither page declares.
+   `.ws-library-kind` on the Library page lost its uppercase the same way.
+
+   It is also the most expensive selector in the app: a universal descendant
+   match re-evaluated against every node of a page that renders hundreds of
+   file rows, on every DOM mutation.
+
+   Nothing needs it. `font-family` and `letter-spacing` both inherit, and the
+   shell above sets them once on the container. */
+
+.ws-landing .ws-landing-title {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  color: var(--text-heading);
+}
+
+.ws-landing .ws-view-tab {
+  font-size: var(--fs-md);
+}
+
+.ws-landing .ws-landing-actions:empty {
+  display: none;
+}
+
+.ws-landing .ws-searchbar,
+.ws-landing .ws-searchbar:focus-within {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-surface);
+  max-width: var(--ws-column);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ws-landing .ws-search-icon,
+.ws-landing .ws-search-input {
+  color: var(--text-primary);
+}
+.ws-landing .ws-search-input::placeholder {
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+  opacity: 1;
+}
+.ws-landing .ws-create-folder {
+  height: 34px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
+}
+.ws-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 var(--sp-4);
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--ws-gray-100);
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.ws-pill:hover:not(:disabled) { background: var(--ws-gray-300); color: var(--text-primary); }
+.ws-pill:disabled { opacity: 0.45; cursor: default; }
+.ws-pill:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.ws-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: var(--ws-column);
+  margin: 0 auto;
+}
+
+.ws-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--bg-surface);
+  outline: none;
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  box-shadow: var(--shadow-sm);
+}
+.ws-card:focus,
+.ws-card:focus-visible,
+.ws-card:active {
+  outline: none;
+}
+/* The four-state !important pin that used to be here is gone: it existed to
+   hold the card's fill against the dark mirror's `.ws-card:hover` rule, and
+   with the mirror deleted nothing in the app sets a hover fill on .ws-card.
+   The base rule above is the only rule, so the states inherit it. */
+
+.ws-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.ws-card-icon { color: inherit; flex: 0 0 auto; }
+.ws-card-title { font-size: var(--fs-lg); color: inherit; }
+.ws-card-text {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  color: var(--text-primary);
+}
+
+.ws-card-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-self: stretch;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+}
+.ws-card-buttons .ws-pill,
+.ws-card-buttons .ws-pill:hover:not(:disabled) {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
+  background: var(--accent);
+  color: var(--ws-on-accent);
+  box-shadow: none;
+}
+.ws-card-buttons .ws-pill:hover:not(:disabled) {
+  color: var(--ws-on-accent-dim);
+}
+
+.ws-draft-box .ws-card-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  line-height: 1;
+  padding: 0 20px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--ws-on-accent);
+  transition: color var(--dur-1) var(--ease-out);
+}
+.ws-draft-box:hover:not(:disabled) .ws-card-head {
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+}.ws-draft-box .ws-card-head .ws-card-title { font-size: var(--fs-md); font-weight: var(--fw-regular); }
+.ws-draft-box .ws-card-head .ws-card-icon { width: 16px; height: 16px; }
+.ws-draft-anchor {
+  position: relative;
+  display: flex;
+}
+
+.ws-draft-box {
+  width: 100%;
+  font: inherit;
+  cursor: pointer;
+}
+.ws-draft-box:disabled { opacity: 0.45; cursor: default; }
+.ws-landing .ws-menu {
+  background: var(--bg-surface);
+  border: none;
+  border-radius: var(--ws-radius);
+  box-shadow: var(--ws-shadow);
+}
+.ws-landing .ws-menu-item {
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  border-radius: var(--ws-radius);
+}
+.ws-landing .ws-menu-item:hover { background: var(--ws-gray-100); }
+.ws-menu.ws-menu-center { left: 50%; right: auto; transform: translateX(-50%); }
+
+.ws-files-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  flex: 1 1 0;
+  width: 100%;
+  max-width: var(--ws-column);
+  margin: 0 auto;
+  min-height: 360px;
+  padding: var(--sp-5, 20px);
+  background: var(--bg-surface);
+  border-radius: var(--r-md);
+  box-shadow: var(--ws-shadow);
+}
+
+.ws-files-head {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ws-landing .ws-item {
+  border-radius: var(--r-md);
+}
+
+.ws-landing .ws-matter-card,
+.ws-landing .ws-matter-form,
+.ws-landing .ws-library-card,
+.ws-landing .ws-clause,
+.ws-landing .ws-clause-form {
+  border-radius: var(--ws-radius);
+}
+
+.ws-landing .ws-matter-card,
+.ws-landing .ws-library-card,
+.ws-landing .ws-clause,
+.ws-landing .ws-matter-form,
+.ws-landing .ws-clause-form {
+  background: var(--bg-surface);
+  box-shadow: var(--ws-shadow);
+}
+
+.ws-files-box .ws-browser {
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-files-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.ws-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.ws-filter-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ws-landing .ws-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--bg-surface);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.ws-landing .ws-filter:focus,
+.ws-landing .ws-filter:focus-visible {
+  border-color: var(--bg-surface);
+  outline: none;
+}
+.ws-landing .ws-filter:hover {
+  background: var(--ws-gray-100);
+  border-color: var(--ws-gray-100);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.ws-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-surface);
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: var(--z-popover);
+}
+
+.ws-landing .ws-filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.ws-landing .ws-filter-option:hover,
+.ws-landing .ws-filter-option:focus-visible {
+  background: var(--ws-gray-100);
+}
+.ws-files-box .ws-grid-items,
+.ws-files-box .ws-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar,
+.ws-files-box .ws-search-results::-webkit-scrollbar {
+  width: 4px;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar-track,
+.ws-files-box .ws-search-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar-thumb,
+.ws-files-box .ws-search-results::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: var(--r-pill);
+}
+
+.ws-landing .ws-views {
+  gap: 48px;
+}
+
+.ws-status-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ws-item-actions:has(.ws-status-anchor.is-open) {
+  opacity: 1;
+}
+
+.ws-filter-menu.ws-status-menu {
+  left: auto;
+  right: 0;
+  min-width: 140px;
+}
+
+.ws-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  width: 106px;
+  padding: 0;
+  justify-content: center;
+}
+
+.ws-filter-menu.ws-draft-menu {
+  left: 0;
+  right: auto;
+  min-width: 180px;
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+}
+
+.ws-import-card .ws-card-head {
+  padding-left: 3px;
+}
+
+/* ── Solid actions on the landing pages ──────────────────────────────────────
+   Five successive passes used to append a colour rule here instead of editing
+   the one above it, and the result was eleven rules across four blocks fighting
+   each other, nine of them carrying !important purely to win that fight. The
+   computed outcome was only ever these two shapes; they are now stated once,
+   and the ordering alone resolves them, so no rule here needs !important.
+
+   SOLID  -- a filled accent pill whose LABEL acknowledges the hover, rather
+   than the fill changing. Card buttons, the draft box's head, Upload, and the
+   "All models" button in the empty state. This was already the shape
+   .ws-upload-to-workspace used; the others now agree with it.
+
+   PROMOTING -- quiet at rest, accent once pointed at. Only Upload/New folder
+   in a toolbar, which sits on a busy toolbar and should not shout from it.
+   Declared second so it wins for the toolbar case without a specificity
+   trick: `.ws-toolbar-actions` makes it one class more specific anyway. */
+.ws-card-buttons .ws-pill,
+.ws-draft-box .ws-card-head,
+.ws-landing .ws-create-folder {
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+}
+.ws-card-buttons .ws-pill:hover:not(:disabled),
+.ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled),
+.ws-draft-box:hover:not(:disabled) .ws-card-head,
+.ws-landing .ws-create-folder:hover:not(:disabled),
+.ws-landing .ws-files-box:hover .ws-create-folder:not(:disabled) {
+  background: var(--accent);
+  color: var(--ws-on-accent);
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  background: var(--ws-fill);
+  color: var(--text-primary);
+}
+.ws-landing .ws-toolbar-actions .ws-create-folder:hover:not(:disabled),
+.ws-landing .ws-toolbar-actions .ws-create-folder:active:not(:disabled) {
+  background: var(--accent);
+  color: var(--ws-on-accent);
+}
+
+/* ------------------------------------------------------ tiles and list */
+
+.ws-toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.ws-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ws-landing .ws-view-btn,
+.vault .ws-view-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 28px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ws-landing .ws-view-btn:hover,
+.vault .ws-view-btn:hover { background: var(--ws-gray-100); color: var(--text-primary); }
+.ws-landing .ws-view-btn.is-on,
+.vault .ws-view-btn.is-on { background: var(--ws-gray-200); color: var(--text-primary); }
+
+/* Checkbox, shared by tiles and rows. */
+.ws-landing .ws-check {
+  position: static;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--ws-line-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  color: var(--ws-on-accent);
+  opacity: 1;
+}
+.ws-landing .ws-check-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Three dots trigger. */
+.ws-item-menu {
+  position: relative;
+  display: inline-flex;
+}
+.ws-landing .ws-dots {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ws-landing .ws-dots:hover,
+.ws-item-menu.is-open .ws-dots {
+  background: var(--ws-gray-100);
+}
+
+.ws-filter-menu.ws-actions-menu {
+  left: auto;
+  right: 0;
+  min-width: 170px;
+}
+.ws-filter-menu.ws-actions-menu.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+/* Destructive entries (Remove, Delete) read as such, in the status palette. */
+.ws-landing .ws-filter-option.is-danger { color: var(--danger-fg); }
+.ws-landing .ws-filter-option.is-danger:hover { background: var(--danger-quiet); }
+
+.ws-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--ws-gray-200);
+}
+
+/* Compact tiles. */
+/* Fixed-width tracks, centred as a block: with `1fr` tracks a row of one or
+   two tiles hugged the left edge of a wide panel. `auto-fit` (not auto-fill)
+   drops the empty tracks, so the grid sits in the
+   middle of the panel whatever its count, with equal margins either side. */
+.ws-files-box .ws-grid-items.ws-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: 2px 6px var(--sp-4) 2px;
+}
+
+.ws-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.ws-tile:hover { background: var(--ws-gray-100); }
+.ws-tile-selected,
+.ws-tile-selected:hover { border-color: var(--accent); }
+.ws-tile-drop { border-color: var(--accent); background: var(--ws-gray-100); }
+
+.ws-tile-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 26px;
+}
+
+.ws-landing .ws-tile-open,
+.ws-landing .ws-tile-up,
+.vault .ws-tile-open,
+.vault .ws-tile-up {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.ws-landing .ws-tile-up,
+.vault .ws-tile-up {
+  flex-direction: row;
+  padding: 12px 14px;
+  border: 1px dashed var(--ws-line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.ws-tile-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  background: var(--ws-gray-100);
+  color: var(--text-secondary);
+}
+.ws-tile:hover .ws-tile-icon { background: var(--bg-surface); }
+
+.ws-tile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.ws-tile-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-tile-meta {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ws-tile .ws-chip {
+  align-self: flex-start;
+  margin-left: 4px;
+}
+
+/* The four file-type tint rules that used to sit here (.ws-icon-pdf red,
+   .ws-icon-docx blue, and so on) are gone: they were dead. The "Monochrome
+   icons" block at the end of this file lists the same four selectors at the
+   same specificity and later in source order, so it won every time and every
+   icon rendered black or white regardless. Monochrome is the decision; this
+   was the contradiction left behind. */
+.ws-icon-txt { color: var(--text-secondary); }
+.ws-icon-folder { color: var(--text-muted); }
+
+.ws-star {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  fill: var(--accent);
+}
+
+/* Status chip. */
+.ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.ws-chip-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+
+/* Status dots are shapes, not hues, so they read the same in monochrome,
+   in high contrast and to anyone who can't tell colours apart; the chip's
+   own words still name the state.
+     done / ready     ●  solid
+     in progress      ◐  half
+     not yet          ○  ring (the default above)
+     failed           ⊘  ring with a stroke through it */
+.ws-chip-completed .ws-chip-dot,
+.models-status-active .ws-chip-dot,
+.models-status-installed .ws-chip-dot,
+.models-fit-good .ws-chip-dot,
+.vault-chip-indexed .ws-chip-dot {
+  background: var(--text-heading);
+  box-shadow: none;
+}
+.ws-chip-in_review .ws-chip-dot,
+.models-status-busy .ws-chip-dot,
+.models-fit-slow .ws-chip-dot,
+.vault-chip-pending .ws-chip-dot {
+  background: linear-gradient(90deg, var(--text-heading) 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1.5px var(--text-heading);
+}
+.vault-chip-failed .ws-chip-dot {
+  background: linear-gradient(135deg, transparent 43%, var(--text-heading) 43% 57%, transparent 57%);
+  box-shadow: inset 0 0 0 1.5px var(--text-heading);
+}
+
+/* List. */
+.ws-file-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-list-head,
+.ws-list-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 3fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.4fr) 40px;
+  align-items: center;
+  column-gap: var(--sp-3);
+  padding: 0 8px;
+}
+
+.ws-list-head {
+  height: 36px;
+  border-bottom: 1px solid var(--ws-gray-200);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+
+.ws-files-box .ws-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ws-files-box .ws-list-body::-webkit-scrollbar { width: 4px; }
+.ws-files-box .ws-list-body::-webkit-scrollbar-track { background: transparent; }
+.ws-files-box .ws-list-body::-webkit-scrollbar-thumb { background: var(--accent); border-radius: var(--r-pill); }
+
+.ws-list-row {
+  height: 48px;
+  border-bottom: 1px solid var(--ws-gray-200);
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  transition: background var(--dur-1) var(--ease-out);
+}
+.ws-list-row:hover { background: var(--ws-gray-100); }
+.ws-list-selected,
+.ws-list-selected:hover { background: var(--ws-gray-100); }
+.ws-list-drop { background: var(--ws-gray-200); }
+.ws-list-up { cursor: pointer; color: var(--text-secondary); }
+
+.ws-landing .ws-list-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+.ws-list-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-list-icon { flex: 0 0 auto; }
+.ws-list-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.ws-list-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.ws-tile-icon.ws-tile-icon-file,
+.ws-tile:hover .ws-tile-icon.ws-tile-icon-file {
+  width: 36px;
+  height: 40px;
+  background: transparent;
+}
+.ws-tile-icon-file svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+
+.ws-list-row,
+.ws-landing .ws-list-name {
+  font-size: var(--fs-md);
+}
+
+.ws-list-icon-file {
+  display: inline-flex;
+  align-items: center;
+}
+.ws-list-icon-file svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+
+/* ---------------------------------------------------- "From Vault" mode */
+
+/* One timing for every part of the mode change, so the fades, the glide and
+   the content swap read as a single movement. */
+.ws-files-box {
+  --ws-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ws-dur: var(--dur-anim);
+}
+
+/* Left side: the filters and the Upload to Workspace button share one cell
+   and cross-fade in place. */
+.ws-toolbar-start {
+  display: grid;
+  align-items: center;
+  min-width: 0;
+}
+.ws-swap {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear 0s;
+}
+.ws-swap-vault {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear var(--ws-dur);
+}
+.ws-files-toolbar.is-vault .ws-swap-filters {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear var(--ws-dur);
+}
+.ws-files-toolbar.is-vault .ws-swap-vault {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 80ms, 80ms, 0s;
+}
+
+.ws-landing .ws-upload-to-workspace {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 20px;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, opacity 200ms ease;
+}
+.ws-landing .ws-upload-to-workspace:hover:not(:disabled) {
+  color: var(--ws-on-accent);
+}
+.ws-landing .ws-upload-to-workspace:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Right side: Upload and Folder collapse to nothing, so the view switch
+   glides to the right edge as the space closes. */
+.ws-toolbar-end {
+  gap: 0;
+}
+.ws-toolbar-collapse {
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+  margin-left: var(--sp-3);
+  overflow: hidden;
+  padding: 2px 0;
+  opacity: 1;
+  transition:
+    max-width var(--ws-dur) var(--ws-ease),
+    margin-left var(--ws-dur) var(--ws-ease),
+    opacity calc(var(--ws-dur) * 0.6) var(--ws-ease);
+}
+.ws-files-toolbar.is-vault .ws-toolbar-collapse {
+  max-width: 0;
+  margin-left: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Content swap: whatever mounts in the box eases in. */
+.ws-mode-in {
+  animation: ws-mode-in var(--ws-dur, var(--dur-anim)) var(--ws-ease, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+@keyframes ws-mode-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ws-vault-state {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+
+.ws-tile-disabled,
+.ws-list-disabled {
+  opacity: 0.45;
+}
+.ws-landing .ws-check:disabled {
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-swap,
+  .ws-swap-vault,
+  .ws-toolbar-collapse,
+  .ws-mode-in {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Tile ⋯ menu opens beside the dots, to their left, its first row level
+   with the dots. */
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--side {
+  top: 0;
+  bottom: auto;
+  left: auto;
+  right: calc(100% + 6px);
+}
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--side.is-up {
+  top: auto;
+  bottom: 0;
+}
+
+/* Tile icon sits at the tile's bottom-right corner; name and details on the left. */
+.ws-landing .ws-tile:not(.ws-tile-up),
+.vault .ws-tile:not(.ws-tile-up) {
+  padding-right: 56px;
+  min-height: 104px;
+}
+.ws-landing .ws-tile:not(.ws-tile-up) .ws-tile-top,
+.vault .ws-tile:not(.ws-tile-up) .ws-tile-top {
+  margin-right: -46px;
+}
+.ws-landing .ws-tile:not(.ws-tile-up) .ws-tile-icon,
+.vault .ws-tile:not(.ws-tile-up) .ws-tile-icon {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+}
+
+/* List ⋮ menu: pinned to the window, to the right of the dots. */
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--fixed {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  z-index: var(--z-popover);
+}
+
+/* Returning from Vault mode runs at the same pace as entering it: the filters
+   wait for the Vault button to fade, just as the button waits on the way in,
+   and Upload/Folder fade over the full duration instead of 60% of it. */
+.ws-files-toolbar:not(.is-vault) .ws-swap-filters {
+  transition-delay: 80ms, 80ms, 0s;
+}
+.ws-toolbar-collapse,
+.ws-files-toolbar.is-vault .ws-toolbar-collapse {
+  transition:
+    max-width var(--ws-dur) var(--ws-ease),
+    margin-left var(--ws-dur) var(--ws-ease),
+    opacity var(--ws-dur) var(--ws-ease);
+}
+.ws-files-toolbar:not(.is-vault) .ws-toolbar-collapse {
+  transition-delay: 0s, 0s, 80ms;
+}
+
+/* Vault-mode items sit exactly where workspace items sit: the content swap
+   fades in place rather than sliding, and vault tiles keep the space the
+   workspace ⋯ button takes. */
+@keyframes ws-mode-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ws-dots-placeholder {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+}
+
+/* Collapse to and from the measured width, so closing and reopening both
+   take the full duration. */
+.ws-toolbar-collapse {
+  max-width: var(--ws-collapse-w, 420px);
+}
+
+/* -- Dark mode: nothing to do ----------------------------------------------
+   A ~190-line `:root[data-theme="dark"] .ws-landing ...` mirror used to sit
+   here, re-stating a background, a text colour and a shadow for every box,
+   pill, menu, tile, list row, chip and scrollbar on these four pages. It
+   existed only because the light rules above were written as literal greys
+   instead of roles, so there was no other way to make the pages dark.
+
+   The light rules now name role tokens, and every role token is defined in
+   both themes (tokens.css, rule #1), so dark mode resolves on its own and
+   the mirror is deleted rather than ported.
+
+   Two visible consequences, both of them the convergence this was for:
+   these pages now use the app's own dark ramp instead of a second one that
+   ran a step lighter at every level; and the primary pills follow the global
+   rule for a primary action -- the fill that contrasts hardest with the
+   canvas, so near-white with dark text in dark mode, as on every other
+   primary button in the app, rather than the dark-grey-until-hover they had
+   here alone. */
+
+
+/* ── Low-cost motion ─────────────────────────────────────────────────────────
+   Vault mode's right-hand glide, redone with transform and opacity only.
+   Upload and Folder keep their space and fade; the view switch slides right
+   by exactly that width. Nothing is re-laid-out while it moves, so the
+   graphics card does all the work. */
+.ws-toolbar-end {
+  position: relative;
+}
+.ws-toolbar-collapse,
+.ws-files-toolbar.is-vault .ws-toolbar-collapse,
+.ws-files-toolbar:not(.is-vault) .ws-toolbar-collapse {
+  max-width: none;
+  margin-left: var(--sp-3);
+  overflow: visible;
+  transition: opacity var(--ws-dur) var(--ws-ease);
+  transition-delay: 0s;
+}
+.ws-files-toolbar:not(.is-vault) .ws-toolbar-collapse {
+  transition-delay: 80ms;
+}
+.ws-files-toolbar.is-vault .ws-toolbar-collapse {
+  opacity: 0;
+  pointer-events: none;
+}
+.ws-view-switch {
+  transition: transform var(--ws-dur, var(--dur-anim)) var(--ws-ease, cubic-bezier(0.22, 1, 0.36, 1));
+  will-change: transform;
+}
+.ws-files-toolbar.is-vault .ws-view-switch {
+  transform: translateX(calc(var(--ws-collapse-w, 0px) + var(--sp-3)));
+}
+.ws-swap,
+.ws-mode-in {
+  will-change: opacity, transform;
+}
+/* Upload menu: opens beside the files box, first row level with the button. */
+.ws-upload-menu {
+  position: relative;
+  display: inline-flex;
+}
+.ws-filter-menu.ws-upload-menu__list {
+  min-width: 220px;
+}
+.ws-landing .ws-upload-menu__soon {
+  color: var(--text-secondary);
+  cursor: default;
+}
+.ws-landing .ws-upload-menu__soon:hover {
+  background: transparent;
+}
+.ws-soon {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--ws-fill);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+/* Library page: the Library view inside the same white box as Workspace,
+   scrolling within it so the page itself stays still. */
+.ws-files-box.library-box {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ws-files-box.library-box::-webkit-scrollbar { width: 4px; }
+.ws-files-box.library-box::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-pill);
+}
+
+/* "Included" marks a reference document shipped with the app. */
+.ws-library-included {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--r-xs);
+  background: var(--ws-fill);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+}
+
+/* Library tiles and list reuse the Workspace file browser. The page box
+   scrolls, so these do not need their own scroll area. */
+.library-box .ws-library-tiles,
+.library-box .ws-library-list .ws-list-body {
+  overflow: visible;
+}
+.ws-library-head .ws-library-view-switch {
+  margin-left: auto;
+}
+.ws-library-list .ws-list-name .ws-library-included {
+  flex: 0 0 auto;
+  margin-left: 6px;
+}
+
+/* ── Monochrome icons ────────────────────────────────────────────────────────
+   Every file, folder and document icon is flat and monochrome: ink in the
+   light theme, paper in the dark. No colour tints, fills or shadows.
+
+   One rule rather than a light rule plus a dark override, because that is
+   exactly what --text-primary already means -- near-black on a light canvas,
+   near-white on a dark one. */
+.ws-icon-pdf,
+.ws-icon-docx,
+.ws-icon-xlsx,
+.ws-icon-pptx,
+.ws-icon-txt,
+.ws-icon-folder,
+.ws-tile-icon,
+.ws-list-icon,
+.ws-tile-icon-file,
+.ws-list-icon-file {
+  color: var(--text-primary);
+}
+.ws-tile-icon-file svg,
+.ws-list-icon-file svg {
+  filter: none;
+}
+.ws-tile-icon:not(.ws-tile-icon-file),
+.ws-tile:hover .ws-tile-icon:not(.ws-tile-icon-file) {
+  background: transparent;
+}
+
+/* ── Name dialog (Create folder, new document names) ─────────────────────────
+   The app's own card in place of the browser prompt: a surface card, a field
+   like the search bar, and pill buttons. Both themes come from the role
+   tokens -- the twelve dark overrides that used to follow are gone, and the
+   scrim, shadow and z-index now match every other modal in the app instead
+   of being a hand-picked rgba, shadow and 2000. */
+.name-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  background: var(--bg-overlay);
+}
+.name-dialog {
+  width: min(420px, calc(100vw - 48px));
+  padding: 22px;
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+.name-dialog__title {
+  margin: 0 0 14px;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-regular);
+  color: var(--text-heading);
+}
+.name-dialog__label {
+  margin: -8px 0 12px;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.name-dialog__input {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--bg-field);
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  outline: none;
+}
+.name-dialog__input:focus {
+  border-color: var(--accent);
+  background: var(--bg-field-focus);
+}
+.name-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: 18px;
+}
+.name-dialog__btn {
+  height: 34px;
+  padding: 0 18px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.name-dialog__btn:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+.name-dialog__btn--primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.name-dialog__btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--text-on-accent);
+}
+.name-dialog__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* "Select all": a checkbox with its label in the toolbar, or the checkbox
+   alone in a list header. */
+.ws-landing .ws-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px 0 10px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ws-landing .ws-select-all:hover:not(:disabled) {
+  background: var(--ws-gray-100);
+}
+.ws-landing .ws-select-all:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ws-landing .ws-select-all--compact {
+  height: 26px;
+  padding: 0 5px;
+}
+.ws-select-all .ws-check {
+  pointer-events: none;
+}
+
+/* Library toolbar: view switch and Upload on the right, as on the other pages. */
+.ws-library > .ws-files-toolbar {
+  margin-bottom: var(--sp-3);
+}
+.ws-library .ws-toolbar-end {
+  margin-left: auto;
+}
+/* The Upload group offset, wherever the view-switch + Upload pair appears
+   (Library, Vault): kept on the shared pair classes rather than the page so
+   the two toolbars compute the same gaps. */
+.ws-toolbar-end .ws-library-actions {
+  margin-left: var(--sp-3);
+}
+
+/* ── Responsive, symmetric page layout ───────────────────────────────────────
+   The app root already reserves the sidebar's CURRENT width (see
+   ".app-root[data-sidebar]" in App.css), so a page is only ever laid out in the
+   space the sidebar leaves. It must not reserve the sidebar again: doing so is
+   what used to push every landing page ~110px right of centre while the
+   sidebar was closed. Equal gutters on both sides; the 958px column centres in
+   what remains and narrows with the window. */
+/* The padding this block used to re-declare (and re-declare again for the dark
+   theme, purely to out-specify the deleted mirror) now lives in the single
+   `.ws-landing` block above. */
+
+/* Nothing in the column is squeezed on a short window: only the files box
+   gives up height, and the page scrolls once even that reaches its minimum. */
+.ws-landing > * {
+  flex-shrink: 0;
+}
+.ws-landing > .ws-files-box {
+  flex: 1 0 320px;
+}
+
+/* The two cards stay side by side at every desktop width (they used to stack
+   below 1180px). Only a genuinely narrow window stacks them. */
+@media (max-width: 640px) {
+  .ws-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.ws-files-toolbar {
+  row-gap: var(--sp-2);
+}
+@media (max-width: 980px) {
+  .ws-landing {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+  .ws-landing .ws-landing-title {
+    font-size: var(--fs-2xl);
+  }
+}
+
+
+/* ── Vault tiles ─────────────────────────────────────────────────────────
+   The Vault's tile carries an indexing chip the Workspace's does not: a file
+   that is stored but unreadable is invisible to chat, and the view you happen
+   to prefer must not decide whether you are told that. */
+.vault-tile .ws-chip {
+  align-self: flex-start;
+  margin-left: 4px;
+}
+
+
+/* ── Action cards (Workspace landing) ────────────────────────────────────────
+   "Add documents" and "New draft" are one pair with one anatomy:
+
+     [glyph]  Title                                  [actions]
+              One line of description
+
+   Same height, same insets, glyph well and actions mirrored at the two
+   ends. They used to be two different shapes — a heading over buttons, and
+   a button over a sentence with a literal "+" for an icon. Declared last in
+   the file so it settles every earlier .ws-card / .ws-draft-box rule without
+   !important. */
+.ws-cards .ws-action-card {
+  display: grid;
+  /* Two rows: glyph + copy, then the actions under the copy. Side by side,
+     each card is half the column, too narrow to keep its buttons on the
+     title's line without crushing the description. */
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'glyph copy'
+    '.     actions';
+  align-items: center;
+  column-gap: var(--sp-3);
+  row-gap: var(--sp-3);
+  width: 100%;
+  min-height: 76px;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  transition: border-color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+.ws-cards .ws-action-card:hover:not(:disabled) { border-color: var(--border-strong); }
+.ws-cards .ws-draft-box:active:not(:disabled) { transform: scale(0.99); transition-duration: 60ms; }
+
+.ws-action-card__glyph {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-secondary);
+}
+.ws-action-card__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ws-cards .ws-action-card .ws-card-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+}
+.ws-cards .ws-action-card .ws-card-text {
+  display: block;
+  min-height: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-action-card__glyph { grid-area: glyph; }
+.ws-action-card__copy { grid-area: copy; }
+.ws-cards .ws-action-card .ws-card-buttons {
+  grid-area: actions;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+/* The draft card's "Choose format" is a label inside the card's own button,
+   styled as the same pill as its neighbour's actions. */
+.ws-cards .ws-draft-box .ws-card-buttons .ws-pill { pointer-events: none; }
+
+/* Empty file panel — centred in the space the files would take. */
+.ws-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-height: 240px;
+  padding: var(--sp-8) var(--sp-4);
+  text-align: center;
+}
+.ws-empty__glyph {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: var(--sp-2);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-muted);
+}
+.ws-empty__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+}
+.ws-empty__text {
+  max-width: 360px;
+  text-wrap: balance;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+}
+
+/* Card actions: quiet neutral capsules, not solid ink. Two black pills side
+   by side were the heaviest thing on the page and competed with each other;
+   a neutral fill keeps them clearly pressable without shouting. Hover is a
+   one-step fill shift, press is the app-wide springy shrink. */
+.ws-cards .ws-action-card .ws-card-buttons .ws-pill,
+.ws-cards .ws-action-card .ws-card-buttons .ws-pill:hover:not(:disabled),
+.ws-cards .ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled),
+.ws-cards .ws-draft-box:hover:not(:disabled) .ws-card-buttons .ws-pill {
+  height: 30px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  gap: 6px;
+  transition: background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+.ws-cards .ws-action-card .ws-card-buttons .ws-pill:hover:not(:disabled),
+.ws-cards .ws-draft-box:hover:not(:disabled) .ws-card-buttons .ws-pill {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.ws-cards .ws-action-card .ws-card-buttons .ws-pill:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 60ms;
+}
+
+/* ── File and folder glyph slots — one size everywhere ─────────────────────
+   Every file and folder on Workspace, Vault, Library and the Vault picker is
+   drawn by the shared glyph (components/FileBrandIcon.tsx), which is square.
+   So every slot is the same square too: 36px in tiles, 20px in list rows,
+   files and folders alike, with no fill or shadow of its own — the glyph is
+   the whole picture. */
+.ws-tile .ws-tile-icon,
+.ws-tile:hover .ws-tile-icon,
+.ws-tile .ws-tile-icon.ws-tile-icon-file,
+.ws-tile:hover .ws-tile-icon.ws-tile-icon-file {
+  width: 36px;
+  height: 36px;
+  background: transparent;
+}
+.ws-list-icon.ws-icon-folder,
+.ws-list-icon-file {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+/* The two file-icon sizes (FILE_ICON in FileBrandIcon.tsx): the grid tile's
+   icon box fits the 44px grid icon; list rows size to the 20px icon. */
+.ws-tile-icon,
+.ws-tile-icon.ws-tile-icon-file,
+.ws-tile:hover .ws-tile-icon.ws-tile-icon-file {
+  width: 44px;
+  height: 44px;
+}
+.ws-list-icon,
+.ws-list-icon-file {
+  width: 20px;
+  height: 20px;
+  justify-content: center;
+}
+
+/* The empty state's one action, under its line. */
+.ws-empty__action { margin-top: var(--sp-3); }
+
+/* Empty state at the SAME height on Vault, Workspace and Library: a fixed
+   offset below the toolbar instead of centring in containers of different
+   heights (which put it high on one page and low on another). */
+.ws-empty:not(#_) {
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  min-height: 0;
+  margin-top: 18vh;
+  padding: 0 var(--sp-4);
+}
+
+/* ── File-type filter ─────────────────────────────────────────────────────
+   The dropdown wears the capsule's own surface (button fill, radius and
+   lift) so capsule and menu feel like one control, in both themes. */
+.ws-type-menu:not(#_) {
+  min-width: 220px;
+  padding: 6px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: var(--cap-shadow), 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+[data-theme='dark'] .ws-type-menu:not(#_) { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.ws-type-option:not(#_) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.ws-type-option:not(#_):hover { background: var(--cap-primary-bg-hover); }
+[data-theme='dark'] .ws-type-option:not(#_):hover { background: #3d3d3d; }
+.ws-type-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+}
+.ws-type-check.is-on { background: currentColor; }
+.ws-type-check.is-on svg { color: var(--cap-primary-bg); }
+.ws-type-name { flex: 1; min-width: 0; }
+.ws-type-count { color: color-mix(in srgb, currentColor 55%, transparent); font-size: var(--fs-xs); }
+.ws-type-empty { margin: 6px 10px; font-size: var(--fs-xs); opacity: 0.6; }

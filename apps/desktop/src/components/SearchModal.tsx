@@ -140,7 +140,13 @@ export const SearchModal: React.FC<SearchModalProps> = ({
 
   return (
     <div className="search-modal-overlay" onClick={onClose}>
-      <div className="search-modal-container" onClick={e => e.stopPropagation()}>
+      <div
+        className="search-modal-container"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search"
+        onClick={e => e.stopPropagation()}
+      >
         {/* Header with Search Input */}
         <div className="search-modal-header">
           <div className="search-modal-input-wrapper">

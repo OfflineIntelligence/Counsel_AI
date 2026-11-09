@@ -6,6 +6,21 @@ import type { Message, ConversationSummary } from '../chat';
 // Mock fetch globally
 global.fetch = vi.fn();
 
+// The API checks GET /healthz before chat requests. Answer it as a ready
+// backend and give every other request the response the test supplies.
+function mockFetch(response: unknown) {
+  (global.fetch as any).mockImplementation((url: string) =>
+    String(url).endsWith('/healthz')
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ status: 'ready' }), text: async () => '{"status":"ready"}' })
+      : Promise.resolve(response),
+  );
+}
+
+/** The first fetch call other than the readiness check: the request itself. */
+function requestCall(): any[] {
+  return (global.fetch as any).mock.calls.find((c: any[]) => !String(c[0]).endsWith('/healthz'));
+}
+
 describe('Chat API', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -44,7 +59,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -73,7 +88,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -85,7 +100,7 @@ describe('Chat API', () => {
         // Expected
       }
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       expect(callArgs[1].headers['Content-Type']).toBe('application/json');
     });
 
@@ -100,7 +115,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -112,7 +127,7 @@ describe('Chat API', () => {
         // Expected
       }
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       const body = JSON.parse(callArgs[1].body);
 
       expect(body.messages).toEqual(messages);
@@ -130,7 +145,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -142,7 +157,7 @@ describe('Chat API', () => {
         // Expected
       }
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       const body = JSON.parse(callArgs[1].body);
 
       expect(body.max_tokens).toBe(2000);
@@ -159,7 +174,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -183,7 +198,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -195,7 +210,7 @@ describe('Chat API', () => {
         // Expected
       }
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       const body = JSON.parse(callArgs[1].body);
 
       expect(body.messages.length).toBe(3);
@@ -217,7 +232,7 @@ describe('Chat API', () => {
         },
       ];
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ conversations: mockConversations }),
       });
@@ -228,7 +243,7 @@ describe('Chat API', () => {
     });
 
     it('makes GET request to conversations endpoint', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ conversations: [] }),
       });
@@ -241,7 +256,7 @@ describe('Chat API', () => {
     });
 
     it('handles empty conversations list', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ conversations: [] }),
       });
@@ -258,7 +273,7 @@ describe('Chat API', () => {
     });
 
     it('throws error on non-200 response', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
@@ -277,7 +292,7 @@ describe('Chat API', () => {
         title: 'New Conversation',
       };
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => mockConversation,
       });
@@ -289,7 +304,7 @@ describe('Chat API', () => {
     });
 
     it('makes POST request to create endpoint', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'new', title: 'New' }),
       });
@@ -305,7 +320,7 @@ describe('Chat API', () => {
     });
 
     it('handles creation error', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 400,
       });
@@ -318,7 +333,7 @@ describe('Chat API', () => {
 
   describe('deleteConversation', () => {
     it('deletes conversation successfully', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         status: 204,
       });
@@ -327,7 +342,7 @@ describe('Chat API', () => {
     });
 
     it('makes DELETE request with correct ID', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         status: 204,
       });
@@ -343,7 +358,7 @@ describe('Chat API', () => {
     });
 
     it('throws error when deletion fails', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 404,
       });
@@ -362,7 +377,7 @@ describe('Chat API', () => {
 
   describe('updateConversationTitle', () => {
     it('updates conversation title successfully', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: 'Updated Title' }),
       });
@@ -373,34 +388,34 @@ describe('Chat API', () => {
     });
 
     it('makes PUT request with new title', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: 'New Title' }),
       });
 
       await updateConversationTitle('chat-123', 'New Title');
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       expect(callArgs[0]).toContain('chat-123');
       expect(callArgs[1].method).toBe('PUT');
     });
 
     it('sends title in request body', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: 'New Title' }),
       });
 
       await updateConversationTitle('chat-123', 'New Title');
 
-      const callArgs = (global.fetch as any).mock.calls[0];
+      const callArgs = requestCall();
       const body = JSON.parse(callArgs[1].body);
 
       expect(body.title).toBe('New Title');
     });
 
     it('handles empty title', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: '' }),
       });
@@ -413,7 +428,7 @@ describe('Chat API', () => {
     it('handles very long titles', async () => {
       const longTitle = 'A'.repeat(1000);
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: longTitle }),
       });
@@ -426,7 +441,7 @@ describe('Chat API', () => {
     it('handles special characters in title', async () => {
       const specialTitle = '<script>alert("xss")</script>';
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: 'chat-123', title: specialTitle }),
       });
@@ -437,7 +452,7 @@ describe('Chat API', () => {
     });
 
     it('throws error on failure', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 404,
       });
@@ -456,7 +471,7 @@ describe('Chat API', () => {
     });
 
     it('handles malformed JSON responses', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => {
           throw new Error('Invalid JSON');
@@ -467,7 +482,7 @@ describe('Chat API', () => {
     });
 
     it('handles 500 server errors', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
@@ -477,7 +492,7 @@ describe('Chat API', () => {
     });
 
     it('handles 401 unauthorized', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: false,
         status: 401,
         statusText: 'Unauthorized',
@@ -491,14 +506,14 @@ describe('Chat API', () => {
 
   describe('Request Formatting', () => {
     it('formats conversation title updates correctly', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         json: async () => ({ id: '1', title: 'Updated' }),
       });
 
       await updateConversationTitle('1', 'Updated');
 
-      const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+      const body = JSON.parse(requestCall()[1].body);
       expect(body).toHaveProperty('title');
       expect(typeof body.title).toBe('string');
     });
@@ -514,7 +529,7 @@ describe('Chat API', () => {
         },
       });
 
-      (global.fetch as any).mockResolvedValue({
+      mockFetch({
         ok: true,
         body: mockResponse,
       });
@@ -526,7 +541,7 @@ describe('Chat API', () => {
         // Expected
       }
 
-      const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+      const body = JSON.parse(requestCall()[1].body);
       expect(body).toHaveProperty('model');
       expect(body).toHaveProperty('messages');
       expect(body).toHaveProperty('session_id');

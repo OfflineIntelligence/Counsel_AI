@@ -1,0 +1,806 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   SURFACES — the composite primitives
+   ═══════════════════════════════════════════════════════════════════════════
+
+   primitives.css owns the atoms: a button, a field, a badge, a toast. This
+   file owns the things BUILT from them — a dialog, a data table, a stepped
+   progress list, an empty state, a menu. They earn a file of their own for
+   two reasons:
+
+   1. They are the shapes every new surface in this product needs (the home
+      state, the assistant panel, message rendering, review lists). Written
+      once here, a feature becomes a composition rather than another 300 lines
+      of bespoke CSS — which is how App.css reached 3,900 lines.
+
+   2. They are where the visual language is most at risk of drifting. A table
+      header that picks its own grey, a dialog that invents a radius, and the
+      system is gone. Nothing in this file names a colour, radius, duration or
+      font literally; every value resolves through tokens.css, so both themes
+      and any future retune come for free.
+
+   ── MOTION ────────────────────────────────────────────────────────────────
+   Two rules, and they are not negotiable:
+
+   • Every animation runs var(--dur-anim) — entrance AND exit. One
+     cadence everywhere is what keeps a dense product feeling composed.
+   • Transform and opacity ONLY. Never width/height/top/left/margin, never
+     `transition: all`. Layout-animating properties are recalculated on the
+     main thread every frame; transform and opacity are composited. On a Tauri
+     webview driving a local model, that is the difference between a panel
+     that glides and one that stutters while tokens stream.
+
+   Both rules are carried by the shared keyframes below, so a caller that uses
+   them cannot get either wrong.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   SHARED KEYFRAMES
+   Named for the GESTURE, not the component, so they compose. Exits are real
+   keyframes rather than a reversed entrance because a caller needs to run one
+   on demand — an element leaving must finish moving before it is unmounted.
+   ─────────────────────────────────────────────────────────────────────────── */
+@keyframes ui-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ui-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes ui-rise-in  { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ui-rise-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(8px); } }
+@keyframes ui-pop-in   { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes ui-pop-out  { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(6px) scale(0.985); } }
+@keyframes ui-slide-right-in  { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes ui-slide-right-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(16px); } }
+
+/* A single utility so a caller never re-types the duration. Compose as
+   `class="ui-anim ui-anim--rise"`; add `is-leaving` to play the exit. */
+.ui-anim        { animation-duration: var(--dur-anim); animation-timing-function: var(--ease-out); animation-fill-mode: both; }
+.ui-anim--fade  { animation-name: ui-fade-in; }
+.ui-anim--rise  { animation-name: ui-rise-in; }
+.ui-anim--pop   { animation-name: ui-pop-in; }
+.ui-anim--slide { animation-name: ui-slide-right-in; }
+.ui-anim--fade.is-leaving  { animation-name: ui-fade-out; }
+.ui-anim--rise.is-leaving  { animation-name: ui-rise-out; }
+.ui-anim--pop.is-leaving   { animation-name: ui-pop-out; }
+.ui-anim--slide.is-leaving { animation-name: ui-slide-right-out; }
+
+/* Stagger helper for lists that arrive together (home cards, suggestions).
+   The delay is capped: past ~6 items a stagger stops reading as choreography
+   and starts reading as lag. */
+.ui-stagger > *                  { animation-delay: 0ms; }
+.ui-stagger > *:nth-child(2)     { animation-delay: 40ms; }
+.ui-stagger > *:nth-child(3)     { animation-delay: 80ms; }
+.ui-stagger > *:nth-child(4)     { animation-delay: 120ms; }
+.ui-stagger > *:nth-child(5)     { animation-delay: 160ms; }
+.ui-stagger > *:nth-child(n + 6) { animation-delay: 200ms; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DIALOG
+   ═══════════════════════════════════════════════════════════════════════════
+   The app's one modal shape, in two weights:
+
+   `.ui-dialog`       — plain: title, body, actions. Confirmations.
+   `.ui-dialog--hero` — carries a `.ui-dialog__hero` masthead above the body.
+                        This is the announcement / onboarding shape.
+
+   On the hero: the reference for it is a product-tour card with a soft green
+   gradient wash. Green is not available to us — colour in this system is
+   reserved for STATUS, and spending it on decoration is exactly what makes an
+   interface look generic. The equivalent here is achromatic and dynamic: a
+   low-contrast ink wash built from the accent, plus a dot grid, both of which
+   INVERT with the theme for free because they are composed from theme tokens
+   rather than fixed rgba. Dark mode gets a light wash on ink, light mode an
+   ink wash on paper. Same gesture, correct material.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+  background: var(--bg-overlay);
+  animation: ui-fade-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-dialog-scrim.is-leaving { animation-name: ui-fade-out; }
+
+.ui-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 520px);
+  max-height: min(86vh, 760px);
+  overflow: hidden;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sheet);
+  box-shadow: var(--shadow-lg);
+  animation: ui-pop-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-dialog.is-leaving { animation-name: ui-pop-out; }
+.ui-dialog--sm { width: min(100%, 400px); }
+.ui-dialog--lg { width: min(100%, 680px); }
+
+/* ── Hero masthead ─────────────────────────────────────────────────────── */
+.ui-dialog__hero {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 168px;
+  padding: var(--sp-5);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+  /* The wash. --accent-quiet is ink at ~6% in light and paper at ~10% in
+     dark, so this reads as a tinted plane in both without a literal colour. */
+  background:
+    radial-gradient(120% 140% at 18% 0%, var(--accent-quiet) 0%, transparent 62%),
+    radial-gradient(100% 120% at 100% 100%, var(--accent-quiet) 0%, transparent 58%),
+    var(--bg-surface-alt);
+}
+
+/* Dot grid, masked to fade out toward the centre so it frames the content
+   instead of sitting behind it. Pure CSS — no asset to load offline. */
+.ui-dialog__hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(var(--border-strong) 1px, transparent 1px);
+  background-size: 7px 7px;
+  opacity: 0.5;
+  -webkit-mask-image: radial-gradient(70% 70% at 50% 50%, transparent 30%, #000 100%);
+  mask-image: radial-gradient(70% 70% at 50% 50%, transparent 30%, #000 100%);
+  pointer-events: none;
+}
+
+/* Everything the caller puts in the hero sits above the grid. */
+.ui-dialog__hero > * { position: relative; z-index: 1; }
+
+/* The mark at the hero's centre — the app's own glyph, on an ink plate. */
+.ui-dialog__hero-mark {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  box-shadow: var(--shadow-md);
+}
+
+/* Floating caption bubbles, as in the reference — a sample exchange shown
+   rather than described. Positioned absolutely so they overlap the mark. */
+.ui-dialog__hero-bubble {
+  position: absolute;
+  max-width: 190px;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-dialog__hero-bubble--lead  { top: 32%; right: 56%; animation: ui-rise-in var(--dur-anim) var(--ease-out) both; }
+.ui-dialog__hero-bubble--reply { bottom: 30%; left: 56%; animation: ui-rise-in var(--dur-anim) var(--ease-out) 120ms both; }
+
+/* ── Head / body / foot ────────────────────────────────────────────────── */
+.ui-dialog__head { flex: 0 0 auto; padding: var(--sp-5) var(--sp-5) var(--sp-3); }
+.ui-dialog__eyebrow {
+  display: block;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ui-dialog__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+.ui-dialog__subtitle {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+.ui-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--sp-5) var(--sp-5);
+}
+/* Body prose. A dialog's body is usually a control or a list, but when it is
+   a sentence it needs the same measure and colour as the subtitle above it —
+   without this, a bare <p> in a dialog body inherits the page's own size and
+   reads a step too large against the subtitle it follows. */
+.ui-dialog__prose {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  max-width: 60ch;
+}
+
+/* A field-level validation message, under the field it belongs to. Status
+   colour, and small enough not to compete with the field's own text. Paired
+   with aria-invalid + aria-describedby on the input, so it is announced
+   rather than only seen. */
+.ui-dialog__error {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--danger-fg);
+}
+
+.ui-dialog__foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5) var(--sp-5);
+}
+/* Actions sit right; anything before them (a "3 of 4" counter, a checkbox)
+   stays left. */
+.ui-dialog__foot-actions { margin-left: auto; display: flex; gap: var(--sp-2); }
+
+/* Close affordance, pinned to the dialog's corner — over the hero when there
+   is one, which is why it carries its own plate. */
+.ui-dialog__close {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+              color var(--dur-1) var(--ease-out),
+              transform var(--dur-1) var(--ease-out);
+}
+.ui-dialog__close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ui-dialog__close:active { transform: translateY(1px); }
+.ui-dialog__close:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ── Feature list — the hero dialog's body shape ───────────────────────── */
+.ui-featurelist { display: flex; flex-direction: column; gap: var(--sp-4); }
+.ui-feature {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+}
+.ui-feature__icon { display: grid; place-items: center; width: 20px; height: 20px; color: var(--text-secondary); }
+.ui-feature__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+  line-height: var(--lh-snug);
+}
+.ui-feature__desc {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+/* Page dots for a multi-step dialog. */
+.ui-dots { display: flex; gap: var(--sp-1); align-items: center; }
+.ui-dots__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: var(--border-strong);
+  transition: transform var(--dur-2) var(--ease-out),
+              background-color var(--dur-2) var(--ease-out);
+}
+.ui-dots__dot.is-active { background: var(--accent); transform: scale(1.35); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BANNER — an inline, dismissible notice
+   ═══════════════════════════════════════════════════════════════════════════
+   The "N contracts reviewed since your last visit" shape: it belongs to the
+   page rather than floating over it, so it is a full-width hairline row, not
+   a card and not a toast. A toast is for something that just happened; a
+   banner is for a standing condition.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  animation: ui-rise-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-banner.is-leaving { animation-name: ui-rise-out; }
+.ui-banner__icon { flex: 0 0 auto; display: grid; place-items: center; width: 18px; height: 18px; color: var(--text-secondary); }
+.ui-banner__text { flex: 1 1 auto; min-width: 0; }
+/* The trailing half of the sentence, de-emphasised — "…since your last
+   visit". One sentence, two weights, which is cheaper than two elements. */
+.ui-banner__muted { color: var(--text-muted); }
+.ui-banner__actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-1); }
+.ui-banner--success { border-color: var(--success); background: var(--success-quiet); }
+.ui-banner--warning { border-color: var(--warning); background: var(--warning-quiet); }
+.ui-banner--danger  { border-color: var(--danger-border); background: var(--danger-quiet); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEGMENTED CONTROL — "My reviews 17 | All 6"
+   ═══════════════════════════════════════════════════════════════════════════
+   A filter over one list. Distinct from `.ui-tab`, which switches VIEWS: the
+   segmented control keeps you on the same view and narrows what it shows.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px;
+  background: var(--bg-inset);
+  border-radius: var(--r-md);
+}
+.ui-segmented__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+              color var(--dur-1) var(--ease-out);
+}
+.ui-segmented__item:hover { color: var(--text-primary); }
+.ui-segmented__item[aria-selected='true'],
+.ui-segmented__item[aria-checked='true'] {
+  background: var(--bg-surface);
+  color: var(--text-heading);
+  box-shadow: var(--shadow-xs);
+}
+.ui-segmented__item:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+/* The count beside a label. Tabular figures so the control does not resize as
+   the numbers change. */
+.ui-segmented__count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TABLE — the review / checklist list
+   ═══════════════════════════════════════════════════════════════════════════
+   Hairline rows, no zebra striping, no vertical rules. Density comes from a
+   small row height and type size, not from removing padding.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-table-wrap {
+  /* The one place horizontal overflow is allowed, so a wide table scrolls
+     itself instead of the page. */
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+.ui-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.ui-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface-alt);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+.ui-table tbody td {
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+.ui-table tbody tr:last-child td { border-bottom: none; }
+.ui-table tbody tr { transition: background-color var(--dur-1) var(--ease-out); }
+.ui-table tbody tr:hover { background: var(--bg-hover); }
+.ui-table tbody tr[aria-selected='true'] { background: var(--bg-selected); }
+/* A row that opens something. */
+.ui-table--clickable tbody tr { cursor: pointer; }
+/* Right-aligned numeric column. */
+.ui-table .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* A column that should give up its width first. */
+.ui-table .is-shrink { width: 1%; white-space: nowrap; }
+/* Primary cell: the document name, with its type glyph. */
+.ui-table__primary { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.ui-table__primary-name {
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-table__sub { font-size: var(--fs-xs); color: var(--text-muted); }
+
+/* ── Status pill ───────────────────────────────────────────────────────── */
+.ui-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.ui-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  background: currentColor;
+}
+.ui-status--success { background: var(--success-quiet); color: var(--success-fg); }
+.ui-status--warning { background: var(--warning-quiet); color: var(--warning-fg); }
+.ui-status--danger  { background: var(--danger-quiet);  color: var(--danger-fg); }
+/* In progress: the dot pulses. Opacity only — no layout, no repaint of the
+   row — and it stops dead under prefers-reduced-motion via the duration
+   collapse in tokens.css. */
+.ui-status--active::before { animation: ui-status-pulse 1.6s var(--ease-in-out) infinite; }
+@keyframes ui-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STEPS — a run's progress, as a checklist
+   ═══════════════════════════════════════════════════════════════════════════
+   The agent-progress shape: completed steps struck through and dimmed, the
+   current one live, the rest pending. A vertical hairline connects them so
+   the list reads as one sequence rather than four unrelated rows.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ui-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+/* The connector, drawn on every step but the last, from the marker down. */
+.ui-step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 26px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--border);
+}
+.ui-step__marker {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: var(--r-pill);
+  color: var(--text-faint);
+}
+.ui-step__label { color: var(--text-secondary); }
+
+.ui-step--done .ui-step__marker { color: var(--success); }
+.ui-step--done .ui-step__label {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+.ui-step--active .ui-step__marker { color: var(--text-primary); }
+.ui-step--active .ui-step__label { color: var(--text-heading); font-weight: var(--fw-medium); }
+.ui-step--pending .ui-step__label { color: var(--text-faint); }
+
+/* The active step's marker spins. Transform only. */
+.ui-step--active .ui-step__marker > svg { animation: ui-spin 0.9s linear infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FILE CARD — a document, as an object you can pick up
+   ═══════════════════════════════════════════════════════════════════════════
+   One shape for every document reference in the product: an attachment in the
+   composer, a generated output, a vault item, a citation target.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-filecard {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+              border-color var(--dur-1) var(--ease-out),
+              transform var(--dur-1) var(--ease-out);
+}
+.ui-filecard:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.ui-filecard:active { transform: translateY(1px); }
+.ui-filecard:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.ui-filecard__glyph {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+}
+.ui-filecard__body { min-width: 0; display: flex; flex-direction: column; }
+.ui-filecard__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-filecard__meta { font-size: var(--fs-xs); color: var(--text-muted); }
+/* Dense variant, for inline use inside a message. */
+.ui-filecard--sm { padding: var(--sp-1) var(--sp-2); }
+.ui-filecard--sm .ui-filecard__glyph { width: 18px; height: 18px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TILE — a navigable container (a vault, a matter, a folder)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  min-height: 96px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-2) var(--ease-out),
+              border-color var(--dur-2) var(--ease-out),
+              transform var(--dur-2) var(--ease-out),
+              box-shadow var(--dur-2) var(--ease-out);
+}
+.ui-tile:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  /* 1px, not 4px. A card that leaps on hover in a document product reads as a
+     toy; this is just enough to confirm the pointer landed. */
+  transform: translateY(-1px);
+}
+.ui-tile:active { transform: none; }
+.ui-tile:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.ui-tile__icon { color: var(--text-muted); }
+.ui-tile__title {
+  display: block;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+  line-height: var(--lh-snug);
+}
+.ui-tile__meta {
+  display: block;
+  margin-top: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ui-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+  gap: var(--sp-3);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUGGESTION ROW — a proposed action
+   ═══════════════════════════════════════════════════════════════════════════
+   Used by the home state and the assistant panel. Full-width and hairline,
+   with the affordance arrow appearing on hover so a resting list stays quiet.
+   ─────────────────────────────────────────────────────────────────────────── */
+.ui-suggest {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+              border-color var(--dur-1) var(--ease-out),
+              transform var(--dur-1) var(--ease-out);
+}
+.ui-suggest:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.ui-suggest:active { transform: translateY(1px); }
+.ui-suggest:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.ui-suggest__icon { flex: 0 0 auto; color: var(--text-muted); display: grid; place-items: center; }
+/* Column, and both children are block-level. They are <span>s — the row is a
+   <button>, which may not contain <div>s — so without this the title and the
+   description run together as one inline sentence. */
+.ui-suggest__body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.ui-suggest__title { display: block; color: var(--text-primary); }
+.ui-suggest__desc { display: block; margin-top: 1px; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-snug); }
+.ui-suggest__arrow {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.ui-suggest:hover .ui-suggest__arrow,
+.ui-suggest:focus-visible .ui-suggest__arrow { opacity: 1; transform: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MENU — popover list (slash commands, row actions, pickers)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-menu {
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--sp-1);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-popover);
+  animation: ui-pop-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-menu.is-leaving { animation-name: ui-pop-out; }
+.ui-menu__label {
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ui-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+/* `.is-active` is the KEYBOARD cursor; `:hover` is the pointer. Both paint
+   the same, which is what lets arrow keys and the mouse share one list
+   without two highlights ever showing at once. */
+.ui-menu__item:hover,
+.ui-menu__item.is-active { background: var(--bg-hover); }
+.ui-menu__item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.ui-menu__item[aria-disabled='true'] { color: var(--text-faint); cursor: default; }
+.ui-menu__item-icon { flex: 0 0 auto; color: var(--text-muted); display: grid; place-items: center; }
+.ui-menu__item-body { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-menu__item-hint { flex: 0 0 auto; color: var(--text-faint); font-size: var(--fs-xs); }
+.ui-menu__sep { height: 1px; margin: var(--sp-1) 0; background: var(--border-subtle); }
+.ui-menu__item--danger { color: var(--danger-fg); }
+.ui-menu__item--danger:hover,
+.ui-menu__item--danger.is-active { background: var(--danger-quiet); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EMPTY STATE
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+  animation: ui-rise-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-empty__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-pill);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+}
+.ui-empty__title { font-size: var(--fs-lg); font-weight: var(--fw-medium); color: var(--text-heading); }
+.ui-empty__desc { max-width: 42ch; font-size: var(--fs-sm); line-height: var(--lh-normal); color: var(--text-secondary); }
+.ui-empty--sm { padding: var(--sp-6) var(--sp-4); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION HEADER — the label-and-rule that structures a long page
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-section { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.ui-section__title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.ui-section__desc { font-size: var(--fs-sm); color: var(--text-muted); }
+.ui-section__actions { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOOLTIP / KEY HINT
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ui-tooltip {
+  position: absolute;
+  z-index: var(--z-popover);
+  max-width: 260px;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--inverse-bg);
+  border: 1px solid var(--inverse-border);
+  border-radius: var(--r-sm);
+  color: var(--inverse-text);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  pointer-events: none;
+  animation: ui-fade-in var(--dur-anim) var(--ease-out) both;
+}
+.ui-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+}
+
+/* ── Dialog actions: capsules ────────────────────────────────────────────
+   Every button that answers a dialog is a pill, and the same pill each time.
+
+   This is scoped to the footer rather than applied to `.ui-btn` everywhere,
+   because a dialog's buttons are the app's most consequential — "Delete" here
+   ends a document — and the one place where being unmistakably a BUTTON beats
+   fitting quietly into a toolbar. It also matches the shape the rest of the
+   app already speaks in: the composer, the workspace pills, the status chips.
+
+   The two are still told apart by weight, not only by colour: the confirming
+   button is filled, the cancel is not. Colour alone would leave the choice
+   invisible to anyone who cannot separate red from grey. */
+.ui-dialog__foot-actions .ui-btn {
+  --btn-radius: var(--r-pill);
+  --btn-px: var(--sp-5);
+  min-width: 96px;
+}

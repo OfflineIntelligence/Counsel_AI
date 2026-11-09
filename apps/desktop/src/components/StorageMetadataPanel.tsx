@@ -99,7 +99,7 @@ const StorageMetadataPanel: React.FC<{
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100%', backgroundColor: 'var(--bg-canvas)' }}>
+    <div className="app-view" style={{ display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: 'var(--bg-canvas)' }}>
       {/* Header */}
       <div className="chat-header">
         <div className="chat-header-bar centered">
@@ -137,10 +137,10 @@ const StorageMetadataPanel: React.FC<{
               border: 'none',
               borderBottom: `2px solid ${activeTab === tab ? 'var(--accent)' : 'transparent'}`,
               color: activeTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
-              fontWeight: activeTab === tab ? 600 : 400,
+              fontWeight: activeTab === tab ? 'var(--fw-semibold)' : 400,
               cursor: 'pointer',
               textTransform: 'capitalize',
-              transition: 'all 0.2s'
+              transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s'
             }}
           >
             {tab}
@@ -212,7 +212,7 @@ const StorageMetadataPanel: React.FC<{
                         subtitle={
                           budget.limit_mb === 0
                             ? 'No limit set'
-                            : `of ${budget.limit_human}${budget.over_budget ? ' — over limit' : ''}`
+                            : `of ${budget.limit_human}${budget.over_budget ? ' over limit' : ''}`
                         }
                       />
                     )}
@@ -226,7 +226,7 @@ const StorageMetadataPanel: React.FC<{
                     padding: '16px',
                     marginBottom: '16px'
                   }}>
-                    <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: 'var(--fw-semibold)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <Folder size={16} />
                       Storage Locations
                     </h3>
@@ -239,7 +239,7 @@ const StorageMetadataPanel: React.FC<{
 
               {activeTab === 'models' && (
                 <>
-                  <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px' }}>
+                  <h3 style={{ fontSize: '16px', fontWeight: 'var(--fw-semibold)', marginBottom: '16px' }}>
                     Downloaded Models ({metadata.models.length})
                   </h3>
                   {metadata.models.length === 0 ? (
@@ -270,7 +270,7 @@ const StorageMetadataPanel: React.FC<{
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                           <div>
-                            <h4 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px' }}>{model.name}</h4>
+                            <h4 style={{ fontSize: '15px', fontWeight: 'var(--fw-semibold)', marginBottom: '4px' }}>{model.name}</h4>
                             <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>ID: {model.id}</p>
                           </div>
                           <span style={{ 
@@ -287,7 +287,7 @@ const StorageMetadataPanel: React.FC<{
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginTop: '12px', fontSize: '13px' }}>
                           <div>
                             <span style={{ color: 'var(--text-muted)' }}>Size: </span>
-                            <span style={{ fontWeight: 500 }}>{model.size_human}</span>
+                            <span style={{ fontWeight: 'var(--fw-medium)' }}>{model.size_human}</span>
                           </div>
                           <div>
                             <span style={{ color: 'var(--text-muted)' }}>Source: </span>
@@ -313,7 +313,7 @@ const StorageMetadataPanel: React.FC<{
 
               {activeTab === 'paths' && (
                 <>
-                  <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px' }}>
+                  <h3 style={{ fontSize: '16px', fontWeight: 'var(--fw-semibold)', marginBottom: '16px' }}>
                     System Storage Paths
                   </h3>
                   
@@ -348,11 +348,11 @@ const StorageMetadataPanel: React.FC<{
                   <div style={{ 
                     marginTop: '24px',
                     padding: '16px',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    backgroundColor: 'var(--accent-quiet)',
+                    border: '1px solid var(--border)',
                     borderRadius: '8px'
                   }}>
-                    <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                    <h4 style={{ fontSize: '14px', fontWeight: 'var(--fw-semibold)', marginBottom: '8px', color: 'var(--text-secondary)' }}>
                       Platform Information
                     </h4>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
@@ -391,7 +391,7 @@ const StatCard: React.FC<{
       {icon}
       <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{title}</span>
     </div>
-    <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
+    <div style={{ fontSize: '24px', fontWeight: 'var(--fw-bold)', color: 'var(--text-primary)', marginBottom: '4px' }}>
       {value}
     </div>
     <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -433,7 +433,7 @@ const PathDetailCard: React.FC<{
   }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
       {icon}
-      <h4 style={{ fontSize: '15px', fontWeight: 600 }}>{title}</h4>
+      <h4 style={{ fontSize: '15px', fontWeight: 'var(--fw-semibold)' }}>{title}</h4>
     </div>
     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px', lineHeight: '1.5' }}>
       {description}

@@ -1,0 +1,331 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   CHAT HOME — the empty state
+   ═══════════════════════════════════════════════════════════════════════════
+   Composition over invention: the rows, tiles and section headings are all
+   primitives from surfaces.css. What lives here is only the LAYOUT that is
+   specific to this screen — the column measure, the masthead, and the recents
+   list, which is a shape nothing else in the app uses.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  /* The same measure as the composer below it, so the page reads as one
+     column rather than content floating above an unrelated input. */
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  /* No side padding: the measure comes from the messages container (768px,
+     the composer's own), so the cards' outer edges sit exactly on the
+     composer's edges below them. */
+  padding: var(--sp-6) 0;
+}
+
+/* The empty state sits centred in the space above the composer, nudged a
+   touch BELOW true centre so the title keeps clear air under the window
+   band, where the notification island appears. */
+.chat-messages:has(> .chat-messages-container > .home) {
+  display: flex;
+  flex-direction: column;
+}
+.chat-messages-container:has(> .home) {
+  margin-top: auto;
+  margin-bottom: auto;
+  padding-top: 6vh;
+  width: 100%;
+}
+
+/* ── Masthead ──────────────────────────────────────────────────────────── */
+.home__masthead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  text-align: center;
+  animation: ui-rise-in var(--dur-anim) var(--ease-out) both;
+}
+
+.home__wordmark {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Optical, not metric: a triangle's bounding box is mostly empty at the
+     apex, so a gap matched to the word spacing leaves it looking detached. */
+  gap: 0.34em;
+  font-family: var(--font-brand);
+  font-size: var(--fs-4xl);
+  font-weight: var(--fw-brand-title);
+  letter-spacing: var(--ls-brand-title);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+
+/* Sized in em, so it is driven by the heading's font-size and needs no second
+   value at the small breakpoint below — the mark shrinks with the words on its
+   own. 1.11em is half again the 0.72em that matched the text's cap height:
+   the mark overhangs the letters top and bottom, which is what makes it read
+   as a logo sitting beside the name rather than as a glyph inside it. */
+.home__wordmark-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--text-heading);
+}
+
+.home__wordmark-mark svg {
+  width: 1.11em;
+  height: 1.11em;
+}
+
+/* ── Blocks ────────────────────────────────────────────────────────────── */
+.home__block { display: flex; flex-direction: column; }
+/* Suggestion cards: one horizontal row of squares, side by side. The
+   children are wrapper divs (.ui-anim / .home__hinted) around the actual
+   .ui-suggest buttons, so the wrappers carry the equal share and the
+   buttons fill them as squares. */
+.home__list {
+  display: flex;
+  flex-direction: row;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: center;
+}
+.home__list > .ui-anim,
+.home__list > .home__hinted {
+  flex: 0 1 220px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+/* The three cards are one set: equal width, equal height, laid out like a
+   widget — glyph top-left and arrow top-right as a mirrored pair, the title
+   along the bottom edge. Compact rather than square: a 1:1 card holding one
+   line of text was mostly empty slab. */
+.home__list .ui-suggest {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    'icon arrow'
+    '.    .'
+    'body body';
+  align-items: start;
+  width: 100%;
+  height: 104px;
+  padding: var(--sp-4);
+}
+.home__list .ui-suggest__icon {
+  grid-area: icon;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  /* No tile behind the glyph: it sits directly on the card. */
+  background: none;
+  box-shadow: none;
+  color: var(--text-secondary);
+}
+.home__list .ui-suggest__arrow {
+  grid-area: arrow;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  /* Always visible here: it is half of the card's symmetry, not a hover
+     affordance. It brightens with the card instead. */
+  opacity: 1;
+  transform: none;
+  color: var(--text-faint);
+  transition: color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.home__list .ui-suggest:hover .ui-suggest__arrow {
+  color: var(--text-primary);
+  transform: translate(1px, -1px);
+}
+.home__list .ui-suggest__body { grid-area: body; }
+.home__list .ui-suggest__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Recents ───────────────────────────────────────────────────────────── */
+/* A list, not cards. These are for RESUMING, which is a glance-and-click, and
+   a grid of cards here would out-weigh the suggestions above it. */
+.home__recents {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.home__recent {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.home__recent:last-child { border-bottom: none; }
+.home__recent:hover { background: var(--bg-hover); }
+.home__recent:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.home__recent-icon { flex: 0 0 auto; color: var(--text-faint); }
+
+.home__recent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home__recent-time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Narrow window ─────────────────────────────────────────────────────── */
+/* The assistant panel takes 380px off the right at any width, so "narrow"
+   arrives here well before it would in a browser. */
+@media (max-width: 720px) {
+  .home { padding: var(--sp-6) var(--sp-4) var(--sp-4); gap: var(--sp-6); }
+  .home__wordmark { font-size: var(--fs-3xl); }
+}
+/* Squares need room: below this the row becomes a column again. */
+@media (max-width: 640px) {
+  .home__list { flex-direction: column; }
+  .home__list .ui-suggest { height: 88px; }
+}
+
+
+/* ── Hover hint ─────────────────────────────────────────────────────────────
+   The two setup cards carry their titles only. Their descriptions are detail,
+   not information anyone needs in order to choose between "library" and
+   "vault", and two lines of it on each card made the first thing in an empty
+   app a wall of text. They appear after the pointer has rested on a row for
+   two seconds, which is long enough that crossing a card on the way to the
+   composer never triggers one.
+
+   The hint is always in the DOM and revealed with opacity, so a screen reader
+   can reach the text whenever it likes and showing it costs one compositor
+   property instead of a layout. `visibility` rides along on the same
+   transition to keep the hidden hint out of hit-testing; it steps rather than
+   interpolates, so it flips at the end of the fade out and the start of the
+   fade in. */
+.home__hinted {
+  position: relative;
+}
+
+/* `.ui-anim` animates a transform, which makes every card its own stacking
+   context. Inside one, the hint's z-index can only order it against its own
+   siblings, so a hint hanging below card one was painted UNDER card two no
+   matter how high that z-index went. The fix is to raise the whole card while
+   its hint is up, which is a property of the card, not of the hint. */
+.home__hinted:has(.home__hint.is-shown) {
+  z-index: 5;
+}
+
+.home__hint {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: var(--z-popover);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  /* Never intercepts the click it is describing. */
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  transition: opacity var(--dur-anim) var(--ease-out),
+    transform var(--dur-anim) var(--ease-out),
+    visibility var(--dur-anim);
+}
+
+.home__hint.is-shown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* The fade is the whole effect, and it is decoration. Without motion the hint
+   simply appears, which is the same information at the same moment. */
+@media (prefers-reduced-motion: reduce) {
+  .home__hint {
+    transition: none;
+    transform: none;
+  }
+}
+
+
+/* ── The setup cards: borderless, barely rounded ────────────────────────────
+   Scoped to this list so the shared .ui-suggest primitive is untouched
+   everywhere else it is used.
+
+   The border goes in BOTH states, not just at rest. The base rule draws one
+   and the hover rule darkens it, so removing only the first would leave an
+   outline appearing the moment the pointer arrives. The fill alone carries
+   the card against the canvas, and it is still what changes on hover.
+
+   `border: none` rather than `border-color: transparent`, plus a matching
+   1px of padding, so losing the border does not shift the contents by a
+   pixel or make these rows shorter than every other card on the page. */
+.home__list .ui-suggest,
+.home__list .ui-suggest:hover {
+  border: none;
+  padding: calc(var(--sp-3) + 1px);
+  border-radius: var(--r-xs);
+}
+
+/* ── While Aurora is in use, the cards step aside ─────────────────────────
+   Chat page only. When the island is open (asking, or an answer streaming)
+   the three cards under the title fade out, so the dimmed page behind the
+   capsule and its answer bar is just the title — nothing competing with the
+   thing being used. They return when the island folds back to its pill.
+   Opacity + visibility only: the cards keep their space, so the title and
+   composer never move. */
+.home__list {
+  transition: opacity var(--dur-anim) var(--ease-out),
+    transform var(--dur-anim) var(--spring-smooth),
+    visibility 0s linear 0s;
+}
+.app-root[data-view='chat'][data-assistant='open'] .home__list {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity calc(var(--dur-anim) * 0.6) var(--ease-out),
+    transform var(--dur-anim) var(--spring-smooth),
+    visibility 0s linear calc(var(--dur-anim) * 0.6);
+}
+
+/* The empty state is centred on the same axis as the composer below it, which
+   reserves the sidebar strip on BOTH sides; the thread keeps its one-sided
+   strip, so only this state takes the matching right padding. */
+.chat-window .chat-messages:has(> .chat-messages-container > .home) {
+  padding-right: calc(16px + var(--chat-gutter));
+}

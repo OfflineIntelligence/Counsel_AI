@@ -6,6 +6,8 @@ use offline_intelligence::{Config, run_thread_server};
 use std::sync::Mutex;
 use std::time::Duration;
 
+mod instance;
+
 /// Holds the dynamically selected backend port so the frontend can query it
 struct BackendPort(Mutex<u16>);
 
@@ -77,6 +79,15 @@ fn fatal_error(message: &str) -> ! {
     );
     log_startup(&format!("FATAL: {}", message));
 
+    // Clean up BEFORE the dialog: it stays open until the user clicks OK, and
+    // the backend thread and any engine it started would keep running (and
+    // keep their ports) the whole time.
+    let killed = offline_intelligence::model_runtime::process_util::kill_all_managed_children();
+    if killed > 0 {
+        log_startup(&format!("Ended {} engine process(es) after startup failure", killed));
+    }
+    release_lock();
+
     #[cfg(target_os = "windows")]
     {
         use std::ffi::OsStr;
@@ -100,6 +111,20 @@ fn fatal_error(message: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Mark this instance as closing in app.lock, so a launch during shutdown
+/// waits for it to finish instead of treating it as running.
+fn mark_lock_closing() {
+    if let Some(base_dir) = get_data_dir() {
+        let _ = std::fs::write(base_dir.join("app.lock"), format!("{} closing", std::process::id()));
+    }
+}
+
+fn release_lock() {
+    if let Some(base_dir) = get_data_dir() {
+        let _ = std::fs::remove_file(base_dir.join("app.lock"));
+    }
+}
+
 fn main() {
     log_startup("=== Offline Counsel AI Starting ===");
     log_startup(&format!("Current directory: {:?}", std::env::current_dir().unwrap_or_default()));
@@ -109,63 +134,41 @@ fn main() {
     #[cfg(not(debug_assertions))]
     log_startup("Build mode: RELEASE");
 
-    // Single-instance lock: prevent multiple instances from running
-    // This uses a lock file in the user data directory
-    // Note: Lock file is automatically released when process exits or is killed
+    // Single-instance lock. app.lock holds "<pid>" while an instance runs and
+    // "<pid> closing" once it has started shutting down (see ExitRequested).
+    // A previous instance must never cost the user an error dialog:
+    //  - still running -> bring its window to the front and quietly exit;
+    //  - still closing -> wait for it to finish (it holds the ports), then go.
     if let Some(base_dir) = get_data_dir() {
         let lock_file = base_dir.join("app.lock");
 
-        // Try to read existing lock file to check if process is still running
-        if lock_file.exists() {
-            if let Ok(pid_str) = std::fs::read_to_string(&lock_file) {
-                if let Ok(existing_pid) = pid_str.trim().parse::<u32>() {
-                    // Check if the process is actually running
-                    #[cfg(target_os = "windows")]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        use std::process::Command;
-                        let output = Command::new("tasklist")
-                            .args(&["/FI", &format!("PID eq {}", existing_pid), "/NH"])
-                            .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
-                            .output();
-
-                        if let Ok(output) = output {
-                            let output_str = String::from_utf8_lossy(&output.stdout);
-                            if output_str.contains(&existing_pid.to_string()) {
-                                // Process is still running
-                                fatal_error(&format!(
-                                    "Another instance of Offline Counsel AI is already running (PID: {}).\n\n\
-                                    Only one instance can run at a time to avoid port conflicts.\n\n\
-                                    To close the existing instance:\n\
-                                    1. Check Task Manager for 'offline-intelligence-desktop.exe'\n\
-                                    2. Or run: taskkill /F /PID {}",
-                                    existing_pid, existing_pid
-                                ));
-                            } else {
-                                // Stale lock file from crashed process
-                                log_startup(&format!("Removing stale lock file (PID {} not running)", existing_pid));
-                                let _ = std::fs::remove_file(&lock_file);
-                            }
-                        }
-                    }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        // On Unix, check /proc/{pid}
-                        let proc_path = std::path::Path::new("/proc").join(existing_pid.to_string());
-                        if proc_path.exists() {
-                            fatal_error(&format!(
-                                "Another instance of Offline Counsel AI is already running (PID: {}).\n\n\
-                                Only one instance can run at a time.\n\n\
-                                To close: kill {}",
-                                existing_pid, existing_pid
-                            ));
-                        } else {
-                            // Stale lock file
-                            log_startup(&format!("Removing stale lock file (PID {} not running)", existing_pid));
-                            let _ = std::fs::remove_file(&lock_file);
-                        }
+        if let Ok(contents) = std::fs::read_to_string(&lock_file) {
+            let mut parts = contents.split_whitespace();
+            let existing_pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+            let closing = parts.next() == Some("closing");
+            match existing_pid.filter(|&pid| pid != std::process::id() && instance::is_running(pid)) {
+                Some(pid) if closing => {
+                    log_startup(&format!("Previous instance (PID {}) is still closing; waiting for it", pid));
+                    if instance::wait_or_end(pid, Duration::from_secs(4)) {
+                        log_startup("Previous instance has exited");
+                    } else {
+                        log_startup("Previous instance could not be ended; continuing");
                     }
                 }
+                Some(pid) => {
+                    // A real running instance (or one still starting, with no
+                    // window yet): never start a second backend next to it.
+                    if instance::focus_window(pid) {
+                        log_startup(&format!("Already running (PID {}): brought it to the front", pid));
+                    } else {
+                        log_startup(&format!("Already running (PID {}), still starting: leaving it to open", pid));
+                    }
+                    std::process::exit(0);
+                }
+                None if existing_pid.is_some() => {
+                    log_startup("Removing stale lock file (previous instance not running)");
+                }
+                None => {}
             }
         }
 
@@ -191,12 +194,42 @@ fn main() {
     let (actual_port_tx, actual_port_rx) = std::sync::mpsc::channel::<u16>();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        // Load .env first so the runtime itself can be sized from it:
+        // BACKEND_WORKER_THREADS (default: one per core) and
+        // BACKEND_MAX_BLOCKING_THREADS (default 512; caps the pool used for
+        // extraction, hashing and file I/O).
+        let config_result = Config::from_env();
+        // Tokio reads TOKIO_WORKER_THREADS itself and PANICS on anything but a
+        // positive integer (an older .env set it to "auto"). Drop an invalid
+        // value so it can never take the backend down at startup.
+        if let Ok(v) = std::env::var("TOKIO_WORKER_THREADS") {
+            if v.trim().parse::<usize>().map_or(true, |n| n == 0) {
+                log_startup(&format!("Ignoring invalid TOKIO_WORKER_THREADS={:?}", v));
+                std::env::remove_var("TOKIO_WORKER_THREADS");
+            }
+        }
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        if let Some(n) = offline_intelligence::tuning::parse::<usize>("BACKEND_WORKER_THREADS") {
+            builder.worker_threads(n.max(1));
+        }
+        if let Some(n) = offline_intelligence::tuning::parse::<usize>("BACKEND_MAX_BLOCKING_THREADS") {
+            builder.max_blocking_threads(n.max(1));
+        }
+        let rt = match builder.build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                log_startup(&format!("Failed to create the async runtime: {}", e));
+                let _ = started_tx.send(false);
+                let _ = ready_tx.send(false);
+                return;
+            }
+        };
         rt.block_on(async {
-            let mut config = match Config::from_env() {
+            let mut config = match config_result {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    eprintln!("Failed to load config: {}", e);
+                    log_startup(&format!("Failed to load config: {}", e));
                     let _ = started_tx.send(false);
                     let _ = ready_tx.send(false);
                     return;
@@ -216,19 +249,26 @@ fn main() {
             let _ = started_tx.send(true);
 
             // Start the server
-            let server_handle = tokio::spawn(run_thread_server(config, Some(port_tx.clone())));
+            // port_tx is moved, not cloned: if the server fails before binding,
+            // the channel closes and the wait below ends at once instead of
+            // hanging until the main thread's timeout.
+            let server_handle = tokio::spawn(run_thread_server(config, Some(port_tx)));
 
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-            // Receive the actual port from backend (may differ from configured if primary port was in use)
-            let actual_port = match port_rx.recv() {
-                Ok(port) => {
-                    eprintln!("Backend bound to port {}", port);
+            let actual_port = match tokio::task::spawn_blocking(move || port_rx.recv()).await {
+                Ok(Ok(port)) => {
+                    log_startup(&format!("Backend bound to port {}", port));
                     port
                 }
-                Err(e) => {
-                    eprintln!("Failed to receive port from backend: {}", e);
-                    let _ = ready_tx.send(false);
+                _ => {
+                    // The server ended without binding: put its error in
+                    // startup.log (stderr is invisible in a release build).
+                    let reason = match server_handle.await {
+                        Ok(Err(e)) => format!("{:#}", e),
+                        Err(e) => format!("server task panicked: {}", e),
+                        Ok(Ok(())) => "server exited before binding".to_string(),
+                    };
+                    log_startup(&format!("Backend failed before binding its port: {}", reason));
+                    // Dropping actual_port_tx tells the main thread immediately.
                     return;
                 }
             };
@@ -281,8 +321,10 @@ fn main() {
             }
 
             // Keep server running
-            if let Err(e) = server_handle.await {
-                eprintln!("Server task failed: {}", e);
+            match server_handle.await {
+                Ok(Err(e)) => log_startup(&format!("Backend server stopped with error: {:#}", e)),
+                Err(e) => log_startup(&format!("Backend server task panicked: {}", e)),
+                Ok(Ok(())) => {}
             }
         });
     });
@@ -303,7 +345,8 @@ fn main() {
             log_startup(&format!("Backend port confirmed: {}", port));
             port
         }
-        Err(_) => fatal_error("Backend failed to bind to port 8888 within 60 seconds. Check if:\n- Another instance is already running\n- Firewall is blocking port 8888\n- Antivirus is interfering with local connections"),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => fatal_error("The backend stopped before it could open port 8888. The reason is in startup.log and backend.log."),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => fatal_error("Backend failed to bind to port 8888 within 60 seconds. Check if:\n- Another instance is already running\n- Firewall is blocking port 8888\n- Antivirus is interfering with local connections"),
     };
 
     // Wait for backend to be fully ready (with timeout)
@@ -316,7 +359,7 @@ fn main() {
     match ready_rx.recv_timeout(Duration::from_secs(180)) {
         Ok(true) => log_startup("Backend is ready!"),
         Ok(false) => fatal_error("Backend started but failed health checks. Check startup.log for details."),
-        Err(_) => fatal_error("Backend health check timed out after 60 seconds. The server may be stuck during initialization."),
+        Err(_) => fatal_error("Backend health check timed out after 180 seconds. The server may be stuck during initialization."),
     }
 
     log_startup("Starting Tauri frontend...");
@@ -343,12 +386,21 @@ fn main() {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Offline Counsel AI")
+            // Opens maximized — including the first launch straight after the
+            // installer finishes. 800x600, centred, is the size it restores to.
             .inner_size(800.0, 600.0)
             .center()
+            .maximized(true)
             .resizable(true)
-            .decorations(true)
+            // The app draws its own title bar (TitleBar.tsx) in the sidebar's
+            // colour, with no icon or title; the system one cannot be recoloured.
+            .decorations(false)
             .visible(true)
             .data_directory(webview_data_dir)
+            // While minimised or hidden, timers and animation frames are
+            // throttled instead of running at full rate. Not suspended: a
+            // streaming answer must keep being read in the background.
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Throttle)
             .build()?;
 
             Ok(())
@@ -371,25 +423,59 @@ fn main() {
     
     // Run the app - it blocks until the app exits
     // Any errors during run will be logged by Tauri
-    app.run(move |_app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            eprintln!("App exit requested, flushing KV cache...");
-            let url = format!("http://127.0.0.1:{}/admin/shutdown", shutdown_port);
-            let _ = reqwest::blocking::Client::new()
-                .post(&url)
-                .timeout(Duration::from_secs(5))
-                .send();
-            eprintln!("Shutdown signal sent");
-
-            // Clean up lock file
-            if let Some(base_dir) = get_data_dir() {
-                let lock_file = base_dir.join("app.lock");
-                if let Err(e) = std::fs::remove_file(&lock_file) {
-                    eprintln!("Warning: Could not remove lock file: {}", e);
-                } else {
-                    eprintln!("Instance lock released");
-                }
+    app.run(move |_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            // Can arrive more than once; the shutdown below runs exactly once.
+            static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if SHUTTING_DOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
             }
+            // Closing the app closes EVERYTHING it started. Every step is
+            // written to startup.log so a shutdown can be diagnosed after the
+            // fact.
+            log_startup("Exit requested: shutting down");
+            mark_lock_closing();
+            let started = std::time::Instant::now();
+
+            // Watchdog: whatever happens below (a hung engine, a slow disk),
+            // the process ends. The Windows job object then takes every
+            // child with it.
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_secs(9));
+                log_startup("Shutdown did not finish within 9s: forcing exit");
+                release_lock();
+                std::process::exit(0);
+            });
+
+            // 1. Backend: pause downloads, save the warm-start cache, stop the
+            //    chat and embedding engines.
+            let url = format!("http://127.0.0.1:{}/admin/shutdown", shutdown_port);
+            let result = reqwest::blocking::Client::new()
+                .post(&url)
+                .timeout(Duration::from_secs(7))
+                .send();
+            log_startup(&match result {
+                Ok(r) => format!("Backend shutdown: HTTP {} after {} ms", r.status(), started.elapsed().as_millis()),
+                Err(e) => format!("Backend shutdown request failed after {} ms: {}", started.elapsed().as_millis(), e),
+            });
+
+            // 2. Any engine process still running is ended explicitly, not
+            //    left to the job object alone.
+            let killed = offline_intelligence::model_runtime::process_util::kill_all_managed_children();
+            log_startup(&format!("Ended {} remaining engine process(es)", killed));
+
+            // The lock is released at Exit, once the process really ends and
+            // its ports are free; until then it says "closing", so a launch in
+            // the meantime waits for us instead of colliding on the ports.
+            log_startup(&format!("Shutdown complete in {} ms", started.elapsed().as_millis()));
         }
+        tauri::RunEvent::Exit => {
+            // The event loop has ended; the backend thread and anything else
+            // still running go with the process.
+            log_startup("Exited");
+            release_lock();
+            std::process::exit(0);
+        }
+        _ => {}
     });
 }

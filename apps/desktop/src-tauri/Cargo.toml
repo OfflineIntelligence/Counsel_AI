@@ -7,12 +7,25 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { workspace = true, features = [] }
+# Version pins only (see the pinned-internals block in the workspace Cargo.toml).
+# Declared so the workspace `=` constraints actually bind on these transitives.
+tauri-codegen = { workspace = true }
+tauri-plugin = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true, features = ["devtools"] }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-fs = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
+# Version pins only (see the pinned-internals block in the workspace Cargo.toml).
+# Declared so the workspace `=` constraints actually bind on these transitives.
+# default-features = false there, so these add no features to the build.
+tauri-runtime = { workspace = true }
+tauri-runtime-wry = { workspace = true }
+tauri-utils = { workspace = true }
+tauri-macros = { workspace = true }
+wry = { workspace = true }
+tao = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

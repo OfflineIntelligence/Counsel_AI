@@ -198,7 +198,6 @@ const MetricsPanel: React.FC<{
 }> = ({ isOpen, onClose, embedded = false }) => {
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [history, setHistory] = useState<Series>(EMPTY_SERIES);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [tick, setTick] = useState(0);
 
   /** Kept in a ref so the sampler is not re-created (and the interval not
@@ -315,10 +314,12 @@ const MetricsPanel: React.FC<{
   }, [isOpen, sample, tick]);
 
   useEffect(() => {
-    if (!isOpen || !autoRefresh) return;
+    // Samples while the panel is on screen and stops when it is not; there is
+    // no pause control any more, so this is the only thing that starts it.
+    if (!isOpen) return;
     const id = setInterval(() => setTick(t => t + 1), POLL_MS);
     return () => clearInterval(id);
-  }, [isOpen, autoRefresh]);
+  }, [isOpen]);
 
   // History is per-visit: leaving the page and returning must not stitch a gap
   // into the middle of a line as though the samples were continuous.
@@ -342,9 +343,6 @@ const MetricsPanel: React.FC<{
 
   if (!isOpen) return null;
 
-  const device = metrics?.inference.device ?? 'CPU';
-  const deviceTone = device === 'GPU' ? 'success' : device === 'CPU+GPU' ? 'accent' : undefined;
-
   return (
     <div className={embedded ? 'metrics is-embedded' : 'metrics'}>
       <div className="metrics-header">
@@ -354,34 +352,17 @@ const MetricsPanel: React.FC<{
           </button>
         )}
         <div className="metrics-header__titles">
-          {embedded ? (
-            <h2 className="metrics-title">
-              <Activity size={17} strokeWidth={1.5} />
-              System
-            </h2>
-          ) : (
+          {/* Embedded in Settings, the page already heads this section. The
+              sampling line and the Live/Paused toggle are gone: the figures
+              update themselves, and saying so on every tick was noise. */}
+          {!embedded && (
             <h1 className="metrics-title">
               <Activity size={19} strokeWidth={1.5} />
               System
             </h1>
           )}
-          <p className="metrics-subtitle">
-            {autoRefresh
-              ? `Sampling every ${POLL_MS / 1000}s · ${history.cpu.length}/${HISTORY_LEN} samples held`
-              : 'Live sampling paused'}
-          </p>
         </div>
         <div className="metrics-header__actions">
-          <button
-            type="button"
-            className={`metrics-live${autoRefresh ? ' is-live' : ''}`}
-            onClick={() => setAutoRefresh(v => !v)}
-            aria-pressed={autoRefresh}
-            title={autoRefresh ? 'Pause live sampling' : 'Resume live sampling'}
-          >
-            <span className="metrics-live__dot" />
-            {autoRefresh ? 'Live' : 'Paused'}
-          </button>
           <button
             type="button"
             className="ui-iconbtn"
@@ -409,18 +390,7 @@ const MetricsPanel: React.FC<{
               <div className="metric-card__head">
                 <Zap size={16} strokeWidth={1.75} />
                 <span className="metric-card__title">Inference</span>
-                <span className={`ui-badge${deviceTone ? ` ui-badge--${deviceTone}` : ''}`}>{device}</span>
               </div>
-              <p className="metric-card__note">
-                {device === 'GPU' &&
-                  `Every layer is on the GPU (${metrics.inference.gpu_layers} offloaded). This is the fastest configuration available on this machine.`}
-                {device === 'CPU+GPU' &&
-                  `${metrics.inference.gpu_layers} layers are on the GPU and the rest run on the CPU. Generation speed is bounded by the CPU portion — a smaller quantisation would let more layers fit in VRAM.`}
-                {device === 'CPU' && !metrics.gpu.available &&
-                  'No GPU was detected, so all layers run on the CPU. A smaller model or a lower quantisation will respond noticeably faster.'}
-                {device === 'CPU' && metrics.gpu.available &&
-                  'A GPU is present but no layers are offloaded to it. Either the model did not fit in available VRAM, or GPU_LAYERS is pinned to 0 in configuration.'}
-              </p>
               <div className="metric-facts">
                 <div className="metric-fact">
                   <span className="metric-fact__key">Layers on GPU</span>
@@ -431,7 +401,7 @@ const MetricsPanel: React.FC<{
                   <span className="metric-fact__val">
                     {metrics.gpu.available
                       ? `${Math.max(metrics.gpu.vram_total_gb - metrics.gpu.vram_used_gb, 0).toFixed(1)} GB free`
-                      : '—'}
+                      : '-'}
                   </span>
                 </div>
                 <div className="metric-fact">
@@ -506,70 +476,11 @@ const MetricsPanel: React.FC<{
                 </div>
                 <p className="metric-card__note">
                   No compatible GPU was found, so inference runs entirely on the CPU. That is fully
-                  supported — expect slower generation, and prefer a smaller model or a lower
+                  supported. Expect slower generation, and prefer a smaller model or a lower
                   quantisation for a responsive experience.
                 </p>
               </div>
             )}
-
-            {/* ── Per-core load ──────────────────────────────────────────── */}
-            {metrics.cpu.per_core_usage.length > 0 && (
-              <div className="metric-card metrics-grid__full">
-                <div className="metric-card__head">
-                  <Cpu size={16} strokeWidth={1.75} />
-                  <span className="metric-card__title">Per-core load</span>
-                  <span className="ui-badge">{metrics.cpu.model_name}</span>
-                </div>
-                <div className="core-grid">
-                  {metrics.cpu.per_core_usage.map((load, i) => (
-                    <div
-                      key={i}
-                      className={`core-cell${load >= 90 ? ' is-max' : load >= 70 ? ' is-hot' : ''}`}
-                      style={{ '--load': Math.round(load) } as React.CSSProperties}
-                      title={`Core ${i}: ${load.toFixed(0)}%`}
-                    >
-                      <span className="core-cell__fill" />
-                    </div>
-                  ))}
-                </div>
-                <p className="metric-card__note">
-                  Cores filling evenly is what a healthy CPU inference run looks like. A single
-                  saturated core usually means the thread count is set below the core count.
-                </p>
-              </div>
-            )}
-
-            {/* ── Storage ────────────────────────────────────────────────── */}
-            <div className="metric-card metrics-grid__full">
-              <div className="metric-card__head">
-                <HardDrive size={16} strokeWidth={1.75} />
-                <span className="metric-card__title">Storage</span>
-              </div>
-              <div
-                className="ui-meter"
-                style={
-                  {
-                    '--progress': metrics.storage.total_gb > 0 ? (metrics.storage.used_gb / metrics.storage.total_gb) * 100 : 0,
-                  } as React.CSSProperties
-                }
-              >
-                <div className="ui-meter__fill" />
-              </div>
-              <div className="metric-facts">
-                <div className="metric-fact">
-                  <span className="metric-fact__key">Used</span>
-                  <span className="metric-fact__val">{metrics.storage.used_gb.toFixed(1)} GB</span>
-                </div>
-                <div className="metric-fact">
-                  <span className="metric-fact__key">Free</span>
-                  <span className="metric-fact__val">{metrics.storage.available_gb.toFixed(1)} GB</span>
-                </div>
-                <div className="metric-fact">
-                  <span className="metric-fact__key">Total</span>
-                  <span className="metric-fact__val">{metrics.storage.total_gb.toFixed(1)} GB</span>
-                </div>
-              </div>
-            </div>
 
             {metrics.gpu.available && metrics.gpu.temperature_c > 85 && (
               <div className="metric-card metrics-grid__full">
@@ -585,6 +496,29 @@ const MetricsPanel: React.FC<{
               </div>
             )}
           </div>
+        )}
+
+        {/* ── Per-core load ────────────────────────────────────────────────
+            Outside the card grid on purpose: it is the quietest reading on
+            the page, so it sits centred at the BOTTOM, under everything else.
+            One small square per core, and its shade is the load — darker is
+            busier. The exact figure is a hover away. */}
+        {metrics && metrics.cpu.per_core_usage.length > 0 && (
+          <section className="core-section" aria-label="Per-core load">
+            <div className="core-squares">
+              {metrics.cpu.per_core_usage.map((load, i) => (
+                <span
+                  key={i}
+                  className={`core-square${load >= 90 ? ' is-max' : load >= 70 ? ' is-hot' : ''}`}
+                  style={{ '--load': Math.round(load) } as React.CSSProperties}
+                  title={`Core ${i}: ${load.toFixed(0)}%`}
+                />
+              ))}
+            </div>
+            <span className="core-section__caption">
+              {metrics.cpu.per_core_usage.length} cores · {metrics.cpu.model_name}
+            </span>
+          </section>
         )}
       </div>
     </div>

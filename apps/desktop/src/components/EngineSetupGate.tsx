@@ -10,6 +10,10 @@ interface EngineStateInfo {
   acceleration?: string;
   version?: string;
   reason?: string;
+  /** Acceleration this machine would have used had it worked (see EngineState). */
+  demoted_from?: string;
+  /** Recorded backend-verification failure behind `demoted_from`. */
+  demotion_reason?: string;
 }
 
 interface HealthzResponse {
@@ -25,7 +29,10 @@ type GateStatus =
   | { kind: 'ok' }
   | { kind: 'blocked'; engine: EngineStateInfo | null; managerAvailable: boolean }
   | { kind: 'installing'; percent: number | null }
-  | { kind: 'install-failed'; detail: string };
+  | { kind: 'install-failed'; detail: string }
+  // Engine works, but it is not the one this hardware should have had. The app
+  // is usable, so this must not block it — the user is told once and continues.
+  | { kind: 'demoted'; engine: EngineStateInfo };
 
 interface EngineSetupGateProps {
   children: React.ReactNode;
@@ -67,6 +74,22 @@ export function EngineSetupGate({ children }: EngineSetupGateProps) {
       if (data.engine && data.engine.state !== 'ready') {
         setStatus({ kind: 'blocked', engine: data.engine, managerAvailable: true });
         return;
+      }
+      // Ready, but on a demoted engine: say so once, then let the app through.
+      // Acknowledgement is remembered per engine+demotion so a restart does not
+      // re-nag, while a NEW demotion (different acceleration) still surfaces.
+      if (data.engine && data.engine.state === 'ready' && data.engine.demoted_from) {
+        const ackKey = `oca-demotion-ack:${data.engine.engine_id}:${data.engine.demoted_from}`;
+        let acknowledged = false;
+        try {
+          acknowledged = window.localStorage.getItem(ackKey) === '1';
+        } catch {
+          // Private mode / blocked storage: show the notice rather than swallow it.
+        }
+        if (!acknowledged) {
+          setStatus({ kind: 'demoted', engine: data.engine });
+          return;
+        }
       }
       // engine ready, or an older backend without the engine field
       setStatus({ kind: 'ok' });
@@ -142,6 +165,49 @@ export function EngineSetupGate({ children }: EngineSetupGateProps) {
     return <>{children}</>;
   }
 
+  if (status.kind === 'demoted') {
+    const engine = status.engine;
+    const acknowledge = () => {
+      try {
+        window.localStorage.setItem(
+          `oca-demotion-ack:${engine.engine_id}:${engine.demoted_from}`,
+          '1'
+        );
+      } catch {
+        // Nothing to do — the notice simply reappears next launch.
+      }
+      setStatus({ kind: 'ok' });
+    };
+
+    return (
+      <div className="loading-screen">
+        <div className="loading-content">
+          <div className="error-icon">ⓘ</div>
+          <h2>Running Without {engine.demoted_from} Acceleration</h2>
+          <p className="error-message">
+            {engine.demoted_from} acceleration failed to start on this computer, so the{' '}
+            {engine.acceleration} engine was installed instead. The application is fully
+            functional. Responses will be slower than they would be with a working GPU
+            backend.
+          </p>
+          {engine.demotion_reason && (
+            <p className="loading-subtext">{engine.demotion_reason}</p>
+          )}
+          <div className="error-actions">
+            <button className="retry-button primary" onClick={acknowledge}>
+              Continue
+            </button>
+          </div>
+          <p className="error-hint">
+            Installing the latest Microsoft Visual C++ 2015-2022 Redistributable (x64) and
+            updating your graphics driver, then reinstalling this application, may restore{' '}
+            {engine.demoted_from} acceleration.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (status.kind === 'checking') {
     return (
       <div className="loading-screen">
@@ -167,7 +233,7 @@ export function EngineSetupGate({ children }: EngineSetupGateProps) {
           </p>
           <p className="loading-subtext">
             The engine matched to this computer&apos;s hardware is being downloaded,
-            integrity-checked, and verified. This is a one-time setup.
+            integrity-checked, and verified.
           </p>
         </div>
       </div>

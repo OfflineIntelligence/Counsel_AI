@@ -44,7 +44,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     if (result.success && result.user && result.token) {
       setToken(result.token);
       login(result.user.name, result.user.email);
-      setSuccessMessage('Email verified successfully!');
+      setSuccessMessage('E-mail verified.');
       setTimeout(() => {
         onClose();
       }, 1500);
@@ -74,7 +74,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
         } else if (result.requires_verification) {
           setError('Please verify your email address before logging in. Check your inbox for the verification link.');
         } else {
-          setError(result.message || 'Login failed. Please try again.');
+          setError(result.message || 'Sign-in failed. Try again.');
         }
       } else {
         if (password !== confirmPassword) {
@@ -294,7 +294,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                 color: 'var(--text-on-accent)',
                 border: 'none',
                 fontSize: '15px',
-                fontWeight: 500,
+                fontWeight: 'var(--fw-medium)',
                 cursor: isLoading ? 'not-allowed' : 'pointer',
                 marginBottom: '16px',
                 opacity: isLoading ? 0.6 : 1,

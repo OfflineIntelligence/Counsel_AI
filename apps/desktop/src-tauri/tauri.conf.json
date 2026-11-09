@@ -11,7 +11,8 @@
     },
     "app": {
         "security": {
-            "csp": null
+            "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: http://127.0.0.1:*; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+            "devCsp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: http://127.0.0.1:*; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:3000 ws://localhost:3000; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
         }
     },
     "bundle": {
@@ -19,7 +20,8 @@
         "targets": ["nsis"],
         "resources": {
             "../../../.env": ".env",
-            "../../../vendor/pdfium/win-x64/pdfium.dll": "pdfium.dll"
+            "../../../vendor/pdfium/win-x64/pdfium.dll": "pdfium.dll",
+            "../../../knowledge/": "knowledge/"
         },
         "icon": [
             "icons/icon.png",

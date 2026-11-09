@@ -4,24 +4,39 @@
    before App.tsx, which is what puts App.css last in the bundle.
    ────────────────────────────────────────────────────────────────────────────
    The three `@tailwind base/components/utilities` directives that used to sit
-   above these imports are gone. They were dead, and provably so: this project
-   has no postcss.config or tailwind.config anywhere, so nothing ever expanded
-   them — they passed through the build verbatim and shipped to users as three
-   invalid at-rules (confirmed by grepping the built dist/assets/index.css:
-   `@tailwind base;@tailwind components;@tailwind utilities;` present, and zero
-   `--tw-` custom properties, i.e. no preflight and no utilities).
+   above these imports are gone. They were dead, and provably so: nothing ever
+   expanded them, so they passed through the build verbatim and shipped to
+   users as three invalid at-rules.
+
    They were also what broke these imports: three unknown at-rules ahead of
    them meant @import was no longer first, so both files were silently dropped
    and every token in this app resolved to nothing.
-   Tailwind remains in package.json; the app is written in hand-authored CSS
-   and does not use it. */
+
+   The note that used to end this comment said "this project has no
+   postcss.config or tailwind.config anywhere", and that was wrong — there were
+   both, in src/, which is not a directory Vite looks in for them (it resolves
+   postcss config from the project root). So the configs existed, did nothing,
+   and documented themselves out of existence. Those two files and the
+   tailwindcss / @tailwindcss/postcss packages are all removed now; the app is
+   hand-authored CSS. `postcss` and `autoprefixer` remain in devDependencies
+   and are inert — with no root postcss config, Vite runs neither. */
 @import './styles/tokens.css';
 @import './styles/primitives.css';
+@import './styles/surfaces.css';
 
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+/* `hidden` must actually hide. The attribute's UA default is `display: block`,
+   which any component rule setting `display: flex` silently beats — so a
+   `hidden` panel stays on screen and the bug looks like a state bug rather
+   than a CSS one. Declared once, globally, so toggling `el.hidden` is a
+   reliable way to swap views anywhere in the app. */
+[hidden] {
+  display: none !important;
 }
 
 /* `color-scheme` is set per theme in tokens.css rather than the previous
@@ -42,13 +57,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 
-  /* Kerning and contextual alternates on by default — free typographic
-     quality on Segoe UI Variable and the Palatino-class serifs. */
-  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+  /* Kerning and contextual alternates on; cv11 is Inter's single-storey
+     "a", which reads calmer at UI sizes. Optical sizing lets the variable
+     font switch to its Display cut on large headings. */
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1, 'cv11' 1;
+  font-optical-sizing: auto;
 }
 
-/* Headings default to the display serif. Surfaces opt out with `.ui-stat`
-   where a serif reads as too editorial — large live numerals, mainly. */
+/* Headings use the display token (Inter, Display cut at large sizes). */
 h1,
 h2,
 h3,
@@ -120,4 +136,13 @@ select {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+}
+
+/* While the window is hidden or minimised, nothing animates: spinners,
+   pulses and shimmer stop costing GPU and CPU time, and resume where they
+   were on return. Keyed to visibility, not focus — see App.tsx. */
+html[data-app-hidden='true'] *,
+html[data-app-hidden='true'] *::before,
+html[data-app-hidden='true'] *::after {
+  animation-play-state: paused !important;
 }

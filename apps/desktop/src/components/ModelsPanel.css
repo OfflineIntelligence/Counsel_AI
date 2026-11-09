@@ -199,3 +199,813 @@
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--sp-3);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Models page, drawn with the Workspace landing styles (workspace.css).
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.models-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-canvas);
+}
+
+.models-landing {
+  flex: 1;
+  min-height: 0;
+}
+
+.models-head {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.models-hw {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 20px;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.models-hw > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.models-tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--fs-xs);
+  vertical-align: middle;
+}
+
+/* API key card */
+.ws-landing .models-key-card {
+  width: 100%;
+  max-width: var(--ws-column);
+  margin: 0 auto;
+  gap: 12px;
+  align-items: stretch;
+}
+.models-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.models-key-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--danger);
+}
+.models-key-dot.is-set {
+  background: var(--success);
+}
+.models-key-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-landing .models-key-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  outline: none;
+}
+.ws-landing .models-key-input:focus {
+  border-color: var(--accent);
+}
+.models-key-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.models-key-note a {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.ws-landing .models-pill {
+  height: 28px;
+  padding: 0 14px;
+  font-size: var(--fs-md);
+}
+.ws-landing .models-pill {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.ws-landing .models-pill:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* Scrolling area inside the white box */
+.models-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 6px 16px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.models-scroll::-webkit-scrollbar { width: 4px; }
+.models-scroll::-webkit-scrollbar-track { background: transparent; }
+.models-scroll::-webkit-scrollbar-thumb { background: var(--accent); border-radius: var(--r-pill); }
+
+.models-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.models-error {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r-md);
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+  font-size: var(--fs-md);
+}
+
+.models-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 56px 16px;
+  text-align: center;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+/* Same anatomy as every other empty state (.ws-empty): a glyph in a soft
+   circle, a semibold title, one line of help. */
+.models-state__icon {
+  box-sizing: content-box;
+  width: 20px;
+  height: 20px;
+  padding: 12px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-muted);
+}
+.models-state__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+}
+.models-state__hint { font-size: var(--fs-sm); color: var(--text-secondary); }
+
+.ws-landing .models-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Model and download cards */
+.models-landing .models-grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.models-landing .model-card {
+  min-height: 170px;
+  padding: 14px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  color: var(--text-primary);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.models-landing .model-card:hover {
+  transform: none;
+  background: var(--ws-gray-100);
+  border-color: var(--ws-gray-200);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.models-landing .model-card.is-active {
+  border-color: var(--accent);
+}
+.models-landing .model-card.is-active::before {
+  background: var(--accent);
+}
+
+.models-landing .model-card__name {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-regular);
+  color: var(--text-primary);
+}
+.models-landing .model-card__desc {
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.models-landing .model-card__tags {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* ── Badges on this page are outlined chips ──────────────────────────────────
+   A deliberate page variant: the primitive's badge is a filled, uppercase,
+   wide-tracked micro-label, and a dense table of model names reads better with
+   outlined sentence-case chips. Kept as a page-scoped restyle rather than
+   promoted to a `.ui-badge--outline` modifier only because it would mean
+   editing every call site for no change the user can see; if a second page
+   ever wants this shape, that is the moment to promote it.
+
+   Unlike the button block below, this overrides PRESENTATION only -- the
+   variant classes keep working and each --success/--warning/--danger still
+   resolves its own status token. */
+.models-landing .ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-normal);
+  text-transform: none;
+}
+.models-landing .ui-badge--success { border-color: var(--success); color: var(--success-fg); }
+.models-landing .ui-badge--danger { border-color: var(--danger-border); color: var(--danger-fg); }
+.models-landing .ui-badge--warning { border-color: var(--warning); color: var(--warning-fg); }
+.models-landing .ui-badge--accent { background: var(--ws-fill); }
+
+/* ── Buttons on this page are pills ──────────────────────────────────────────
+   This used to restate the whole of `.ui-btn` — display, border, background,
+   colour, font, shadow, cursor — which meant the shared primitive had been
+   forked for one page: any later change to `.ui-btn` simply would not reach
+   the Models page, and the `--primary` / `--solid` variants were flattened to
+   the same two colours so their hover states were dead rules.
+
+   `.ui-btn` already publishes the knobs for this (--btn-h, --btn-px, --btn-fs,
+   --btn-radius), so the page sets those and nothing else. Every variant then
+   keeps the primitive's own colours and states. */
+.models-landing .ui-btn {
+  --btn-h: 28px;
+  --btn-px: 14px;
+  --btn-radius: var(--r-pill);
+  gap: 6px;
+}
+
+/* A button with no variant class. The primitive leaves these transparent,
+   which is right on a dense page but too quiet on a card; on this page they
+   read as a quiet pill that promotes to the accent once pointed at — the same
+   shape the Workspace toolbar uses. `:not([class*="ui-btn--"])` is what keeps
+   it off --primary, --solid, --secondary, --ghost and --danger, so each of
+   those still looks like itself here. */
+.models-landing .ui-btn:not([class*='ui-btn--']) {
+  background: var(--ws-fill);
+  border-color: transparent;
+}
+.models-landing .ui-btn:not([class*='ui-btn--']):hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.models-landing .ui-iconbtn {
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  border-radius: var(--r-pill);
+  background: var(--ws-fill);
+  color: var(--text-primary);
+}
+.models-landing .ui-iconbtn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* Download block */
+.models-landing .model-dl {
+  border: 1px solid var(--ws-gray-200);
+  border-radius: var(--r-md);
+  background: var(--ws-gray-100);
+}
+.models-landing .model-dl__pct {
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+.models-landing .model-dl__state,
+.models-landing .model-dl__fact-key {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-normal);
+  text-transform: none;
+  color: var(--text-secondary);
+}
+.models-landing .model-dl__fact-val {
+  color: var(--text-primary);
+}
+.models-landing .ui-progress__fill {
+  background: var(--accent);
+}
+
+/* Remove confirmation */
+.models-page .models-modal-btn {
+  height: 32px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--ws-fill);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.models-page .models-modal-btn:hover {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.models-page .models-modal-btn--primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.models-page .models-modal-btn--primary:hover {
+  color: var(--text-on-accent);
+}
+
+/* ── Models list ─────────────────────────────────────────────────────────── */
+.models-landing .models-hw {
+  margin: 0;
+}
+
+.models-table .ws-list-head,
+.models-table .ws-list-row {
+  grid-template-columns:
+    minmax(0, 2.4fr) minmax(0, 2fr) minmax(0, 0.9fr) minmax(0, 1fr)
+    minmax(0, 1.4fr) minmax(0, 1.4fr) 40px;
+}
+
+.models-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.models-name__title,
+.models-name__maker {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.models-name__title { font-size: var(--fs-md); color: var(--text-primary); }
+.models-name__maker { font-size: var(--fs-sm); color: var(--text-secondary); }
+
+/* The fit dots used to be declared here AND again ~160 lines below, and the
+   two disagreed: this block made "will not fit" --danger, the later one made
+   it --warning, and the later one won. Its comment ("turmeric yellow for Not
+   so good") says warning is the intended reading, so the fit dots live there
+   and only the status dots are declared here. */
+/* Dot shapes per state: see "Status dots are shapes" in workspace.css. */
+.models-status-active { border-color: var(--accent); }
+
+.models-remove-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--ws-fill);
+  font-family: var(--font-sans);
+}
+.models-remove-detail__name { font-size: var(--fs-lg); color: var(--text-primary); }
+.models-remove-detail__size { font-size: var(--fs-md); color: var(--text-secondary); }
+
+/* Models list uses exactly the Workspace and Vault list rows: 48px, one line,
+   icon then name, same fonts and colours in both themes. */
+.models-maker {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* Models list, trimmed: model, company, size, fit, status. */
+.models-table .ws-list-head,
+.models-table .ws-list-row {
+  grid-template-columns:
+    minmax(0, 2.6fr) minmax(0, 1.3fr) minmax(0, 1.1fr)
+    minmax(0, 1.3fr) minmax(0, 1fr) 40px;
+}
+.ws-landing .models-chip-plain,
+.models-table .models-chip-plain{
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.ws-landing .ws-toolbar-actions .ws-create-folder.models-icon-btn {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--r-md);
+}
+
+/* Access token: a grid row that eases between 0 and its content height, so
+   the panel slides down and back up as one continuous, slow movement and the
+   list below follows it frame by frame. */
+.models-token {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.models-token.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.models-token__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 2px;
+}
+.models-token__text { margin-top: 4px; }
+.models-below {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .models-token { transition: none; }
+}
+.models-token__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+}
+.models-token__hint {
+  color: var(--text-secondary);
+}
+.models-token__hint a {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.ws-landing .models-token__field {
+  max-width: none;
+  margin: 0 0 8px;
+  background: var(--ws-gray-100);
+  border-color: var(--ws-gray-100);
+  box-shadow: none;
+}
+
+/* "Available" status: a dark emerald dot with a soft, static glow (no
+   animation, so it costs nothing after first paint). */
+.models-status-available {
+  color: var(--success-fg);
+}
+.models-status-available .ws-chip-dot {
+  box-shadow: inset 0 0 0 1.5px var(--text-heading), 0 0 0 2px color-mix(in srgb, var(--text-heading) 12%, transparent);
+}
+/* Company logo beside the maker's name, as on models.dev. The SVGs draw in
+   currentColor, so they follow the text: black in light, white in dark. */
+.models-lab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.lab-logo {
+  display: inline-flex;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  color: currentColor;
+}
+.lab-logo svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.models-lab__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 'All Models' button in the empty 'On this computer' view. */
+.models-state .models-all-btn,
+.ws-landing .ws-toolbar-actions .models-state .models-all-btn {
+  margin-top: 8px;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  box-shadow: none;
+}
+.models-state .models-all-btn:hover,
+.ws-landing .ws-toolbar-actions .models-state .models-all-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 15%, transparent);
+  color: var(--text-primary);
+}
+
+/* Modality column: boxed input icons, as on models.dev. */
+.models-modality {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.models-modality__icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+}
+
+/* Download or install state, now a quiet tag after the model's name. */
+.models-name-status {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.models-name-status.models-status-busy { color: var(--warning-fg); }
+.models-name-status.models-status-active,
+.models-name-status.models-status-installed { color: var(--success-fg); }
+/* Fit dots: green for Good, turmeric for Slow and for Will not fit. The only
+   place these are declared -- see the note at .models-status-active above. */
+
+
+/* Access token key, turned so its tip points up and to the right (1:30). */
+.models-key-icon {
+  transform: rotate(180deg);
+}
+
+
+/* A starred model: a small filled star after its name, in the ink colour. */
+.models-star {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  color: var(--text-heading);
+  fill: currentColor;
+  vertical-align: -2px;
+}
+
+/* ── Downloads ────────────────────────────────────────────────────────────
+   The Downloads tab: one card per download with its bar, bytes, speed and
+   time left, and Pause / Resume / Cancel. Installs interrupted by closing the
+   app are listed here too, with Resume and Discard. */
+.models-downloads {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.models-dl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.models-dl__head,
+.models-dl__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.models-dl__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+}
+
+.models-dl__pct {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.models-dl__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.models-dl--paused .ui-progress { --progress-color: var(--text-faint); }
+.models-dl--failed .ui-progress { --progress-color: var(--danger); }
+.models-dl--failed .models-dl__meta { color: var(--danger-fg); }
+
+.models-dl__actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+.models-dl__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.models-dl__btn:hover { background: var(--bg-hover); }
+.models-dl__btn--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.models-dl__btn--primary:hover { background: var(--accent-hover); }
+.models-dl__btn:focus-visible,
+.models-row-dlbtn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* A downloading row in the model table: a hairline progress bar along its
+   bottom edge (transform only), plus Pause / Resume beside the ⋮ menu. */
+.models-row--downloading {
+  position: relative;
+}
+.models-row--downloading::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transform: scaleX(clamp(0, calc(var(--progress) / 100), 1));
+  transform-origin: left center;
+  transition: transform var(--dur-4) var(--ease-out);
+  pointer-events: none;
+}
+
+.models-row-dlbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.models-row-dlbtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Company filter menu ────────────────────────────────────────────────
+   The catalogue carries dozens of makers, so the menu owns a search box and
+   scrolls; everything else matches the Sort menu beside it. */
+.models-companies {
+  width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.models-companies__search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: -4px -4px 4px;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: inherit;
+  color: var(--text-muted);
+}
+
+.models-companies__search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+
+.models-companies__count {
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.models-companies__empty {
+  margin: 0;
+  padding: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* The company rows: a checkbox, the maker's logo, its name, its count. The
+   button itself looks exactly like Sort's, set or not. */
+.models-company {
+  justify-content: flex-start;
+  gap: 10px;
+}
+.models-company__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.models-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--text-primary) 30%, transparent);
+  color: var(--cap-primary-fg);
+  transition: background-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+}
+.models-check.is-on {
+  background: var(--cap-primary-bg);
+  box-shadow: inset 0 0 0 1.5px var(--cap-primary-bg);
+}
+[data-theme='light'] .models-check.is-on { background: var(--text-primary); color: var(--bg-surface); box-shadow: none; }
+
+/* Access token button: wider only, same height. */
+.ws-landing .ws-toolbar-actions .ws-create-folder.models-token-btn {
+  min-width: 150px;
+  padding-left: 22px;
+  padding-right: 22px;
+  justify-content: center;
+}
+
+/* Models page filter capsules (Sort, Company): the app's button rule —
+   white capsules in light, grey in dark. */
+.models-box .ws-filter:not(#_),
+.models-page .ws-filter:not(#_) {
+  border-color: transparent;
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: var(--cap-shadow);
+}
+.models-box .ws-filter:not(#_):hover,
+.models-page .ws-filter:not(#_):hover { background: var(--cap-primary-bg-hover); }
+.models-box .ws-filter:not(#_) svg,
+.models-page .ws-filter:not(#_) svg { color: currentColor; }

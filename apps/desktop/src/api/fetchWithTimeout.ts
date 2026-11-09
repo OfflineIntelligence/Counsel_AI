@@ -22,7 +22,7 @@ export async function fetchWithNetworkRetry(
             lastError = error;
             console.warn(
                 `[net] ${options.method ?? 'GET'} ${url} attempt ${attempt}/${attempts} failed: ${String(error)}` +
-                    (attempt < attempts ? ' — retrying' : ''),
+                    (attempt < attempts ? ', retrying' : ''),
             );
             if (attempt < attempts) {
                 await new Promise(r => setTimeout(r, RETRY_DELAY_MS * attempt));

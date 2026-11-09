@@ -172,7 +172,7 @@ export function SaveTranscriptWebDialog({ open, defaultFileName, content, onClos
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div style={{ background: 'var(--bg-surface)', width: 520, maxWidth: '90vw', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eee', fontWeight: 600 }}>Save Transcript</div>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eee', fontWeight: 'var(--fw-semibold)' }}>Save Transcript</div>
         <div style={{ padding: 20 }}>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>File name</label>
@@ -198,7 +198,7 @@ export function SaveTranscriptWebDialog({ open, defaultFileName, content, onClos
                     border: fileFormat === format ? '2px solid #0c6' : '1px solid #ddd',
                     background: fileFormat === format ? 'var(--bg-selected)' : 'var(--bg-surface)',
                     color: fileFormat === format ? 'var(--accent)' : 'var(--text-primary)',
-                    fontWeight: fileFormat === format ? 600 : 400,
+                    fontWeight: fileFormat === format ? 'var(--fw-semibold)' : 400,
                     cursor: 'pointer',
                   }}
                 >

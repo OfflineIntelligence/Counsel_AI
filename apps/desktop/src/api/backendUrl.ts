@@ -31,10 +31,9 @@ const LOOPBACK_HOST = '127.0.0.1';
 /**
  * Port the backend binds when IPC is unavailable (browser/dev context).
  *
- * Safe as a constant because the backend binds `API_PORT` exclusively and fails
- * fast if it is taken — `bind_and_notify_port` has no random-port fallback — so
- * a running backend is always on this port unless API_PORT was changed, in
- * which case the Tauri IPC path below reports the real value.
+ * Only a dev/browser fallback: in the app the backend moves to a free port
+ * when `API_PORT` is taken by another program, and the Tauri IPC path below
+ * reports the real value.
  */
 const DEFAULT_BACKEND_PORT = 8888;
 
@@ -56,8 +55,8 @@ export async function getBackendPort(): Promise<number> {
         console.log('[backendUrl] Starting port resolution...');
 
         // Always resolve via Tauri IPC so we get the actual bound port.
-        // The backend binds exclusively to API_PORT — there is no random
-        // fallback. window.BACKEND_PORT_OVERRIDE is a static build-time
+        // The backend may have moved off API_PORT if it was taken.
+        // window.BACKEND_PORT_OVERRIDE is a static build-time
         // value and must NOT take precedence over the IPC result.
         try {
             console.log('[backendUrl] Trying Tauri IPC...');

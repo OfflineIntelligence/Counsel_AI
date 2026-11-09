@@ -25,7 +25,6 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100%;
   background: var(--bg-canvas);
   position: relative;
 }
@@ -52,7 +51,7 @@
   font-family: var(--font-display);
   font-size: var(--fs-2xl);
   font-weight: var(--fw-regular);
-  letter-spacing: var(--ls-tight);
+  letter-spacing: var(--ls-display);
   color: var(--text-heading);
 }
 
@@ -238,7 +237,7 @@
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: var(--fs-2xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: 0;
@@ -490,6 +489,131 @@
   color: var(--text-heading);
 }
 .vault-dropzone__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Vault, drawn with the Workspace landing styles (workspace.css). Only what
+   the Vault needs beyond those lives here.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.vault .vault-landing {
+  flex: 1;
+  min-height: 0;
+}
+
+.vault-head {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vault-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vault-lede {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.vault-lede code,
+.vault-state__hint code {
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--ws-fill);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+}
+
+.vault-count {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder.vault-pill {
+  width: auto;
+  padding: 0 16px;
+}
+
+.vault-list .ws-list-head,
+.vault-list .ws-list-row {
+  grid-template-columns: 32px minmax(0, 3fr) minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 1fr) 40px;
+}
+
+.vault-chevron {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.vault-chevron.is-open {
+  transform: rotate(90deg);
+}
+.vault-chevron-space {
+  flex: 0 0 auto;
+  width: 14px;
+}
+
+.vault .vault-refs {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.vault-muted {
+  color: var(--text-muted);
+}
+
+/* Dot shapes per state: see "Status dots are shapes" in workspace.css. */
+
+.vault-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 16px;
+  text-align: center;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.vault-state__icon {
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.vault-state__title {
+  font-size: var(--fs-xl);
+  color: var(--text-primary);
+}
+.vault-state__hint {
+  max-width: 46ch;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.vault .vault-dropzone__scrim {
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--r-md);
+  background: rgba(243, 244, 246, 0.92);
+}
+.vault .vault-dropzone__label {
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+.vault .vault-dropzone__title {
+  font-family: var(--font-sans);
+  font-size: var(--fs-xl);
+  color: var(--text-primary);
+}
+.vault .vault-dropzone__hint {
   font-size: var(--fs-sm);
   color: var(--text-secondary);
 }

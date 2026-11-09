@@ -1,144 +1,297 @@
-// Toast notifications — bottom-right stack.
+// The island — notifications AND Aurora, in one capsule.
 //
-// Rebuilt on the `.ui-toast` primitive. Three things changed beyond styling,
-// each of which was a real defect rather than a matter of taste:
+// One black capsule that lives in the window band, centred over the page. It
+// has three shapes and morphs between them:
 //
-// 1. THEME. The container was a hardcoded `rgba(47,47,47,0.75)` with a 20px
-//    backdrop-blur — dark in BOTH themes — while its text used --text-primary.
-//    In light mode that put near-black text on a dark slab.
+//   idle          A small resting pill ("Aurora", with the app mark). Always
+//                 present; clicking it opens Aurora.
+//   notification  One row, 28px tall, the same size as before: status glyph
+//                 on the left, close on the right, message between. Several
+//                 notifications queue in the capsule, oldest first.
+//   agent         Aurora. The pill widens into a search-like capsule (attach,
+//                 question, send). Once something is asked, a separate answer
+//                 bar eases in beneath it and grows with the reply, up to
+//                 about a third of the window. The page dims behind, so
+//                 neither sits on live content. Esc or a click on the dimmed
+//                 page folds it back. (Styling: notification-island.css.)
 //
-// 2. RENDER COST. The countdown bar was driven by a 50ms setInterval calling
-//    setProgress, i.e. 20 React renders per second per visible toast. It is now
-//    a CSS animation reading --toast-duration: zero renders, and it pauses on
-//    hover, which is the only reason a visible countdown is worth having.
+// Notifications keep working while Aurora is open: they appear as their own
+// small row above the capsule.
 //
-// 3. THE EXIT ANIMATION NEVER RAN. Dismissal was owned in two places:
-//    NotificationContext set a `setTimeout(duration)` that removed the toast
-//    outright, while this component ran its own timer that set an exiting flag
-//    and removed it 300ms later. The context's timeout always won the race, so
-//    the toast was unmounted before the transition it had just started could
-//    play. Lifecycle now lives here alone — see NotificationContext.
+// Lifecycle rules carried over from the toast this replaced: dismissal is
+// owned here (only the component knows when its exit has finished), and every
+// countdown is CSS, so nothing re-renders per tick.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNotifications, type Notification } from '../contexts/NotificationContext';
-import { X, CheckCircle, AlertCircle, AlertTriangle, Info, Download } from 'lucide-react';
+import { useAssistant } from '../contexts/AssistantContext';
+import { X, Check, AlertTriangle, AlertCircle, Info, ArrowDown, HelpCircle } from 'lucide-react';
+import AssistantPanel from './assistant/AssistantPanel';
+import AppMark from './AppMark';
+import './notification-island.css';
 
-/** How long the exit animation runs. Must match `ui-toast-out`'s --dur-2. */
-const EXIT_MS = 180;
-
-const TOAST_ICON = {
-  success: CheckCircle,
+// One glyph family, one stroke, one size, so every status sits in the well
+// at the same optical weight.
+const GLYPH = {
+  success: Check,
   error: AlertCircle,
   warning: AlertTriangle,
   info: Info,
-  download: Download,
+  download: ArrowDown,
+  feedback: HelpCircle,
 } as const;
 
-const Toast: React.FC<{
-  notification: Notification;
-  onDismiss: (id: string) => void;
-}> = ({ notification, onDismiss }) => {
-  const [isExiting, setIsExiting] = useState(false);
-  const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+/** A notification with no auto-dismiss folds back to idle after this long. */
+const PERSISTENT_EXPANDED_MS = 4000;
+/** The content fades out for this long before the queue advances. */
+const CONTENT_OUT_MS = 140;
 
-  const { id, type, title, message, duration, timestamp } = notification;
-  const autoDismiss = typeof duration === 'number' && duration > 0;
+const DOWNLOADS_ID = 'downloads';
 
-  const close = useCallback(() => {
-    // Guard against a second call from the timer racing the click handler,
-    // which would restart the exit animation midway through it.
-    if (exitTimer.current) return;
-    setIsExiting(true);
-    exitTimer.current = setTimeout(() => onDismiss(id), EXIT_MS);
-  }, [id, onDismiss]);
+/** Model downloads ride in the capsule as a persistent notification of their own. */
+export interface DownloadNote {
+  title: string;
+  message: string;
+  onView: () => void;
+  onDismiss: () => void;
+}
 
-  // Auto-dismiss. A single timeout rather than a ticking interval — the visual
-  // countdown is CSS, so nothing here needs to know the elapsed time.
-  //
-  // Deliberately NOT paused on hover in JS. The CSS bar pauses, which is the
-  // part the user can see; keeping the JS timer simple avoids having to
-  // reconcile two notions of "remaining time" that can disagree.
+const NotificationsContainer: React.FC<{ onOpenModels?: () => void; downloadNote?: DownloadNote | null }> = ({ onOpenModels, downloadNote }) => {
+  const { notifications, removeNotification } = useNotifications();
+  const { open: assistantOpen, setOpen: setAssistantOpen, inlineHosted } = useAssistant();
+  // A page that hosts Aurora inline (the drafts composer) owns it there.
+  const agentOpen = assistantOpen && !inlineHosted;
+
+  // Real notifications go first; the download progress shows when none is waiting.
+  const live: Notification | undefined =
+    notifications[0] ??
+    (downloadNote
+      ? {
+          id: DOWNLOADS_ID,
+          type: 'download',
+          title: downloadNote.title,
+          message: downloadNote.message,
+          duration: 0,
+          timestamp: new Date(0),
+          actions: [{ label: 'View', onClick: downloadNote.onView }],
+        }
+      : undefined);
+  const waiting = Math.max(0, notifications.length - 1);
+  const liveTitle = live?.title;
+  const liveMessage = live?.message;
+
+  // What is drawn — held apart from `live` so the last notification can fade
+  // out before the capsule morphs back to idle.
+  const [shown, setShown] = useState<Notification | null>(live ?? null);
+  const [expanded, setExpanded] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
+
+  // ── Follow the head of the queue ────────────────────────────────────────
+  // Setting state here is the point: the island is a small state machine
+  // driven by an external queue, and each step must render before the next
+  // timer fires so the size has something to transition from.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (!autoDismiss) return;
-    dismissTimer.current = setTimeout(close, duration);
+    if (live) {
+      setDismissing(false);
+      setShown(live);
+      setExpanded(false);
+      const t = window.setTimeout(() => setExpanded(true), 180);
+      return () => window.clearTimeout(t);
+    }
+    if (shown) {
+      setExpanded(false);
+      const t = window.setTimeout(() => setShown(null), CONTENT_OUT_MS);
+      return () => window.clearTimeout(t);
+    }
+    // `shown` is deliberately not a dependency: this reacts to the queue head.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live?.id]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Progress changes without changing the id, so refresh what is drawn.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (live?.id === DOWNLOADS_ID) setShown(prev => (prev?.id === DOWNLOADS_ID ? live : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveTitle, liveMessage]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const dismiss = useCallback(() => {
+    if (!live || dismissing) return;
+    if (live.id === DOWNLOADS_ID) {
+      downloadNote?.onDismiss();
+      return;
+    }
+    setDismissing(true);
+    window.setTimeout(() => removeNotification(live.id), CONTENT_OUT_MS);
+  }, [live, dismissing, removeNotification, downloadNote]);
+
+  // ── Auto-dismiss, paused while hovered ──────────────────────────────────
+  const remaining = useRef(0);
+  const startedAt = useRef(0);
+  useEffect(() => {
+    remaining.current = live?.duration && live.duration > 0 ? live.duration : 0;
+  }, [live?.id, live?.duration]);
+  useEffect(() => {
+    if (!live || !remaining.current || hovered || dismissing) return;
+    startedAt.current = performance.now();
+    const t = window.setTimeout(dismiss, remaining.current);
     return () => {
-      if (dismissTimer.current) clearTimeout(dismissTimer.current);
+      window.clearTimeout(t);
+      remaining.current = Math.max(0, remaining.current - (performance.now() - startedAt.current));
     };
-  }, [autoDismiss, duration, close]);
+  }, [live, hovered, dismissing, dismiss]);
 
-  useEffect(
-    () => () => {
-      if (exitTimer.current) clearTimeout(exitTimer.current);
-    },
-    [],
-  );
+  // ── Persistent notifications fold to their title after a while ──────────
+  useEffect(() => {
+    if (!live || (live.duration ?? 0) > 0 || !expanded || hovered) return;
+    const t = window.setTimeout(() => setExpanded(false), PERSISTENT_EXPANDED_MS);
+    return () => window.clearTimeout(t);
+  }, [live, expanded, hovered]);
 
-  const Icon = TOAST_ICON[type] ?? Info;
+  // ── Esc folds Aurora back from anywhere in the sheet ────────────────────
+  useEffect(() => {
+    if (!agentOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAssistantOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [agentOpen, setAssistantOpen]);
 
-  return (
+  // ── Measure the row so the capsule can widen to it ──────────────────────
+  const contentRef = useRef<HTMLDivElement>(null);
+  const messageRef = useRef<HTMLSpanElement>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  const [overflow, setOverflow] = useState(0);
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const measure = () => {
+      setWidth(el.offsetWidth);
+      const m = messageRef.current;
+      setOverflow(m ? Math.max(0, m.scrollWidth - m.clientWidth) : 0);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [shown?.id, expanded, agentOpen]);
+
+  const open = !!shown && expanded;
+  const autoDismiss = !!shown?.duration && shown.duration > 0;
+  const Glyph = shown ? GLYPH[shown.type] ?? Info : Info;
+  const isError = shown?.type === 'error';
+  const mode = agentOpen ? 'agent' : shown ? 'notification' : 'idle';
+
+  // The notification row, used on its own and as the top line of the sheet.
+  const row = shown && (
     <div
-      className={`ui-toast ui-toast--${type}${isExiting ? ' is-exiting' : ''}`}
-      // An error is interruptive and should be announced immediately; the rest
-      // are polite so they do not cut across whatever is being read.
-      role={type === 'error' ? 'alert' : 'status'}
-      aria-live={type === 'error' ? 'assertive' : 'polite'}
-      style={autoDismiss ? ({ '--toast-duration': `${duration}ms` } as React.CSSProperties) : undefined}
+      ref={agentOpen ? undefined : contentRef}
+      key={shown.id}
+      className={`island__content${agentOpen ? ' island__content--inline' : ''}${dismissing ? ' is-dismissing' : ''}`}
+      role={isError ? 'alert' : 'status'}
     >
-      <span className="ui-toast__icon" aria-hidden="true">
-        <Icon size={15} strokeWidth={2} />
+      <span className="island__well island__glyph" aria-hidden="true">
+        <Glyph size={13} strokeWidth={2.5} />
       </span>
-
-      <div className="ui-toast__body">
-        <div className="ui-toast__title">{title}</div>
-        {/* title attribute carries the full text, since the CSS clamps to
-            three lines rather than letting one toast grow without bound. */}
-        {message && (
-          <div className="ui-toast__message" title={message}>
-            {message}
-          </div>
-        )}
-        <div className="ui-toast__meta">
-          {timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </div>
-      </div>
-
-      {/* Dismiss is an explicit button rather than a click handler on the whole
-          card. The card was previously clickable-to-dismiss with no affordance
-          saying so, which meant selecting the message text dismissed it. */}
-      <button
-        type="button"
-        className="ui-iconbtn ui-iconbtn--sm"
-        onClick={close}
-        aria-label="Dismiss notification"
-      >
-        <X size={13} strokeWidth={2} />
+      <span className="island__title">{shown.title}</span>
+      {(open || agentOpen) && shown.message && (
+        <span
+          ref={messageRef}
+          className="island__message"
+          data-marquee={(hovered && overflow > 0) || undefined}
+          style={overflow > 0 ? ({
+            '--marquee': `${overflow + 16}px`,
+            // ~40px a second: slow enough to read while it moves.
+            '--marquee-dur': `${Math.max(3, (overflow + 16) / 40)}s`,
+          } as React.CSSProperties) : undefined}
+        >
+          <span>{shown.message}</span>
+        </span>
+      )}
+      {(open || agentOpen) && shown.actions && shown.actions.length > 0 && (
+        <span className="island__actions">
+          {shown.actions.map(action => (
+            <button
+              key={action.label}
+              type="button"
+              className={`island__action${action.primary ? ' island__action--primary' : ''}`}
+              onClick={() => {
+                action.onClick();
+                dismiss();
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </span>
+      )}
+      {waiting > 0 && (
+        <span className="island__count" aria-label={`${waiting} more`}>+{waiting}</span>
+      )}
+      <button type="button" className="island__well island__close" onClick={dismiss} aria-label="Dismiss">
+        <X size={12} strokeWidth={2.5} />
       </button>
-
-      {autoDismiss && (
-        <div className="ui-toast__timer" aria-hidden="true">
-          <div className="ui-toast__timer-fill" />
-        </div>
+      {autoDismiss && open && !agentOpen && (
+        <span
+          className="island__timer"
+          aria-hidden="true"
+          style={{ '--island-duration': `${shown.duration}ms` } as React.CSSProperties}
+        />
       )}
     </div>
   );
-};
-
-const NotificationsContainer: React.FC = () => {
-  const { notifications, removeNotification } = useNotifications();
-
-  if (notifications.length === 0) return null;
 
   return (
-    <div className="ui-toast-region">
-      {notifications.map((notification) => (
-        <Toast
-          key={notification.id}
-          notification={notification}
-          onDismiss={removeNotification}
-        />
-      ))}
-    </div>
+    <>
+      {/* The dimmed page behind the open sheet. It is what keeps the sheet
+          from reading as sitting ON the page, and clicking it folds Aurora. */}
+      <div
+        className={`island-scrim${agentOpen ? ' is-on' : ''}`}
+        onClick={() => setAssistantOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* Always mounted: content inserted into a live region that appeared in
+          the same frame is not reliably announced. */}
+      <div className="island-region" aria-live={isError ? 'assertive' : 'polite'}>
+        <div
+          className={`island${shown ? ` island--${shown.type}` : ''}`}
+          data-mode={mode}
+          data-open={open || undefined}
+          style={width && mode !== 'agent' ? ({ '--island-w': `${width}px` } as React.CSSProperties) : undefined}
+          onMouseEnter={() => { setHovered(true); if (shown) setExpanded(true); }}
+          onMouseLeave={() => setHovered(false)}
+        >
+          {mode === 'agent' ? (
+            // Scoped to the dark tokens: the sheet is black in both themes,
+            // so everything Aurora draws inside it resolves to its dark-mode
+            // colours whichever theme the app is in.
+            <div className="island__agent">
+              {row}
+              <AssistantPanel embedded onOpenModels={onOpenModels} />
+            </div>
+          ) : mode === 'notification' ? (
+            row
+          ) : (
+            <button
+              ref={contentRef as unknown as React.Ref<HTMLButtonElement>}
+              type="button"
+              className="island__content island__idle"
+              onClick={() => setAssistantOpen(true)}
+              aria-label="Open LARA"
+              title="Ask LARA"
+            >
+              <span className="island__idle-mark" aria-hidden="true"><AppMark size={12} /></span>
+              <span className="island__idle-label">LARA</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </>
   );
 };
 

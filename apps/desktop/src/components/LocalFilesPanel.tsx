@@ -21,18 +21,34 @@
  * extraction_status — so no backend change was needed to surface it.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getApiBaseSync } from '../api/backendUrl';
 import { fetchWithNetworkRetry } from '../api/fetchWithTimeout';
-import {
-  ArrowLeft, FolderPlus, Trash2, Upload, Folder, FolderOpen,
-  ChevronRight, MoreVertical, Eye, Search, Library, X,
-} from 'lucide-react';
-import { DocumentViewer } from './DocumentViewer';
+import { Trash2, Upload, FolderOpen, ChevronRight, CornerLeftUp, LayoutGrid, List, MoreVertical, Search, X, Check,  } from 'lucide-react';
+/* Loaded on demand, not with this panel.
+   DocumentViewer statically imports pdfjs-dist and mammoth to render PDF and
+   Word previews, which together are the single largest thing in the app's
+   bundle. It is rendered only when `previewTarget` is set -- i.e. only once
+   someone actually opens a document -- so there is no reason for the Vault to
+   carry either library just to list files. */
+const DocumentViewer = lazy(() =>
+  import('./DocumentViewer').then((m) => ({ default: m.DocumentViewer })),
+);
+import type { OpenSourceRequest } from '../utils/openSource';
+import { FileBrandTile, FolderGlyph, FILE_ICON } from './FileBrandIcon';
+import UploadMenu from './workspace/UploadMenu';
+import { useNameDialog } from './workspace/NameDialog';
+import { pickFolders } from '../utils/pickFolders';
+import SelectAll from './workspace/SelectAll';
+import './workspace/workspace.css';
 import { FILE_INPUT_ACCEPT, SUPPORTED_LIST_LABEL, partitionSupported } from '../supportedFormats';
 import { exceedsUploadBudget, totalBytesOf, uploadTooLargeMessage } from '../uploadLimits';
 import { useNotificationHelpers } from '../contexts/NotificationContext';
+import { useAssistant, useAssistantPage } from '../contexts/AssistantContext';
+import AssistantMark from './assistant/AssistantMark';
 import './VaultPanel.css';
+import { useConfirm } from '../contexts/confirm';
+import { EmptyPlace, TypeFilter, fileTypeGroup } from './workspace/FileBrowser';
 
 interface FileEntry {
   id: number;
@@ -57,7 +73,7 @@ interface DocumentInfo {
 }
 
 const formatSize = (bytes: number): string => {
-  if (!bytes) return '—';
+  if (!bytes) return '-';
   const k = 1024;
   const units = ['B', 'KB', 'MB', 'GB'];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), units.length - 1);
@@ -66,7 +82,7 @@ const formatSize = (bytes: number): string => {
 
 const formatDate = (iso: string): string => {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return '-';
   const now = new Date();
   const sameYear = d.getFullYear() === now.getFullYear();
   return d.toLocaleDateString(undefined, {
@@ -81,7 +97,7 @@ const formatDate = (iso: string): string => {
  *  renders differently on every machine. */
 const extensionLabel = (name: string): string => {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
-  if (!ext || ext === name.toLowerCase()) return '—';
+  if (!ext || ext === name.toLowerCase()) return '-';
   if (ext === 'jpeg') return 'JPG';
   return ext.slice(0, 4).toUpperCase();
 };
@@ -121,18 +137,37 @@ const indexDocuments = (documents: Record<string, unknown>[]): Map<number, Docum
   return map;
 };
 
-const VaultBody: React.FC = () => {
+/** Where the Vault's tiles-or-list choice is kept, as in the Workspace. */
+const VAULT_VIEW_KEY = 'oca.vault.view';
+
+interface VaultFocusProps {
+  /** A document to open in this screen's viewer (a source opened from chat). */
+  focusDocument?: OpenSourceRequest | null;
+  onFocusHandled?: () => void;
+}
+
+const VaultBody: React.FC<VaultFocusProps> = ({ focusDocument, onFocusHandled }) => {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [docsByLocalFile, setDocsByLocalFile] = useState<Map<number, DocumentInfo>>(new Map());
   const [expandedDirs, setExpandedDirs] = useState<Set<number>>(new Set());
+  /* Tiles or a list, remembered between visits — the same choice, the same
+     storage idiom and the same control as the Workspace and the Library. */
+  // List view only: tiles and the grid/list switch were removed.
+  const view = 'list' as 'grid' | 'list';
+  /* Tiles cannot nest, so the grid walks INTO a folder where the list expands
+     it in place. Its own state: coming back out to the list must not collapse
+     the folders that were open there. */
+  const [gridPath, setGridPath] = useState<number[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [showNewFolder, setShowNewFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [newFolderParentId, setNewFolderParentId] = useState<number | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
-  const [previewTarget, setPreviewTarget] = useState<{ documentId: number; name: string } | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<{ documentId: number; name: string; highlight?: string; page?: number | null; entryId?: number } | null>(null);
+  // A source opened from chat: show it in this screen's viewer, at the passage.
+  useEffect(() => {
+    if (!focusDocument) return;
+    setPreviewTarget({ documentId: focusDocument.documentId, name: focusDocument.filename, highlight: focusDocument.highlight, page: focusDocument.page });
+    onFocusHandled?.();
+  }, [focusDocument, onFocusHandled]);
   const [isDragging, setIsDragging] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -140,6 +175,7 @@ const VaultBody: React.FC = () => {
   const [uploadParentId, setUploadParentId] = useState<number | null>(null);
 
   const { showSuccess, showError, showWarning } = useNotificationHelpers();
+  const confirm = useConfirm();
 
   /* ── Data ─────────────────────────────────────────────────────────────────
      Two requests, in parallel. The document index is a separate id space from
@@ -158,13 +194,15 @@ const VaultBody: React.FC = () => {
       .then(d => (Array.isArray(d) ? (d as FileEntry[]) : []))
       .catch(e => {
         console.error('[Vault] Could not load files:', e);
-        showError('Could not load your Vault', e instanceof Error ? e.message : String(e));
+        showError("Couldn't load Vault", e instanceof Error ? e.message : String(e));
         return [] as FileEntry[];
       });
 
     const docsPromise = fetch(`${apiBase}/documents`)
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((payload: { documents?: Record<string, unknown>[] }) => indexDocuments(payload.documents ?? []))
+      .then((payload: Record<string, unknown>[] | { documents?: Record<string, unknown>[] }) =>
+        indexDocuments(Array.isArray(payload) ? payload : (payload.documents ?? [])),
+      )
       .catch(e => {
         console.warn('[Vault] Document index unavailable; status will read Unknown:', e);
         return new Map<number, DocumentInfo>();
@@ -196,37 +234,45 @@ const VaultBody: React.FC = () => {
     };
   }, [fetchAll, refreshToken]);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    document.addEventListener('click', close);
-    document.addEventListener('scroll', close, true);
-    return () => {
-      document.removeEventListener('click', close);
-      document.removeEventListener('scroll', close, true);
-    };
-  }, [contextMenu]);
-
   /* ── Search ───────────────────────────────────────────────────────────────
      Filters the tree while KEEPING the ancestors of a match, so a hit three
      folders deep is still shown in context rather than as an orphan row. */
+  /* File-type filter (PDF, Word, Excel…): empty means every type. */
+  const [types, setTypes] = useState<string[]>([]);
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    const walk = (entries: FileEntry[]) =>
+      entries.forEach(e => {
+        if (e.isDirectory) walk(e.children ?? []);
+        else {
+          const g = fileTypeGroup(e.name);
+          counts[g] = (counts[g] ?? 0) + 1;
+        }
+      });
+    walk(files);
+    return counts;
+  }, [files]);
+
   const visibleFiles = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return files;
+    if (!q && types.length === 0) return files;
+    const fileMatches = (e: FileEntry) =>
+      (!q || e.name.toLowerCase().includes(q)) && (types.length === 0 || types.includes(fileTypeGroup(e.name)));
     const prune = (entries: FileEntry[]): FileEntry[] =>
       entries.flatMap(e => {
-        if (!e.isDirectory) return e.name.toLowerCase().includes(q) ? [e] : [];
+        if (!e.isDirectory) return fileMatches(e) ? [e] : [];
         const children = prune(e.children ?? []);
         if (children.length > 0) return [{ ...e, children }];
-        return e.name.toLowerCase().includes(q) ? [{ ...e, children: [] }] : [];
+        // An empty match on the folder's own name counts only while no type is picked.
+        return q && types.length === 0 && e.name.toLowerCase().includes(q) ? [{ ...e, children: [] }] : [];
       });
     return prune(files);
-  }, [files, query]);
+  }, [files, query, types]);
 
   /** While searching, every surviving folder is expanded — a filtered tree
    *  with collapsed matches shows the user nothing. */
   const effectiveExpanded = useMemo(() => {
-    if (!query.trim()) return expandedDirs;
+    if (!query.trim() && types.length === 0) return expandedDirs;
     const all = new Set<number>();
     const walk = (entries: FileEntry[]) =>
       entries.forEach(e => {
@@ -237,7 +283,37 @@ const VaultBody: React.FC = () => {
       });
     walk(visibleFiles);
     return all;
-  }, [query, expandedDirs, visibleFiles]);
+  }, [query, types, expandedDirs, visibleFiles]);
+
+
+  /** The folder the grid is inside, resolved fresh so a refresh cannot strand it. */
+  const gridFolder = useMemo(() => {
+    let level = visibleFiles;
+    let found: FileEntry | null = null;
+    for (const id of gridPath) {
+      const next = level.find(e => e.id === id && e.isDirectory);
+      if (!next) return null;
+      found = next;
+      level = next.children ?? [];
+    }
+    return found;
+  }, [visibleFiles, gridPath]);
+
+  /* A folder the path pointed at can be deleted, renamed away or filtered out
+     by a search. Rather than showing an empty grid, step back to the root —
+     during render, so the stranded state is never painted for a frame first. */
+  if (gridPath.length > 0 && gridFolder === null) setGridPath([]);
+
+  const gridEntries = useMemo(() => {
+    const level = gridFolder ? (gridFolder.children ?? []) : visibleFiles;
+    return [...level].sort((a, b) =>
+      a.isDirectory === b.isDirectory
+        ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+        : a.isDirectory
+          ? -1
+          : 1,
+    );
+  }, [gridFolder, visibleFiles]);
 
   const totalFiles = useMemo(() => countFiles(files), [files]);
   const indexedCount = useMemo(
@@ -267,28 +343,62 @@ const VaultBody: React.FC = () => {
         return;
       }
 
-      const form = new FormData();
-      accepted.forEach(f => form.append('files', f));
-      const url = parentId
-        ? `${getApiBaseSync()}/files/upload?parent_id=${parentId}`
-        : `${getApiBaseSync()}/files/upload`;
+      // A picked folder arrives as files carrying their path inside it
+      // ("Contracts/2024/nda.pdf"). The upload endpoint stores bare names, so
+      // the folders are created first and each file is sent to its own folder;
+      // otherwise the whole tree would land flat in one place.
+      const apiBase = getApiBaseSync();
+      const dirOf = (f: File) => {
+        const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+        const cut = rel.lastIndexOf('/');
+        return cut > 0 ? rel.slice(0, cut) : '';
+      };
+      const groups = new Map<string, File[]>();
+      for (const f of accepted) {
+        const dir = dirOf(f);
+        groups.set(dir, [...(groups.get(dir) ?? []), f]);
+      }
 
       try {
-        // Network-retrying fetch: survives WebView network suspension (sleep/
-        // lid-close). Safe to repeat — uploads are content-hash-deduplicated.
-        const response = await fetchWithNetworkRetry(url, { method: 'POST', body: form });
-        const text = await response.text();
-        if (!response.ok) {
-          showError('Upload failed', text || `HTTP ${response.status}`);
-          return;
+        const folderIds = new Map<string, number | null>([['', parentId]]);
+        const folderFor = async (dir: string): Promise<number | null> => {
+          if (folderIds.has(dir)) return folderIds.get(dir)!;
+          const cut = dir.lastIndexOf('/');
+          const parent = await folderFor(cut === -1 ? '' : dir.slice(0, cut));
+          const r = await fetchWithNetworkRetry(`${apiBase}/files/folder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: dir.slice(cut + 1), parent_id: parent }),
+          });
+          if (!r.ok) throw new Error((await r.text()) || `Folder "${dir}" could not be created (${r.status}).`);
+          const created = (await r.json()) as { id: number };
+          folderIds.set(dir, created.id);
+          return created.id;
+        };
+
+        for (const [dir, groupFiles] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+          const target = await folderFor(dir);
+          const form = new FormData();
+          groupFiles.forEach(f => form.append('files', f, f.name));
+          const url = target != null ? `${apiBase}/files/upload?parent_id=${target}` : `${apiBase}/files/upload`;
+          // Network-retrying fetch: survives WebView network suspension (sleep/
+          // lid-close). Safe to repeat — uploads are content-hash-deduplicated.
+          const response = await fetchWithNetworkRetry(url, { method: 'POST', body: form });
+          if (!response.ok) {
+            const text = await response.text();
+            showError("Couldn't upload", text || `HTTP ${response.status}`);
+            refresh();
+            return;
+          }
         }
+        if (parentId != null) setExpandedDirs(prev => new Set(prev).add(parentId));
         const skipped =
           rejected.length > 0
             ? ` Skipped ${rejected.length} unsupported: ${rejected.map(f => f.name).join(', ')}.`
             : '';
         showSuccess(
           accepted.length === 1 ? 'Document added' : `${accepted.length} documents added`,
-          `Indexing runs in the background — the status column updates when it finishes.${skipped}`,
+          `Indexing runs in the background. The status column updates when it finishes.${skipped}`,
         );
         refresh();
       } catch (e) {
@@ -296,7 +406,7 @@ const VaultBody: React.FC = () => {
         showError(
           'Upload failed',
           /Failed to fetch|NetworkError/.test(message)
-            ? 'Could not reach the backend. Make sure the app is running.'
+            ? "Counsel's local service didn't respond. Try again in a moment."
             : message,
         );
       }
@@ -315,8 +425,26 @@ const VaultBody: React.FC = () => {
   /** Open one of the two hidden inputs. `parentId` scopes the upload to a
    *  folder; both inputs share one change handler. */
   const triggerUpload = (parentId: number | null = null, folder = false) => {
+    if (folder) {
+      // Several folders at once through the app's dialog; the browser's own
+      // folder input (one folder only) is the fallback outside the app shell.
+      void (async () => {
+        try {
+          const files = await pickFolders();
+          if (files === null) {
+            setUploadParentId(parentId);
+            folderInputRef.current?.click();
+            return;
+          }
+          if (files.length > 0) await uploadBatch(files, parentId);
+        } catch (e) {
+          showError("Couldn't read folders", e instanceof Error ? e.message : String(e));
+        }
+      })();
+      return;
+    }
     setUploadParentId(parentId);
-    (folder ? folderInputRef : fileInputRef).current?.click();
+    fileInputRef.current?.click();
   };
 
   /* Drag-and-drop into the vault. Uses HTML5 dataTransfer here rather than
@@ -341,29 +469,34 @@ const VaultBody: React.FC = () => {
   };
 
   /* ── Mutations ──────────────────────────────────────────────────────────── */
-  const createFolder = async () => {
-    const name = newFolderName.trim();
+  const [nameDialog, askName] = useNameDialog();
+
+  const createFolder = async (parentId: number | null) => {
+    const name = await askName({ title: 'Create Folder', initial: 'New folder' });
     if (!name) return;
     try {
       const r = await fetch(`${getApiBaseSync()}/files/folder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, parent_id: newFolderParentId }),
+        body: JSON.stringify({ name, parent_id: parentId }),
       });
       if (!r.ok) throw new Error(await r.text());
-      setNewFolderName('');
-      setShowNewFolder(false);
-      setNewFolderParentId(null);
+      if (parentId != null) setExpandedDirs(prev => new Set(prev).add(parentId));
       refresh();
     } catch (e) {
-      showError('Could not create the folder', e instanceof Error ? e.message : String(e));
+      showError("Couldn't create folder", e instanceof Error ? e.message : String(e));
     }
   };
 
   const deleteEntries = async (ids: number[]) => {
     if (ids.length === 0) return;
     const plural = ids.length === 1 ? 'this item' : `these ${ids.length} items`;
-    if (!window.confirm(`Delete ${plural}? Folders are removed with all their contents.`)) return;
+    const ok = await confirm({
+      title: ids.length === 1 ? 'Delete from Vault?' : `Delete ${ids.length} items from Vault?`,
+      message: `Delete ${plural}? Folders are removed with all their contents. The files will no longer be available to chats or document search. This cannot be undone.`,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
 
     const results = await Promise.allSettled(
       ids.map(id => fetch(`${getApiBaseSync()}/files/${id}`, { method: 'DELETE' })),
@@ -371,8 +504,8 @@ const VaultBody: React.FC = () => {
     const failed = results.filter(r => r.status === 'rejected' || !r.value.ok).length;
     if (failed > 0) {
       showError(
-        'Some items were not deleted',
-        `${failed} of ${ids.length} could not be removed. The list has been refreshed.`,
+        "Some items weren't deleted",
+        `${failed} of ${ids.length} couldn't be removed. The list has been refreshed.`,
       );
     }
     setSelected(new Set());
@@ -381,10 +514,15 @@ const VaultBody: React.FC = () => {
 
   const openPreview = async (entry: FileEntry) => {
     if (entry.isDirectory) return;
+    // A second click on the open row folds its preview away.
+    if (previewTarget?.entryId === entry.id) {
+      setPreviewTarget(null);
+      return;
+    }
     // Fast path: the joined index already knows this file's document id.
     const known = docsByLocalFile.get(entry.id);
     if (known) {
-      setPreviewTarget({ documentId: known.documentId, name: entry.name });
+      setPreviewTarget({ documentId: known.documentId, name: entry.name, entryId: entry.id });
       return;
     }
     // Miss — a file uploaded before the document store existed. The backend
@@ -393,10 +531,10 @@ const VaultBody: React.FC = () => {
       const resp = await fetch(`${getApiBaseSync()}/documents/by-local-file/${entry.id}`);
       if (!resp.ok) throw new Error(await resp.text());
       const doc = await resp.json();
-      setPreviewTarget({ documentId: doc.id, name: entry.name });
+      setPreviewTarget({ documentId: doc.id, name: entry.name, entryId: entry.id });
       refresh();
     } catch (e) {
-      showError(`Could not preview "${entry.name}"`, e instanceof Error ? e.message : String(e));
+      showError(`Couldn't preview "${entry.name}"`, e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -417,135 +555,311 @@ const VaultBody: React.FC = () => {
     });
 
   /* ── Rows ───────────────────────────────────────────────────────────────── */
+  const rowMenu = (entry: FileEntry): VaultMenuEntry[] =>
+    entry.isDirectory
+      ? [
+          { label: isOpenDir(entry.id) ? 'Collapse' : 'Expand', onSelect: () => toggleDir(entry.id) },
+          { label: 'New folder inside', onSelect: () => void createFolder(entry.id) },
+          { label: 'Upload files here', onSelect: () => triggerUpload(entry.id, false) },
+          'separator',
+          { label: 'Delete', onSelect: () => void deleteEntries([entry.id]) },
+        ]
+      : [
+          { label: 'Preview', onSelect: () => void openPreview(entry) },
+          'separator',
+          { label: 'Delete', onSelect: () => void deleteEntries([entry.id]) },
+        ];
+
+  function isOpenDir(id: number) {
+    return effectiveExpanded.has(id);
+  }
+
+  /**
+   * One tile, for the grid.
+   *
+   * It carries the same four facts the row does — selected, name, kind and
+   * indexing state — because a document that is stored but not readable is
+   * exactly as invisible to chat in tiles as it is in the list, and the view
+   * you happen to prefer must not decide whether you are told.
+   */
+  const renderTile = (entry: FileEntry): React.ReactNode => {
+    const isSelected = selected.has(entry.id);
+    const doc = entry.isDirectory ? undefined : docsByLocalFile.get(entry.id);
+    const state: ExtractionState = doc?.state ?? 'pending';
+    const ext = extensionLabel(entry.name);
+
+    return (
+      <div
+        key={entry.id}
+        className={`ws-tile vault-tile${isSelected ? ' ws-tile-selected' : ''}`}
+      >
+        <div className="ws-tile-top">
+          <button
+            type="button"
+            className={`ws-check${isSelected ? ' ws-check-on' : ''}`}
+            aria-pressed={isSelected}
+            aria-label={`Select ${entry.name}`}
+            onClick={() => toggleSelected(entry.id)}
+          >
+            {isSelected && <Check size={12} strokeWidth={3} />}
+          </button>
+          <VaultMenu label={entry.name} entries={rowMenu(entry)} />
+        </div>
+        <button
+          type="button"
+          className="ws-tile-open"
+          onClick={() => {
+            if (entry.isDirectory) setGridPath(path => [...path, entry.id]);
+            else void openPreview(entry);
+          }}
+          title={entry.isDirectory ? `Open ${entry.name}` : entry.name}
+        >
+          {entry.isDirectory ? (
+            <span className="ws-tile-icon ws-icon-folder">
+              <FolderGlyph size={FILE_ICON.grid} />
+            </span>
+          ) : (
+            <span className="ws-tile-icon ws-tile-icon-file">
+              <FileBrandTile format={ext === '-' ? 'file' : ext} size={FILE_ICON.grid} />
+            </span>
+          )}
+          <span className="ws-tile-text">
+            <span className="ws-tile-name">{entry.name}</span>
+            <span className="ws-tile-meta">
+              {entry.isDirectory ? 'Folder' : `${ext === '-' ? 'FILE' : ext.toUpperCase()} · ${formatSize(entry.size)}`}
+            </span>
+          </span>
+        </button>
+        {!entry.isDirectory && (
+          <span
+            className={`ws-chip vault-chip-${state} vault-tile-chip`}
+            title={
+              state === 'failed'
+                ? (doc?.error ?? 'The text of this document could not be extracted.')
+                : state === 'indexed'
+                  ? `${doc?.charCount.toLocaleString()} characters extracted, usable in chat`
+                  : 'Stored, but its text has not been extracted yet'
+            }
+          >
+            <span className="ws-chip-dot" aria-hidden="true" />
+            {STATUS_COPY[state]}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   const renderRow = (entry: FileEntry, depth = 0): React.ReactNode => {
     const isOpen = effectiveExpanded.has(entry.id);
     const isSelected = selected.has(entry.id);
     const doc = entry.isDirectory ? undefined : docsByLocalFile.get(entry.id);
-    const state: ExtractionState | 'unknown' = entry.isDirectory
-      ? 'unknown'
-      : (doc?.state ?? 'pending');
+    const state: ExtractionState = doc?.state ?? 'pending';
+    const ext = extensionLabel(entry.name);
 
     return (
       <React.Fragment key={entry.id}>
         <div
-          className={`vault-row vault-row--file${isSelected ? ' is-selected' : ''}${entry.isDirectory ? ' is-folder' : ''}`}
-          onClick={() => {
+          role="row"
+          className={`ws-list-row vault-list-row${isSelected ? ' ws-list-selected' : ''}`}
+          onDoubleClick={() => {
             if (entry.isDirectory) toggleDir(entry.id);
             else void openPreview(entry);
           }}
-          onContextMenu={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            setContextMenu({ x: e.clientX, y: e.clientY, entry });
-          }}
-          tabIndex={0}
-          onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
+        >
+          <span>
+            <button
+              type="button"
+              className={`ws-check${isSelected ? ' ws-check-on' : ''}`}
+              aria-pressed={isSelected}
+              aria-label={`Select ${entry.name}`}
+              onClick={() => toggleSelected(entry.id)}
+            >
+              {isSelected && <Check size={12} strokeWidth={3} />}
+            </button>
+          </span>
+
+          <button
+            type="button"
+            className="ws-list-name"
+            style={{ paddingLeft: `${depth * 20}px` }}
+            onClick={() => {
               if (entry.isDirectory) toggleDir(entry.id);
               else void openPreview(entry);
-            }
-          }}
-          role="button"
-        >
-          <span className="vault-name" style={{ paddingLeft: `${depth * 18}px` }}>
-            <input
-              type="checkbox"
-              className="vault-checkbox"
-              checked={isSelected}
-              onChange={() => toggleSelected(entry.id)}
-              onClick={e => e.stopPropagation()}
-              aria-label={`Select ${entry.name}`}
-            />
+            }}
+            title={entry.name}
+          >
             {entry.isDirectory ? (
-              <button
-                type="button"
-                className={`vault-disclosure${isOpen ? ' is-open' : ''}`}
-                onClick={e => {
-                  e.stopPropagation();
-                  toggleDir(entry.id);
-                }}
-                aria-label={isOpen ? 'Collapse' : 'Expand'}
-                aria-expanded={isOpen}
-              >
-                <ChevronRight size={13} />
-              </button>
+              <>
+                <ChevronRight
+                  size={14}
+                  strokeWidth={2}
+                  className={`vault-chevron${isOpen ? ' is-open' : ''}`}
+                  aria-hidden="true"
+                />
+                {isOpen ? (
+                  <span className="ws-list-icon ws-icon-folder"><FolderGlyph size={FILE_ICON.list} /></span>
+                ) : (
+                  <span className="ws-list-icon ws-icon-folder"><FolderGlyph size={FILE_ICON.list} /></span>
+                )}
+              </>
             ) : (
-              <span className="vault-spacer" />
+              <>
+                <span className="vault-chevron-space" aria-hidden="true" />
+                <span className="ws-list-icon ws-list-icon-file">
+                  <FileBrandTile format={ext === '-' ? 'file' : ext} size={FILE_ICON.list} />
+                </span>
+              </>
             )}
-            <span className={`vault-glyph${entry.isDirectory ? ' vault-glyph--folder' : ''}`} aria-hidden="true">
-              {entry.isDirectory ? (
-                isOpen ? <FolderOpen size={15} /> : <Folder size={15} />
-              ) : (
-                extensionLabel(entry.name)
-              )}
-            </span>
-            <span className="vault-label" title={entry.name}>{entry.name}</span>
+            <span className="ws-list-title">{entry.name}</span>
             {!entry.isDirectory && (entry.access_count ?? 0) > 0 && (
               <span className="vault-refs" title={`Referenced in ${entry.access_count} chat message(s)`}>
-                ·&nbsp;{entry.access_count}&nbsp;ref{entry.access_count === 1 ? '' : 's'}
+                {entry.access_count}&nbsp;ref{entry.access_count === 1 ? '' : 's'}
               </span>
             )}
-          </span>
+          </button>
 
           <span>
             {entry.isDirectory ? (
-              <span className="vault-cell">—</span>
+              <span className="ws-list-cell vault-muted">-</span>
             ) : (
               <span
-                className={`vault-status vault-status--${state}`}
+                className={`ws-chip vault-chip-${state}`}
                 title={
                   state === 'failed'
                     ? (doc?.error ?? 'The text of this document could not be extracted.')
                     : state === 'indexed'
-                      ? `${doc?.charCount.toLocaleString()} characters extracted — usable in chat`
+                      ? `${doc?.charCount.toLocaleString()} characters extracted, usable in chat`
                       : 'Stored, but its text has not been extracted yet'
                 }
               >
-                <span className="vault-status__dot" />
-                {state === 'unknown' ? 'Unknown' : STATUS_COPY[state]}
+                <span className="ws-chip-dot" aria-hidden="true" />
+                {STATUS_COPY[state]}
               </span>
             )}
           </span>
 
-          <span className="vault-cell vault-cell--num">
-            {entry.isDirectory ? '—' : formatSize(entry.size)}
-          </span>
-          <span className="vault-cell">{formatDate(entry.modified)}</span>
+          <span className="ws-list-cell">{entry.isDirectory ? 'Folder' : formatSize(entry.size)}</span>
+          <span className="ws-list-cell">{formatDate(entry.modified)}</span>
 
-          <span className="vault-actions">
-            {!entry.isDirectory && (
-              <button
-                type="button"
-                className="ui-iconbtn ui-iconbtn--sm"
-                onClick={e => {
-                  e.stopPropagation();
-                  void openPreview(entry);
-                }}
-                title="Preview document"
-              >
-                <Eye size={13} />
-              </button>
-            )}
-            <button
-              type="button"
-              className="ui-iconbtn ui-iconbtn--sm"
-              onClick={e => {
-                e.stopPropagation();
-                setContextMenu({ x: e.clientX, y: e.clientY, entry });
-              }}
-              title="More actions"
-            >
-              <MoreVertical size={13} />
-            </button>
+          <span className="ws-list-actions">
+            <VaultMenu label={entry.name} entries={rowMenu(entry)} />
           </span>
         </div>
+        {/* The preview opens right under its row, as wide as the list; the
+            rest of the list continues below it. */}
+        {!entry.isDirectory && previewTarget?.entryId === entry.id && (
+          <Suspense fallback={null}>
+            <DocumentViewer
+              inline
+              documentId={previewTarget.documentId}
+              filename={previewTarget.name}
+              highlight={previewTarget.highlight}
+              page={previewTarget.page}
+              onClose={() => setPreviewTarget(null)}
+            />
+          </Suspense>
+        )}
         {entry.isDirectory && isOpen && entry.children?.map(c => renderRow(c, depth + 1))}
       </React.Fragment>
     );
   };
 
   const selectionMode = selected.size > 0;
+
+  /* ── AI Assistant ─────────────────────────────────────────────────────────
+     The assistant reads what the user is looking at here: the open preview,
+     otherwise the files ticked in the list. Folders contribute their name only.
+     Text comes from the extraction the Vault already performs, so a file that
+     reads "Not indexed" or "Unreadable" is named but not quoted. */
+  const { ask } = useAssistant();
+  const entriesById = useMemo(() => {
+    const map = new Map<number, FileEntry>();
+    const walk = (list: FileEntry[]) => list.forEach(e => { map.set(e.id, e); walk(e.children ?? []); });
+    walk(files);
+    return map;
+  }, [files]);
+
+  const assistantTargets = useMemo(() => {
+    if (previewTarget) return [{ name: previewTarget.name, documentId: previewTarget.documentId as number | null }];
+    return [...selected]
+      .map(id => entriesById.get(id))
+      .filter((e): e is FileEntry => !!e)
+      .map(e => ({ name: e.isDirectory ? `${e.name}/` : e.name, documentId: e.isDirectory ? null : docsByLocalFile.get(e.id)?.documentId ?? null }));
+  }, [previewTarget, selected, entriesById, docsByLocalFile]);
+
+  const [assistantTexts, setAssistantTexts] = useState<{ key: string; text: string } | null>(null);
+  const targetsKey = assistantTargets.map(t => `${t.name}:${t.documentId ?? ''}`).join('|');
+  useEffect(() => {
+    if (!targetsKey) return;
+    let live = true;
+    // At most three documents are quoted; a long selection is listed by name.
+    const readable = assistantTargets.filter(t => t.documentId != null).slice(0, 3);
+    const perDoc = Math.floor(30_000 / Math.max(1, readable.length));
+    void Promise.all(
+      readable.map(async t => {
+        try {
+          const r = await fetch(`${getApiBaseSync()}/documents/${t.documentId}`);
+          if (!r.ok) return '';
+          const meta = await r.json();
+          const text = String(meta.extracted_text ?? '');
+          return text ? `=== ${t.name} ===\n${text.slice(0, perDoc)}` : '';
+        } catch {
+          return '';
+        }
+      }),
+    ).then(parts => live && setAssistantTexts({ key: targetsKey, text: parts.filter(Boolean).join('\n\n') }));
+    return () => {
+      live = false;
+    };
+    // assistantTargets is fully described by targetsKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetsKey]);
+
+  const assistantBody = assistantTexts?.key === targetsKey ? assistantTexts.text : '';
+  const textsReady = assistantTexts?.key === targetsKey;
+  // A question asked before the files' text has loaded waits for it.
+  const [queuedAsk, setQueuedAsk] = useState<string | null>(null);
+  useEffect(() => {
+    if (!queuedAsk || !textsReady) return;
+    const q = queuedAsk;
+    setQueuedAsk(null);
+    // After the page registration above has reached the assistant.
+    window.setTimeout(() => ask(q), 60);
+  }, [queuedAsk, textsReady, ask]);
+  const names = assistantTargets.map(t => t.name);
+  useAssistantPage(
+    assistantTargets.length
+      ? {
+          label: 'Vault',
+          title: names.length === 1 ? names[0] : `${names.length} selected files`,
+          format: names.length > 1 ? names.slice(0, 8).join(', ') + (names.length > 8 ? '…' : '') : undefined,
+          text: assistantBody || undefined,
+          suggestions:
+            names.length > 1
+              ? ['Compare these documents', 'What do these files have in common?', 'Build an index of these documents']
+              : ['Summarise this document', 'List the key dates and parties', 'What risks should I flag?'],
+        }
+      : null,
+  );
+
+  // Everything the user can currently see: top-level items plus the contents
+  // of expanded folders. "Select all" acts on exactly these.
+  const visibleIds = useMemo(() => {
+    // In tiles, "on screen" is exactly the folder being looked at — nothing
+    // below it is drawn, so nothing below it may be selected by Select all.
+    if (view === 'grid') return gridEntries.map(e => e.id);
+    const ids: number[] = [];
+    const walk = (entries: FileEntry[]) =>
+      entries.forEach(e => {
+        ids.push(e.id);
+        if (e.isDirectory && effectiveExpanded.has(e.id)) walk(e.children ?? []);
+      });
+    walk(visibleFiles);
+    return ids;
+  }, [view, gridEntries, visibleFiles, effectiveExpanded]);
+  const selectedVisible = visibleIds.filter(id => selected.has(id)).length;
+  const selectAllVisible = () => setSelected(new Set(visibleIds));
+  const clearSelection = () => setSelected(new Set());
 
   return (
     <div
@@ -554,10 +868,11 @@ const VaultBody: React.FC = () => {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      {nameDialog}
       <div className={`vault-dropzone${isDragging ? ' is-active' : ''}`} aria-hidden={!isDragging}>
         <div className="vault-dropzone__scrim" />
         <div className="vault-dropzone__label">
-          <Upload size={28} strokeWidth={1.5} style={{ color: 'var(--accent-fg)' }} />
+          <Upload size={28} strokeWidth={1.5} />
           <span className="vault-dropzone__title">Drop to add to your Vault</span>
           <span className="vault-dropzone__hint">{SUPPORTED_LIST_LABEL}</span>
         </div>
@@ -583,215 +898,243 @@ const VaultBody: React.FC = () => {
         style={{ display: 'none' }}
       />
 
-      <div className="vault-toolbar">
-        {selectionMode ? (
-          <>
-            <span className="vault-selection-count">{selected.size} selected</span>
-            <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => setSelected(new Set())}>
-              <X size={13} /> Clear
-            </button>
-            <span style={{ marginLeft: 'auto' }} />
-            <button
-              type="button"
-              className="ui-btn ui-btn--sm ui-btn--danger"
-              onClick={() => void deleteEntries([...selected])}
-            >
-              <Trash2 size={13} /> Delete selected
-            </button>
-          </>
-        ) : (
-          <>
-            <label className="vault-search">
-              <Search size={13} />
-              <input
-                className="ui-input"
-                type="search"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                placeholder="Search your Vault…"
-                aria-label="Search documents"
-              />
-            </label>
-            <span style={{ marginLeft: 'auto' }} />
-            <button
-              type="button"
-              className="ui-btn ui-btn--sm ui-btn--ghost"
-              onClick={() => {
-                setNewFolderParentId(null);
-                setShowNewFolder(true);
-              }}
-            >
-              <FolderPlus size={14} /> New folder
-            </button>
-            <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" onClick={() => triggerUpload(null, true)}>
-              <Upload size={14} /> Folder
-            </button>
-            <button type="button" className="ui-btn ui-btn--sm ui-btn--primary" onClick={() => triggerUpload(null, false)}>
-              <Upload size={14} /> Add documents
-            </button>
-          </>
-        )}
-      </div>
+      <div className="ws-landing vault-landing">
+        <header className="ws-landing-head vault-head">
+          {/* No glyph: page titles across the app are the word alone. */}
+          <h1 className="ws-landing-title vault-title-row">Vault</h1>
+        </header>
 
-      {showNewFolder && (
-        <div className="vault-newfolder">
+        <div className="ws-searchbar">
+          <Search size={15} strokeWidth={2.25} className="ws-search-icon" />
           <input
-            className="ui-input"
-            type="text"
-            value={newFolderName}
-            onChange={e => setNewFolderName(e.target.value)}
+            className="ws-search-input"
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter') void createFolder();
-              if (e.key === 'Escape') setShowNewFolder(false);
+              if (e.key === 'Escape') setQuery('')
             }}
-            placeholder="Folder name"
-            autoFocus
+            placeholder="Search vault"
+            aria-label="Search vault"
           />
-          {newFolderParentId != null && <span className="vault-newfolder__scope">inside the selected folder</span>}
-          <span style={{ marginLeft: 'auto' }} />
-          <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => setShowNewFolder(false)}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="ui-btn ui-btn--sm ui-btn--primary"
-            onClick={() => void createFolder()}
-            disabled={!newFolderName.trim()}
-          >
-            Create
-          </button>
-        </div>
-      )}
-
-      <div className="vault-body">
-        {isLoading ? (
-          <div className="vault-table">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="ui-skeleton vault-skeleton-row" />
-            ))}
-          </div>
-        ) : totalFiles === 0 && files.length === 0 ? (
-          <div className="vault-empty">
-            <Library size={34} strokeWidth={1.25} className="vault-empty__icon" />
-            <span className="vault-empty__title">Your Vault is empty</span>
-            <span className="vault-empty__hint">
-              Documents added here are read once and stay available to every conversation — reference
-              them by typing <code>@filename</code> in any chat.
-            </span>
-            <span className="vault-empty__actions">
-              <button type="button" className="ui-btn ui-btn--secondary" onClick={() => triggerUpload(null, true)}>
-                <Upload size={14} /> Add a folder
-              </button>
-              <button type="button" className="ui-btn ui-btn--primary" onClick={() => triggerUpload(null, false)}>
-                <Upload size={14} /> Add documents
-              </button>
-            </span>
-          </div>
-        ) : visibleFiles.length === 0 ? (
-          <div className="vault-empty">
-            <Search size={30} strokeWidth={1.25} className="vault-empty__icon" />
-            <span className="vault-empty__title">No matches</span>
-            <span className="vault-empty__hint">
-              Nothing in your Vault matches “{query}”. Search covers file names.
-            </span>
-          </div>
-        ) : (
-          <div className="vault-table" role="table">
-            <div className="vault-row vault-row--head" role="row">
-              <span>Document</span>
-              <span>Status</span>
-              <span className="vault-cell--num">Size</span>
-              <span>Added</span>
-              <span />
-            </div>
-            {visibleFiles.map(entry => renderRow(entry))}
-          </div>
-        )}
-      </div>
-
-      {/* Footer summary. "N indexed of M" is the honest headline for this
-          surface: it is the count that determines what the model can actually
-          use, and it was not shown anywhere before. */}
-      {!isLoading && totalFiles > 0 && (
-        <div className="vault-header" style={{ borderBottom: 'none', borderTop: '1px solid var(--border-subtle)', padding: 'var(--sp-3) var(--sp-6)' }}>
-          <span className="vault-subtitle">
-            {indexedCount} of {totalFiles} document{totalFiles === 1 ? '' : 's'} indexed and usable in chat
-            {indexedCount < totalFiles && ' — hover a status to see why'}
-          </span>
-        </div>
-      )}
-
-      {contextMenu && (
-        <div className="vault-menu" style={{ top: contextMenu.y, left: contextMenu.x }} role="menu">
-          {!contextMenu.entry.isDirectory && (
-            <button type="button" className="vault-menu__item" onClick={() => void openPreview(contextMenu.entry)}>
-              <Eye size={14} /> Preview
+          {query && (
+            <button type="button" className="ws-close" onClick={() => setQuery('')} aria-label="Clear search">
+              <X size={14} strokeWidth={1.75} />
             </button>
           )}
-          {contextMenu.entry.isDirectory && (
-            <>
-              <button
-                type="button"
-                className="vault-menu__item"
-                onClick={() => {
-                  setNewFolderParentId(contextMenu.entry.id);
-                  setShowNewFolder(true);
-                }}
-              >
-                <FolderPlus size={14} /> New folder inside
-              </button>
-              <button type="button" className="vault-menu__item" onClick={() => triggerUpload(contextMenu.entry.id, false)}>
-                <Upload size={14} /> Add documents here
-              </button>
-              <button type="button" className="vault-menu__item" onClick={() => triggerUpload(contextMenu.entry.id, true)}>
-                <Upload size={14} /> Add a folder here
-              </button>
-            </>
-          )}
-          <div className="vault-menu__sep" />
-          <button
-            type="button"
-            className="vault-menu__item vault-menu__item--danger"
-            onClick={() => void deleteEntries([contextMenu.entry.id])}
-          >
-            <Trash2 size={14} /> Delete
-          </button>
         </div>
-      )}
 
-      {previewTarget && (
-        <DocumentViewer
-          documentId={previewTarget.documentId}
-          filename={previewTarget.name}
-          onClose={() => setPreviewTarget(null)}
-        />
+        <section className="ws-files-box" aria-label="Vault documents">
+          <div className="ws-files-toolbar">
+            <div className="ws-filters">
+              {files.length > 0 && (
+                <SelectAll
+                  total={visibleIds.length}
+                  selected={selectedVisible}
+                  onSelectAll={selectAllVisible}
+                  onClear={clearSelection}
+                />
+              )}
+              {files.length > 0 && <TypeFilter value={types} onChange={setTypes} counts={typeCounts} />}
+              {selectionMode ? (
+                <>
+                  <span className="vault-count">{selected.size} selected</span>
+                  <button
+                    type="button"
+                    className="ws-filter"
+                    onClick={() => setSelected(new Set())}
+                  >
+                    <X size={13} strokeWidth={2.25} /> Clear
+                  </button>
+                  <button
+                    type="button"
+                    className="ws-filter"
+                    onClick={() => setQueuedAsk(selected.size === 1 ? 'Summarise this document.' : 'Summarise these documents and how they relate.')}
+                    title="Open LARA with the selected files"
+                  >
+                    <AssistantMark size={12} /> Ask LARA
+                  </button>
+                  <button
+                    type="button"
+                    className="ws-filter"
+                    onClick={() => void deleteEntries([...selected])}
+                  >
+                    <Trash2 size={13} strokeWidth={2} /> Delete selected
+                  </button>
+                </>
+              ) : (
+                !isLoading &&
+                totalFiles > 0 && (
+                  <span className="vault-count">
+                    {indexedCount} of {totalFiles} document{totalFiles === 1 ? '' : 's'} indexed and usable in chat
+                  </span>
+                )
+              )}
+            </div>
+            <div className="ws-toolbar-end">
+              <div className="ws-toolbar-actions ws-library-actions">
+                <UploadMenu
+                  className="ws-upload-btn"
+                  onAddFiles={() => triggerUpload(null, false)}
+                  onAddFolder={() => triggerUpload(null, true)}
+                  onCreateFolder={() => void createFolder(null)}
+                />
+              </div>
+
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div className="vault-state">Loading your Vault…</div>
+          ) : files.length === 0 ? (
+            // Same empty state as the Workspace and Library.
+            <EmptyPlace place="Vault" onImport={() => triggerUpload(null)} />
+          ) : visibleFiles.length === 0 ? (
+            <div className="ws-empty">
+              <span className="ws-empty__title">No matches</span>
+              <span className="ws-empty__text">
+                {query.trim()
+                  ? `Nothing in your Vault matches “${query}”${types.length ? ' of the chosen types' : ''}.`
+                  : 'No files of the chosen types.'}
+              </span>
+            </div>
+          ) : view === 'grid' ? (
+            <div className="ws-grid-items ws-tiles vault-tiles ws-mode-in" key={`g${gridPath.join('-')}`}>
+              {gridPath.length > 0 && (
+                <button
+                  type="button"
+                  className="ws-tile ws-tile-up"
+                  onClick={() => setGridPath(path => path.slice(0, -1))}
+                  title="Up one level"
+                >
+                  <span className="ws-tile-icon">
+                    <CornerLeftUp size={20} strokeWidth={1.75} />
+                  </span>
+                  <span className="ws-tile-text">
+                    <span className="ws-tile-name">Up one level</span>
+                  </span>
+                </button>
+              )}
+              {gridEntries.map(entry => renderTile(entry))}
+            </div>
+          ) : (
+            <div className="ws-file-list vault-list" role="table" aria-label="Vault documents">
+              <div className="ws-list-head" role="row">
+                <span role="columnheader">
+                  <SelectAll
+                    compact
+                    total={visibleIds.length}
+                    selected={selectedVisible}
+                    onSelectAll={selectAllVisible}
+                    onClear={clearSelection}
+                  />
+                </span>
+                <span role="columnheader">Name</span>
+                <span role="columnheader">Status</span>
+                <span role="columnheader">Size</span>
+                <span role="columnheader">Added</span>
+                <span role="columnheader" />
+              </div>
+              <div className="ws-list-body">{visibleFiles.map(entry => renderRow(entry))}</div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {previewTarget && previewTarget.entryId === undefined && (
+        /* No fallback UI: the viewer opens over the page, and a spinner that
+           appears for the one frame the chunk takes to arrive reads as a
+           flicker rather than as progress. The page stays put until it is
+           ready. */
+        <Suspense fallback={null}>
+          <DocumentViewer
+            documentId={previewTarget.documentId}
+            filename={previewTarget.name}
+            highlight={previewTarget.highlight}
+            page={previewTarget.page}
+            onClose={() => setPreviewTarget(null)}
+          />
+        </Suspense>
       )}
     </div>
   );
 };
 
-const LocalFilesPanel: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
-  if (!isOpen) return null;
+type VaultMenuEntry = { label: string; onSelect: () => void } | 'separator';
+
+/** The row's ⋮ menu, drawn with the Workspace dropdown styles. */
+const VaultMenu: React.FC<{ label: string; entries: VaultMenuEntry[] }> = ({ label, entries }) => {
+  const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
+  const anchor = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      if (!anchor.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
 
   return (
-    <div className="vault">
-      <div className="vault-header">
-        <button type="button" className="ui-iconbtn" onClick={onClose} title="Back" aria-label="Back">
-          <ArrowLeft size={17} />
-        </button>
-        <div className="vault-header__titles">
-          <h1 className="vault-title">
-            <Library size={19} strokeWidth={1.5} />
-            Vault
-          </h1>
-          <p className="vault-subtitle">
-            Read once, available to every conversation. Reference with <code>@filename</code>.
-          </p>
+    <div className={`ws-item-menu${open ? ' is-open' : ''}`} ref={anchor}>
+      <button
+        type="button"
+        className="ws-dots"
+        aria-label={`Actions for ${label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="More actions"
+        onClick={e => {
+          e.stopPropagation();
+          if (!open && anchor.current) {
+            const trigger = anchor.current.getBoundingClientRect();
+            const scroller = anchor.current.closest('.ws-list-body');
+            const bottom = scroller ? scroller.getBoundingClientRect().bottom : window.innerHeight;
+            setUp(trigger.bottom + 240 > bottom);
+          }
+          setOpen(o => !o);
+        }}
+      >
+        <MoreVertical size={16} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className={`ws-filter-menu ws-actions-menu${up ? ' is-up' : ''}`} role="menu">
+          {entries.map((entry, i) =>
+            entry === 'separator' ? (
+              <div key={`sep${i}`} className="ws-menu-divider" role="separator" />
+            ) : (
+              <button
+                key={entry.label}
+                type="button"
+                role="menuitem"
+                className="ws-filter-option"
+                onClick={() => {
+                  setOpen(false);
+                  entry.onSelect();
+                }}
+              >
+                {entry.label}
+              </button>
+            ),
+          )}
         </div>
-      </div>
-      <VaultBody />
+      )}
     </div>
   );
+};
+
+const LocalFilesPanel: React.FC<{ isOpen: boolean; onClose: () => void } & VaultFocusProps> = ({ isOpen, focusDocument, onFocusHandled }) => {
+  if (!isOpen) return null;
+  return <VaultBody focusDocument={focusDocument} onFocusHandled={onFocusHandled} />;
 };
 
 export default LocalFilesPanel;

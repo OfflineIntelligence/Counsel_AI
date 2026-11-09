@@ -20,6 +20,8 @@ describe('Sidebar Component', () => {
     onPinChat: vi.fn(),
     isOpen: true,
     onToggle: vi.fn(),
+    // Previous chats are listed only on the chat page, as in the app.
+    activeView: 'chat',
   };
 
   beforeEach(() => {
@@ -106,23 +108,21 @@ describe('Sidebar Component', () => {
 
     renderWithProviders(<Sidebar {...defaultProps} conversations={conversations} onDeleteChat={onDeleteChat} />);
     
-    const deleteButton = screen.queryByTitle(/delete|remove/i);
-    if (deleteButton) {
-      fireEvent.click(deleteButton);
-      expect(onDeleteChat).toHaveBeenCalledWith('1');
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }));
+    expect(onDeleteChat).toHaveBeenCalledWith('1');
   });
 
-  it('does not show delete button in old UI', async () => {
+  it('gives every chat row its own pin, save and delete actions', async () => {
     const conversations = [
       { id: '1', title: 'Chat to Delete', messages: [], createdAt: new Date(), pinned: false },
     ];
 
     renderWithProviders(<Sidebar {...defaultProps} conversations={conversations} />);
 
-    // Old UI does not include per-item delete control
-    const deleteButton = screen.queryByTitle(/delete|remove/i);
-    expect(deleteButton).toBeNull();
+    // Rows carry their actions (shown on hover or keyboard focus).
+    expect(screen.getByRole('button', { name: 'Pin chat' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save chat' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete chat' })).toBeTruthy();
   });
 
   // ===== Pin Conversation Tests =====
@@ -135,11 +135,8 @@ describe('Sidebar Component', () => {
 
     renderWithProviders(<Sidebar {...defaultProps} conversations={conversations} onPinChat={onPinChat} />);
     
-    const pinButton = screen.queryByTitle(/pin|unpin/i);
-    if (pinButton) {
-      fireEvent.click(pinButton);
-      expect(onPinChat).toHaveBeenCalledWith('1');
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Pin chat' }));
+    expect(onPinChat).toHaveBeenCalledWith('1');
   });
 
   it('shows different icon for pinned conversations', () => {
@@ -255,7 +252,8 @@ describe('Sidebar Component', () => {
 
     renderWithProviders(<Sidebar {...defaultProps} conversations={conversations} />);
     
-    const firstChat = screen.getByText('Chat 1');
+    // The row's button is what takes focus (the title is a span inside it).
+    const firstChat = screen.getByText('Chat 1').closest('button') as HTMLButtonElement;
     firstChat.focus();
     expect(document.activeElement).toBe(firstChat);
   });

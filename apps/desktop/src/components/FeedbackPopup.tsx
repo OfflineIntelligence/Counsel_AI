@@ -67,7 +67,8 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
       style={{
         position: 'fixed',
         bottom: '24px',
-        right: '24px',
+        // Clear of the AI Assistant panel when it is open.
+        right: 'calc(24px + var(--app-right-inset, 0px))',
         zIndex: 9999,
         maxWidth: '380px',
         width: '100%',
@@ -120,7 +121,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
               <h3
                 style={{
                   fontSize: '15px',
-                  fontWeight: 600,
+                  fontWeight: 'var(--fw-semibold)',
                   color: 'var(--text-primary)',
                   margin: 0,
                 }}
@@ -151,7 +152,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
               justifyContent: 'center',
               cursor: 'pointer',
               color: 'var(--text-muted)',
-              transition: 'all 0.2s',
+              transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s',
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = 'var(--bg-hover)';
@@ -188,7 +189,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
               <h4
                 style={{
                   fontSize: '16px',
-                  fontWeight: 600,
+                  fontWeight: 'var(--fw-semibold)',
                   color: 'var(--text-primary)',
                   marginBottom: '6px',
                 }}
@@ -207,7 +208,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                   style={{
                     display: 'block',
                     fontSize: '12px',
-                    fontWeight: 500,
+                    fontWeight: 'var(--fw-medium)',
                     color: 'var(--text-secondary)',
                     marginBottom: '4px',
                   }}
@@ -228,7 +229,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                     color: 'var(--text-primary)',
                     fontSize: '13px',
                     outline: 'none',
-                    transition: 'all 0.2s',
+                    transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s',
                   }}
                   onFocus={(e) => {
                     e.currentTarget.style.borderColor = 'var(--accent)';
@@ -247,7 +248,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                   style={{
                     display: 'block',
                     fontSize: '12px',
-                    fontWeight: 500,
+                    fontWeight: 'var(--fw-medium)',
                     color: 'var(--text-secondary)',
                     marginBottom: '4px',
                   }}
@@ -268,7 +269,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                     color: 'var(--text-primary)',
                     fontSize: '13px',
                     outline: 'none',
-                    transition: 'all 0.2s',
+                    transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s',
                   }}
                   onFocus={(e) => {
                     e.currentTarget.style.borderColor = 'var(--accent)';
@@ -287,7 +288,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                   style={{
                     display: 'block',
                     fontSize: '12px',
-                    fontWeight: 500,
+                    fontWeight: 'var(--fw-medium)',
                     color: 'var(--text-secondary)',
                     marginBottom: '4px',
                   }}
@@ -309,7 +310,7 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                     fontSize: '13px',
                     outline: 'none',
                     resize: 'none',
-                    transition: 'all 0.2s',
+                    transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s',
                     fontFamily: 'inherit',
                   }}
                   onFocus={(e) => {
@@ -351,9 +352,9 @@ const FeedbackPopup: React.FC<FeedbackPopupProps> = ({ isOpen, onClose }) => {
                     : 'var(--accent)',
                   color: 'var(--text-on-accent)',
                   fontSize: '14px',
-                  fontWeight: 600,
+                  fontWeight: 'var(--fw-semibold)',
                   cursor: isSubmitting ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.2s',
+                  transition: 'background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s',
                   opacity: isSubmitting ? 0.7 : 1,
                   display: 'flex',
                   alignItems: 'center',

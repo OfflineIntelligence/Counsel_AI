@@ -1,5 +1,7 @@
 // Chat API: stream SSE responses from local backend (127.0.0.1:8888)
 
+import type { Readiness } from './models';
+
 export interface Message {
     role: 'system' | 'user' | 'assistant';
     content: string;
@@ -12,6 +14,25 @@ export interface ChatRequest {
     temperature?: number;
     stream?: boolean;
     attachments?: ChatAttachment[];
+}
+
+/**
+ * One retrieved passage the answer was built on.
+ *
+ * These are the excerpts the backend folds into the model's prompt. They now
+ * also come to the UI as data, ahead of the first token, so the answer can
+ * show what it is reading from instead of the model reciting it back in prose.
+ */
+export interface AnswerSource {
+    document_id: number;
+    filename: string;
+    page_start: number | null;
+    page_end: number | null;
+    section_label: string | null;
+    /** The tag the model was told to cite, e.g. "SPA.pdf, p.47, Section 12.3". */
+    citation: string;
+    text: string;
+    version_label: string | null;
 }
 
 // Temporary chat attachment (in-memory, not persisted)
@@ -60,6 +81,8 @@ export interface ConversationDetailResponse {
 }
 
 import { getApiBaseSync } from './backendUrl';
+import { paceText } from './pacedStream';
+import { cloudTarget } from './cloud';
 
 // Check if backend is ready with retry logic
 async function checkBackendReadiness(maxRetries = 3, delayMs = 500): Promise<boolean> {
@@ -92,8 +115,61 @@ async function checkBackendReadiness(maxRetries = 3, delayMs = 500): Promise<boo
     return false;
 }
 
-// Stream assistant tokens via Server-Sent Events (delta chunks)
-export async function* streamChat(messages: Message[], sessionId?: string, modelId?: string, attachments?: ChatAttachment[], signal?: AbortSignal): AsyncGenerator<string, void, unknown> {
+/** The backend refused because no model can answer (see /models/readiness).
+ *  Callers show the model setup prompt instead of an error. */
+export class ModelNotReadyError extends Error {
+    readonly readiness: Readiness;
+    constructor(readiness: Readiness, detail: string) {
+        super(detail);
+        this.name = 'ModelNotReadyError';
+        this.readiness = readiness;
+    }
+}
+
+/**
+ * Stream an answer at the app's own pace (see pacedStream.ts), whatever the
+ * model's speed. Every surface that shows an answer reads it through here,
+ * so they all type with the same rhythm.
+ */
+export function streamChat(
+    messages: Message[],
+    sessionId?: string,
+    modelId?: string,
+    attachments?: ChatAttachment[],
+    signal?: AbortSignal,
+    onSources?: (sources: AnswerSource[]) => void,
+    onScaffold?: (blocks: string[]) => void,
+): AsyncGenerator<string, void, unknown> {
+    return paceText(
+        streamChatRaw(messages, sessionId, modelId, attachments, signal, onSources, onScaffold),
+        signal,
+    );
+}
+
+// Stream assistant tokens via Server-Sent Events (delta chunks), as fast as
+// the model produces them.
+async function* streamChatRaw(
+    messages: Message[],
+    sessionId?: string,
+    modelId?: string,
+    attachments?: ChatAttachment[],
+    signal?: AbortSignal,
+    /**
+     * Called once, before the first token, with the passages this answer is
+     * being built from. A callback rather than a second kind of yielded value:
+     * every existing caller of this generator treats what it yields as text to
+     * append, and widening that would break all of them to serve one.
+     */
+    onSources?: (sources: AnswerSource[]) => void,
+    /**
+     * Called once, before the first token, with the blocks that were folded
+     * into the prompt. They are what a small model reprints instead of
+     * answering, and having them lets that reprint be cut EXACTLY rather than
+     * guessed at from its shape — the same for every document format, and for
+     * the blocks that contain no document at all.
+     */
+    onScaffold?: (blocks: string[]) => void,
+): AsyncGenerator<string, void, unknown> {
     // Enforce session ID requirement for persistence - prevents orphaned conversations
     if (!sessionId) {
         throw new Error('Session ID is required for chat. This is a bug - ChatWindow should have generated one.');
@@ -114,6 +190,9 @@ export async function* streamChat(messages: Message[], sessionId?: string, model
         stream: true,
         temperature: 0.7,
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
+        // On Cloud: the backend answers with the connected provider instead
+        // of the local model (api/cloud.ts).
+        cloud: cloudTarget(),
     };
 
     const response = await fetch(`${getApiBaseSync()}/generate/stream`, {
@@ -138,19 +217,24 @@ export async function* streamChat(messages: Message[], sessionId?: string, model
         const body = (await response.text().catch(() => '')).trim();
         let errorMessage = body || `The request failed (HTTP ${response.status}).`;
 
-        if (response.status === 503) {
-            // 503 genuinely is a readiness state, and these three are worth
-            // rephrasing because the user can act on them directly.
-            if (body.includes('Model Switching')) {
-                errorMessage = 'Model is switching. Please wait a moment and try again.';
-            } else if (body.includes('Model Restarting')) {
-                errorMessage = 'Model server is restarting. Please wait a moment and try again.';
-            } else if (body.includes('Model Not Ready') || !body) {
-                errorMessage =
-                    'Model Not Ready: No model is currently loaded. Please go to the Models page ' +
-                    'and activate a model by clicking "Active Model".';
+        // Structured refusal: no model can answer. Not an error to report,
+        // a state to act on — the caller shows the model setup prompt.
+        if ((response.status === 503 || response.status === 429) && body.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(body) as { error?: string; readiness?: Readiness; detail?: string };
+                if (parsed.error === 'model_not_ready' && parsed.readiness) {
+                    throw new ModelNotReadyError(parsed.readiness, parsed.detail ?? 'No model is ready.');
+                }
+                // Backend admission control (generation_queue.rs): show its sentence, not the JSON.
+                if (parsed.error === 'generation_busy' && parsed.detail) {
+                    errorMessage = parsed.detail;
+                }
+            } catch (e) {
+                if (e instanceof ModelNotReadyError) throw e;
             }
-        } else if (response.status === 504 && !body) {
+        }
+
+        if (response.status === 504 && !body) {
             errorMessage =
                 'Gateway Timeout: The model took too long to respond. It may be too large for your hardware.';
         } else if (response.status === 404 && !body) {
@@ -189,11 +273,35 @@ export async function* streamChat(messages: Message[], sessionId?: string, model
             if (!trimmed || trimmed === '[DONE]') continue;
 
             if (trimmed.startsWith('data: ')) {
+                const jsonStr = trimmed.slice(6);
+                if (jsonStr === '[DONE]') continue;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                let data: any;
                 try {
-                    const jsonStr = trimmed.slice(6);
-                    if (jsonStr === '[DONE]') continue;
+                    data = JSON.parse(jsonStr);
+                } catch (e) {
+                    console.error('Error parsing SSE line:', e);
+                    continue;
+                }
+                // The model failed mid-answer (a cloud provider's error, or the
+                // engine's): say so, instead of ending the answer silently.
+                if (data.error) {
+                    const err = data.error as string | { message?: string };
+                    throw new Error(typeof err === 'string' ? err : err.message || 'The model stopped with an error.');
+                }
+                try {
 
-                    const data = JSON.parse(jsonStr);
+                    // The sources frame carries no `choices`, so a caller that
+                    // passes no sink simply sees a chunk with no content.
+                    if (Array.isArray(data.sources)) {
+                        onSources?.(data.sources as AnswerSource[]);
+                        continue;
+                    }
+                    if (Array.isArray(data.scaffold)) {
+                        onScaffold?.(data.scaffold as string[]);
+                        continue;
+                    }
+
                     const content = data.choices?.[0]?.delta?.content;
                     if (content) {
                         yield content;
@@ -216,19 +324,32 @@ export async function fetchConversations(): Promise<ConversationSummary[]> {
         throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data: ConversationsResponse = await response.json();
-    return data.conversations;
+    // The drafting assistant talks through the same streaming endpoint, which
+    // persists every session. Those belong to their document, not the chat list.
+    return data.conversations.filter(c => !c.id.startsWith(DRAFT_ASSISTANT_SESSION_PREFIX));
 }
+
+/** Session ids used by the drafting side panel's assistant, one per draft. */
+export const DRAFT_ASSISTANT_SESSION_PREFIX = 'draft-assistant-';
 
 // Test-friendly alias
 export const getConversations = fetchConversations;
 
 // Chat persistence: Load full conversation history from database when user clicks a chat
-export async function fetchConversation(id: string): Promise<ConversationDetailResponse | null> {
+export async function fetchConversation(
+    id: string,
+    options: { allowMissing?: boolean } = {},
+): Promise<ConversationDetailResponse | null> {
     try {
         if (!(await checkBackendReadiness())) {
             throw new Error('Backend is not ready. Please ensure the offline-intelligence service is running.');
         }
-        const response = await fetch(`${getApiBaseSync()}/conversations/${id}`);
+        // allowMissing: a thread with no row yet (Aurora's, before its
+        // first message is saved) comes back as an empty conversation rather
+        // than a 404, so opening it is never a failed request.
+        const query = options.allowMissing ? '?allow_missing=true' : '';
+        const response = await fetch(`${getApiBaseSync()}/conversations/${encodeURIComponent(id)}${query}`);
+        if (response.status === 404) return null;
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }

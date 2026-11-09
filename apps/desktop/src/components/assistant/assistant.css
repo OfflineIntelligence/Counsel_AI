@@ -1,0 +1,908 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   AI ASSISTANT — the app-wide panel
+   ─────────────────────────────────────────────────────────────────────────
+   Floats at the right edge. While it is open the app root reserves its width
+   (`data-assistant="open"`), so every view — headers, search bars, buttons,
+   the draft side column — lays out beside it rather than beneath it.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --ai-panel-width: 380px;
+}
+
+
+/* ── The pane ───────────────────────────────────────────────────────────────
+   Aurora is the app's one glass surface: a translucent sheet that blurs the
+   page behind it instead of hiding it, so the panel reads as something laid
+   OVER the work rather than a second window that has replaced part of it.
+
+   Three rules hold the effect together, and it falls apart without any one:
+
+   1. ONE blur, on this element only. backdrop-filter is the most expensive
+      property in the app — the compositor re-samples everything behind the
+      element every frame it is visible — and nesting them multiplies that
+      cost while looking no different, because a child blurring its already
+      blurred parent has almost nothing left to blur. Every surface inside
+      this panel (the bars, the composer, the hovers) is a plain rgba tint
+      over this one pane. They cost nothing.
+
+   2. Saturation, not just blur. Blurring alone drains the colour out of
+      whatever is behind and the result reads as fog; pushing saturation back
+      up is what makes it a lens.
+
+   3. The inset highlight along the top lip. It is the line of light catching
+      the edge of the sheet, and it is the difference between a pane of glass
+      and a flat rectangle of haze — in BOTH themes, see --glass-highlight.
+
+   Colours are role tokens defined in both themes (tokens.css), so none of
+   this needs a [data-theme] rule, and the geometry below is theme-invariant
+   by construction: the panel is the same size, in the same place, with the
+   same type, whichever way the lights are pointing. */
+.ai-panel {
+  position: fixed;
+  /* A floating card, not a full-height rail: 55% of the viewport height,
+     vertically centred on the right edge. The slide-in carries the -50%
+     lift with it, so opening/closing stays on transform/opacity only. */
+  top: 50%;
+  bottom: auto;
+  height: 55vh;
+  right: 0;
+  z-index: 900;
+  width: var(--ai-panel-width);
+  display: flex;
+  flex-direction: column;
+
+  /* Rounded on the three edges that are off the screen edge; the right edge
+     meets the window, so squaring it keeps the sheet looking seated rather
+     than like a card that missed its mark. */
+  border: 1px solid var(--glass-border);
+  border-right: none;
+  border-radius: var(--r-sheet) 0 0 var(--r-sheet);
+
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+
+  /* Slides the whole panel width in and back out, both directions on the
+     app's single animation cadence (--dur-anim, var(--dur-anim)). A transition rather
+     than a keyframe animation, so ONE declaration governs opening and
+     closing and the two can never drift apart — the panel is kept mounted
+     while it leaves (AssistantPanel.tsx) precisely so the exit can play.
+     transform/opacity only: nothing here triggers layout. */
+  /* Apple style reveal: a slow fade with a slight lift and scale on a soft
+     spring curve; leaving dissolves more slowly still. (No `filter` blur here:
+     it would disable the glass backdrop-filter.) The exit duration must match
+     PANEL_EXIT_MS in AssistantPanel.tsx. */
+  transform: translateY(calc(-50% + 14px)) scale(0.96);
+  transform-origin: center;
+  opacity: 0;
+  transition: transform 1.1s var(--ease-agent), opacity 1.1s var(--ease-agent);
+  will-change: transform, opacity;
+}
+
+.ai-panel.is-open {
+  transform: translateY(-50%) scale(1);
+  opacity: 1;
+  transition: transform 0.7s var(--ease-agent), opacity 0.7s var(--ease-agent);
+}
+
+/* While the download notifications are up, the side card drops below them in
+   the same right column instead of sitting behind them: its top clears the
+   bubble's measured bottom (--dl-bubble-h, set from App.tsx), and the lift
+   goes away because it is top-anchored now. Height stays 55%, capped so it
+   never runs past the viewport bottom. Bottom sheets never dock: the bubble
+   lives top-right, far from them. */
+.app-root[data-downloads='active'] .ai-panel:not(.is-bottom) {
+  top: calc(var(--window-band-h, 44px) + 68px + var(--dl-bubble-h, 180px) + 12px);
+  height: 55vh;
+  max-height: calc(100vh - (var(--window-band-h, 44px) + 68px + var(--dl-bubble-h, 180px) + 12px) - 12px);
+  transform: translateY(14px) scale(0.96);
+}
+.app-root[data-downloads='active'] .ai-panel:not(.is-bottom).is-open {
+  transform: none;
+}
+
+/* ── Bottom sheet ───────────────────────────────────────────────────────
+   The agent on Models, Vault, Workspace and Library: a centred rectangle
+   rising from the viewport base instead of the side card. Same thread,
+   same composer, same slide cadence — only the geometry changes. While it
+   is the placement, the app keeps its full width (no right reservation). */
+.app-root[data-assistant='open'][data-aurora='bottom'] {
+  padding-right: 0;
+}
+
+/* The sheet floats clear of all four edges here, so unlike the side card it
+   is rounded and bordered the whole way round. It inherits the glass; only
+   the geometry changes.
+
+   Its shadow used to be a hardcoded `rgba(20, 20, 19, 0.12)` — a light-mode
+   shadow, which over a #141416 canvas was a faint grey smudge that read as a
+   rendering artefact rather than as depth. It takes the themed token now. */
+.ai-panel.is-bottom {
+  top: auto;
+  bottom: 16px;
+  left: 50%;
+  right: auto;
+  width: min(920px, calc(100vw - 140px));
+  height: 46vh;
+  max-height: none;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-sheet);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+  transform-origin: center bottom;
+  transform: translate(-50%, 18px) scale(0.96);
+}
+
+.ai-panel.is-bottom.is-open {
+  transform: translate(-50%, 0) scale(1);
+}
+
+/* Not interactive while it is leaving, so a click cannot land on a panel
+   that is halfway off the screen. */
+.ai-panel:not(.is-open) {
+  pointer-events: none;
+}
+
+/* ── When glass is unavailable, or unwanted ─────────────────────────────────
+   Two separate cases, and they need the same answer for different reasons.
+
+   SUPPORT. The app ships in a WebView2 that has had backdrop-filter for
+   years, so this will not fire today — but a translucent panel on a renderer
+   that cannot blur is not a degraded effect, it is an unreadable one: the
+   page shows through at full detail directly behind the text. An opaque fill
+   is the only safe fallback, and it costs four lines to be certain of.
+
+   PREFERENCE. `prefers-reduced-transparency` is set by people who find
+   translucency hard to read — low vision, and vestibular conditions where
+   layered moving surfaces are actively unpleasant. Honouring it is not a
+   nicety; a blurred page behind live text is exactly what the setting exists
+   to turn off.
+
+   Both drop to --glass-solid and keep every measurement, so the panel is the
+   same object in the same place — only the sheet stops being see-through. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ai-panel,
+  .ai-panel-head,
+  .ai-panel-foot {
+    background: var(--glass-solid);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ai-panel {
+    background: var(--glass-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .ai-panel-head,
+  .ai-panel-foot {
+    background: var(--glass-solid);
+  }
+}
+
+/* ── The Aurora's ground ──────────────────────────────────────────────────
+   The panel follows the theme, like every other panel in the app.
+
+   It used to re-declare twenty-four role tokens for this subtree with light
+   values, which made it the one surface that stayed paper-white while the
+   app went dark — a full-brightness card floating on a #141416 canvas. The
+   comment that stood here claimed the opposite ("the panel is dark in both
+   themes"), so the file described a third behaviour that was never true
+   either.
+
+   The app has two deliberately theme-invariant surfaces and they both earn
+   it: the sidebar, which is the window's frame and should not re-anchor when
+   the lights change, and the document card in the Workspace, which is paper
+   because it is showing a document as it will print. A side panel of chat
+   is neither. Nothing to pin. */
+
+/* ── What used to be the backdrop ────────────────────────────────────────────
+   Roughly seventy lines stood here: an absolutely positioned white plate, a
+   black triangle mark on it, three radial-gradient "auras" breathing out of
+   phase on 5x, 6x and 7x the app's animation cadence, three keyframe blocks
+   driving them, a reduced-motion guard over those, and a
+   `.ai-panel > *:not(.ai-backdrop)` rule to lift every sibling above it.
+
+   All of it was dead. `.ai-backdrop` renders as `<div className="ai-backdrop"
+   aria-hidden="true" />` -- a self-closing element with no children -- so
+   neither the mark nor any of the three auras had an element to attach to,
+   and the auras additionally carried `display: none`. The only thing the
+   block actually did was paint a second full-panel white fill directly on
+   top of the panel's own, every frame the panel composited.
+
+   The element is gone from AssistantPanel.tsx too, so the sibling-lifting
+   rule has nothing left to exclude and is gone with it. The panel's own
+   background is the ground now. */
+
+/* ── The two bars ───────────────────────────────────────────────────────────
+   A slightly denser tint than the pane, and NO backdrop-filter of their own:
+   they sit on the panel's glass, so a second blur here would cost a second
+   full-area compositor pass to blur something already blurred.
+
+   Denser rather than equal because both bars carry text and controls over
+   whatever happens to be behind the panel, and a title that changes legibility
+   depending on which page is underneath is not a title. The hairline is what
+   separates them from the thread; the tint is what makes them readable. */
+.ai-panel-head,
+.ai-panel-foot {
+  background: var(--glass-bg-strong);
+}
+
+/* Rounded to match the pane's own corners, so the bars do not square off the
+   sheet at its top and bottom edges. */
+.ai-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 58px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--glass-border);
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+}
+
+.ai-panel-foot {
+  border-top: 1px solid var(--glass-border);
+  border-radius: 0 0 var(--r-sheet) var(--r-sheet);
+}
+
+/* The side card is square on its right edge, so its bars must be too. */
+.ai-panel:not(.is-bottom) .ai-panel-head { border-radius: var(--r-sheet) 0 0 0; }
+.ai-panel:not(.is-bottom) .ai-panel-foot { border-radius: 0 0 0 var(--r-sheet); }
+
+/* Everything from the first view toggle rightwards is one group pinned to the
+   right edge; the title takes the slack. */
+.ai-panel-head .ai-panel-tool:first-of-type { margin-left: auto; }
+
+/* The mark is the triangle itself — no plate behind it.
+   colour: --text-heading, not a literal black. The panel sits on --bg-surface,
+   which is paper in light mode and near-ink in dark; a hardcoded black would
+   be the correct mark in one theme and an invisible one in the other. This
+   token is near-black on paper and near-white on ink, so the glyph keeps the
+   same weight against its ground in both. */
+.ai-panel-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--text-heading);
+}
+
+/* One line now that the page-context sub-label is gone, so the title centres
+   against the mark instead of sitting above a line that is not there. */
+.ai-panel-titles { display: flex; align-items: center; min-width: 0; }
+
+.ai-panel-titles h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+  line-height: var(--lh-snug);
+}
+
+.ai-panel .dr-assistant { flex: 1; min-height: 0; }
+
+/* Empty state: white tab with a centred black triangle. Rendered inside the
+   empty conversation, so it vanishes the moment turns appear. */
+.dr-assistant-empty-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5) 0 var(--sp-3);
+  /* --text-heading, not black: the panel follows the theme now, so a literal
+     black mark would be correct on paper and invisible on ink. */
+  color: var(--text-heading);
+}
+
+.dr-assistant-empty-triangle {
+  display: block;
+}
+
+/* Make room for the panel everywhere. The rail and title bar keep their place. */
+/* The page makes room in step with the panel, on the same duration and curve
+   (the padding-right transition is declared with the rail's padding-left one
+   in App.css, so a single rule owns .app-root's transitions). */
+.app-root[data-assistant='open'] {
+  padding-right: var(--ai-panel-width);
+}
+
+/* Fixed-position chrome inside views must also stay clear of the panel. */
+.app-root[data-assistant='open'] .dr-side-wrap {
+  right: 0;
+}
+
+@media (max-width: 1100px) {
+  :root { --ai-panel-width: 340px; }
+}
+
+/* On a narrow window there is not room for both; the panel floats over. */
+@media (max-width: 860px) {
+  .app-root[data-assistant='open'] { padding-right: 0; }
+  .ai-panel { width: min(100vw, 380px); box-shadow: var(--shadow-lg); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PANEL VIEWS — Chat / Context / History
+   ═══════════════════════════════════════════════════════════════════════════
+   The panel was one column: a conversation and nothing else. It now carries
+   three views behind a segmented control, and the rule that governs the
+   layout is that only ONE of them may scroll. The conversation owns its own
+   scroller (`.dr-assistant-scroll`); Context and History each own theirs. The
+   panel itself never scrolls, or the composer would leave the bottom of the
+   window while a long answer streams.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── The two side views, as icons ───────────────────────────────────────────
+   This replaces a three-way segmented control reading "Chat | Operations |
+   History". The "Chat" segment was naming the thing already on screen — the
+   composer is at the bottom of the panel — and the two words that remained
+   were spending a whole row of the panel's height on navigation.
+
+   They are toggles, not tabs: pressed, they show their view; pressed again
+   they fall back to the conversation, which is the panel's resting state.
+   That is why they carry aria-pressed rather than aria-selected. */
+.ai-panel-tool {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-md, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* Colour and fill only — no geometry. */
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+/* Tints, not the opaque --bg-hover: an opaque fill on a translucent pane
+   reads as a hole cut in the glass. Same reason the composer and the thread
+   rows below use --glass-fill. */
+.ai-panel-tool:hover {
+  background: var(--glass-fill);
+  color: var(--text-heading);
+}
+
+/* Active reads as weight and fill, matching how the old selected segment was
+   marked — no underline, no outline. */
+.ai-panel-tool.is-active {
+  background: var(--glass-fill-strong);
+  color: var(--text-heading);
+}
+
+.ai-panel-tool:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The chat view's wrapper. `hidden` is what swaps views, and this sets
+   `display: flex`, which would beat the `hidden` attribute's UA default on its
+   own — index.css carries the `[hidden] { display: none !important }` reset
+   that makes the toggle actually work. */
+.ai-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ai-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  animation: ui-rise-in var(--dur-anim) var(--ease-out) both;
+}
+
+/* ── History ───────────────────────────────────────────────────────────── */
+.ai-threads { display: flex; flex-direction: column; gap: var(--sp-1); margin: 0; padding: 0; list-style: none; }
+
+.ai-thread {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  border-radius: var(--r-sm);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.ai-thread:hover { background: var(--glass-fill); }
+.ai-thread.is-active { background: var(--glass-fill-strong); }
+
+.ai-thread__open {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-2);
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.ai-thread__open:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--r-sm); }
+
+.ai-thread__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ai-thread__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The delete control stays out of the way until the row is touched, so a list
+   of threads does not read as a list of delete buttons. */
+.ai-thread__del {
+  flex: 0 0 auto;
+  margin-right: var(--sp-1);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.ai-thread:hover .ai-thread__del,
+.ai-thread__del:focus-visible { opacity: 1; }
+
+
+/* ── Attach: the + at the top-left of the composer ──────────────────────────
+   The panel could take a question but not a document, so anything the user
+   wanted read had to be opened in the Workspace first. The + stages documents
+   for the NEXT question: each one is sent to the backend the moment it is
+   picked and extracted there, so pressing send carries an id rather than the
+   bytes. That is the same pipeline the main composer uses, through the same
+   call, rather than a second implementation of it.
+
+   The composer is a flex row that bottom-aligns its children, which is right
+   for the textarea and Send. The + opts out with align-self, because it acts
+   on the message rather than sending it, and it belongs at the corner where
+   the text starts. The chip row is a full-width line ABOVE both: a row of
+   filenames inside a two-line textarea leaves nowhere to type. */
+.dr-assistant-input {
+  flex-wrap: wrap;
+}
+
+/* ── The composer, on glass ─────────────────────────────────────────────────
+   `.dr-assistant-input` is shared with the Workspace's own side panel, which
+   is an opaque surface, so its base rule in workspace/drafting.css stays as
+   it is and only the Aurora copy is re-tinted here. An opaque --bg-field well
+   on a translucent pane reads as a hole punched through the glass.
+
+   Focus is a brightening of the same well plus the accent hairline, rather
+   than a swap to an opaque fill — the composer should look like a part of the
+   sheet that has lit up, not like a separate white box that has appeared on
+   top of it. */
+.ai-panel .dr-assistant-input {
+  border-color: var(--glass-border);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.ai-panel .dr-assistant-input:focus-within {
+  border-color: var(--accent-border);
+  background: var(--glass-fill-strong);
+}
+
+/* The staged-document chips sit inside that well, so they need to be a step
+   up from it to stay visible — the shared rule gives them --bg-surface, which
+   is opaque. */
+.ai-panel .dr-chip {
+  background: var(--glass-fill-strong);
+  border-color: var(--glass-border);
+}
+
+/* ── Secondary text goes up a step on glass ─────────────────────────────────
+   On an opaque surface a text colour has one contrast ratio. On a translucent
+   one it has a RANGE, because what is behind the panel changes as you move
+   between pages — and the bottom of that range is what has to be legible.
+
+   Measured against the worst backdrop the panel can realistically meet (a
+   dark card, a saturated page header):
+
+     --text-faint   #b4b4bb   1.9:1   unreadable
+     --text-muted   #8a8a93   2.3:1   still too thin
+     --text-secondary #63636b 4.4:1   holds
+
+   So the placeholder and the thread timestamps — the two pieces of quiet text
+   in this panel — take --text-secondary here, where everywhere else in the app
+   they can safely stay fainter. */
+.ai-panel .dr-assistant-input textarea::placeholder,
+.ai-panel .ai-thread__meta {
+  color: var(--text-secondary);
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────────
+   Centred, and centred as a whole.
+
+   `.dr-assistant-intro` is a flex column that stretches its children, and
+   `.dr-assistant-empty-mark` centres ITSELF with justify-content. The lead
+   paragraph does not, so the mark sat centred above a line of text pinned to
+   the left edge — two different alignments in a two-element layout, which
+   reads as a bug rather than as a choice.
+
+   It is also pulled to the middle of the view rather than hanging from the
+   top: an empty panel with its content stranded at the ceiling and a composer
+   at the floor has a hole in it. Scoped to .ai-panel because the Workspace's
+   own side panel shares these classes in a much narrower column, where
+   centring short text looks adrift rather than composed. */
+.ai-panel .ai-view:has(.dr-assistant-intro) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.ai-panel .dr-assistant-intro {
+  align-items: center;
+  text-align: center;
+  padding-top: 0;
+}
+
+.ai-panel .dr-assistant-lead {
+  margin: 0;
+  max-width: 34ch;
+  color: var(--text-secondary);
+}
+
+.dr-attach {
+  position: relative;
+  display: flex;
+  align-self: flex-start;
+  flex: 0 0 auto;
+}
+
+.dr-attach__btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* Colour and fill only. */
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.dr-attach__btn:hover,
+.dr-attach__btn.is-open {
+  background: var(--glass-fill);
+  color: var(--text-heading);
+}
+
+.dr-attach__btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* POSITION ONLY. Everything else comes from .ui-menu in surfaces.css, so this
+   menu cannot drift from the app's other menus. It opens UPWARD: the composer
+   sits at the foot of the panel, so a menu dropping from here would land off
+   the bottom of the window. */
+.dr-attach__menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 150px;
+}
+
+/* ── Staged documents ────────────────────────────────────────────────────── */
+.dr-attached {
+  order: -1;
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+
+.dr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+.dr-chip__name {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The three states a staged document can be in. Extraction is asynchronous,
+   so "picked" and "readable" are not the same thing and must not look it. */
+.dr-chip--processing {
+  opacity: 0.6;
+}
+
+.dr-chip--failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.dr-chip__x {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.dr-chip__x:hover {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------------
+   Aurora side panel: a floating glass sheet on the right, full height, with
+   its own conversation styles so it never depends on the Workspace's
+   lazily loaded drafting.css. Text uses --text-heading: black in the light
+   theme, near white in the dark one.
+   ------------------------------------------------------------------------ */
+:root { --ai-panel-gap: 12px; }
+
+.app-root[data-assistant='open'] {
+  padding-right: calc(var(--ai-panel-width) + var(--ai-panel-gap) * 2);
+}
+
+.ai-panel:not(.is-bottom) {
+  top: calc(var(--titlebar-height, 36px) + var(--ai-panel-gap));
+  bottom: var(--ai-panel-gap);
+  right: var(--ai-panel-gap);
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-sheet);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+  color: var(--text-heading);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(24px) scale(0.98);
+}
+.ai-panel:not(.is-bottom).is-open { opacity: 1; transform: none; }
+
+.ai-panel:not(.is-bottom) .ai-panel-head,
+.ai-panel:not(.is-bottom) .ai-panel-foot {
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+}
+.ai-panel .ai-panel-head { padding: 14px 14px 10px 18px; }
+.ai-panel .ai-panel-titles h2 {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-heading);
+}
+.ai-panel .ai-panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* Conversation */
+.ai-panel .dr-assistant { display: flex; flex-direction: column; min-height: 0; }
+.ai-panel .dr-assistant-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scrollbar-width: thin;
+}
+.ai-panel .dr-assistant-intro {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ai-panel .dr-assistant-lead {
+  margin: 0;
+  max-width: 260px;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-heading);
+  opacity: 0.72;
+}
+.ai-panel .dr-turn { display: flex; flex-direction: column; gap: 4px; }
+.ai-panel .dr-turn-body {
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  color: var(--text-heading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-panel .dr-turn-user { align-items: flex-end; }
+.ai-panel .dr-turn-user .dr-turn-body {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--glass-fill-strong, rgba(127, 127, 127, 0.14));
+}
+.ai-panel .dr-turn-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+.ai-panel .dr-turn:hover .dr-turn-actions,
+.ai-panel .dr-turn-actions:focus-within { opacity: 1; }
+.ai-panel .dr-mini,
+.ai-panel .dr-new-thread {
+  border: 0;
+  background: transparent;
+  color: var(--text-heading);
+  opacity: 0.6;
+  font-size: var(--fs-xs);
+  padding: 4px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.ai-panel .dr-mini:hover,
+.ai-panel .dr-new-thread:hover { opacity: 1; background: var(--glass-fill, rgba(127, 127, 127, 0.1)); }
+
+/* Composer */
+.ai-panel .dr-assistant-input {
+  margin: 0 12px 12px;
+  padding: 8px 8px 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-fill, rgba(127, 127, 127, 0.08));
+  box-shadow: none;
+}
+.ai-panel .dr-assistant-input:focus-within { border-color: var(--text-muted); }
+.ai-panel .dr-attached { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-panel .dr-assistant-input textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 22px;
+  max-height: 160px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-heading);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  padding: 5px 2px;
+}
+.ai-panel .dr-send {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-heading);
+  color: var(--glass-solid, #fff);
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.ai-panel .dr-send:hover:not(:disabled) { transform: scale(1.05); }
+.ai-panel .dr-send:disabled { opacity: 0.3; cursor: default; }
+.ai-panel .dr-attach__btn { color: var(--text-heading); }
+
+@media (max-width: 860px) {
+  .app-root[data-assistant='open'] { padding-right: 0; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AURORA LIVES IN THE ISLAND
+   ═══════════════════════════════════════════════════════════════════════════
+   Aurora no longer floats at the side or the bottom: it is the notification
+   island expanded (components/Notifications.tsx and notification-island.css).
+   The page therefore never reserves room for a panel. */
+html body .app-root.app-root[data-assistant='open'] {
+  padding-right: 0;
+}
+html:root:has(.app-root[data-assistant='open']) {
+  --app-right-inset: 0px;
+}
+
+/* The island's mark stands in for the attach button; elsewhere it is absent. */
+.dr-island-mark { display: none; }
+
+/* ── Opening flow ─────────────────────────────────────────────────────────
+   A soft band of #4E4260 sweeps left → right across the panel once when it
+   opens, then fades. Clipped to the panel; never touches the page. */
+.ai-panel { position: relative; }
+html body .island .ai-panel.ai-panel--island.ai-panel--island { position: relative; }
+.ai-panel-flow {
+  position: absolute;
+  inset: 0;
+  /* Over the content as a light tint (pointer-events none), so it shows on
+     the panel's own opaque surfaces instead of hiding behind them. */
+  z-index: 5;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.ai-panel-waves {
+  position: absolute;
+  top: 50%;
+  left: -50%;
+  width: 200%;
+  height: 70%;
+  transform: translateY(-50%);
+  overflow: visible;
+  animation: ai-waves-life 2.6s ease-out both;
+}
+.ai-wave {
+  fill: none;
+  stroke: #4e4260;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0.55;
+  animation: ai-wave-drift 2.6s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+[data-theme='dark'] .ai-wave { stroke: #9d8cb8; }
+/* Each thread a little out of step, so they ripple rather than march. */
+.ai-wave--1 { animation-delay: 0.08s; opacity: 0.45; }
+.ai-wave--2 { animation-delay: 0.16s; opacity: 0.7; stroke-width: 1.8; }
+.ai-wave--3 { animation-delay: 0.24s; opacity: 0.45; }
+.ai-wave--4 { animation-delay: 0.32s; opacity: 0.35; }
+@keyframes ai-wave-drift {
+  0%   { transform: translateX(-12%) scaleY(0.4); }
+  50%  { transform: translateX(6%) scaleY(1.15); }
+  100% { transform: translateX(22%) scaleY(0.7); }
+}
+@keyframes ai-waves-life {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-panel-waves { display: none; }
+}
+
+
+/* ── Voice input button ───────────────────────────────────────────────── */
+.ai-panel .dr-mic {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+.ai-panel .dr-mic:hover { color: var(--text-heading); background: var(--bg-hover); }
+
+/* ── Width: +36% then -16% (width only) ────────────────────────────────────────── */
+:root { --ai-panel-width: 434px; }
+@media (max-width: 1100px) { :root { --ai-panel-width: 388px; } }
+@media (max-width: 860px) { .ai-panel { width: min(100vw, 434px); } }

@@ -1,0 +1,1071 @@
+/* ------------------------------------------------------- landing theme */
+
+.ws-root:has(> .ws-main > .ws-landing) {
+  background: var(--bg-canvas);
+}
+
+/* ── The landing shell's local vocabulary ─────────────────────────────────
+   `.ws-landing` is the page shell for FOUR pages — Workspace, Library, Vault
+   and Models — so everything here is load-bearing well beyond the Workspace.
+
+   These used to be a private palette of literal Tailwind greys, and that one
+   decision cost ~500 lines: because the values were literals rather than
+   roles, dark mode had to be rebuilt by hand as a parallel
+   `:root[data-theme="dark"] .ws-landing …` mirror, which is exactly what
+   tokens.css rule #1 exists to prevent. They are now aliases of the role
+   tokens, which are already defined in both themes — so the mirror is gone
+   and the whole shell follows the theme for free.
+
+   The names survive deliberately: ~30 call sites in this file and 11 in
+   ModelsPanel.css reference them, and re-pointing the definition is a
+   reviewable change where rewriting 41 call sites is not. New rules should
+   name the role token directly.
+
+   One job per token, which the greys did not have: --ws-gray-200 was doing
+   duty as both a hover fill and a hairline, so retuning either one moved the
+   other. Fills and borders are separate roles now. */
+.ws-landing {
+  --ws-fill: var(--bg-hover);     /* resting fill on a quiet control */
+  --ws-fill-strong: var(--bg-active); /* its hover/selected step */
+  --ws-line: var(--border);       /* hairlines between rows and around boxes */
+  --ws-line-strong: var(--border-strong);
+  --ws-radius: var(--r-xs);
+  --ws-column: 958px;
+  --ws-shadow: var(--shadow-sm);
+
+  /* Label colours ON the accent fill. The dim step is what the solid pills
+     use to acknowledge a hover without moving or changing their fill; it was
+     a literal #d1d5db, which is a light grey and so only legible while the
+     fill underneath happened to be black. Mixed from the role token instead,
+     so it dims correctly whichever way round the accent is. */
+  --ws-on-accent: var(--text-on-accent);
+  --ws-on-accent-dim: color-mix(in oklab, var(--text-on-accent) 72%, transparent);
+
+  /* Kept as aliases so the existing call sites keep resolving while they are
+     migrated to the role names above. Not API. */
+  --ws-gray-100: var(--ws-fill);
+  --ws-gray-200: var(--ws-fill-strong);
+  --ws-gray-300: var(--ws-line-strong);
+
+  background: var(--bg-canvas);
+  font-family: var(--font-sans);
+  /* These four pages read at a document size rather than the app's 13.5px UI
+     size — they are mostly file names and titles, not controls. Kept as a
+     deliberate, named step rather than the bare `16px` it was. */
+  font-size: var(--fs-lg);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  padding: var(--sp-6) 32px var(--sp-10);
+  gap: var(--sp-4);
+}
+
+/* NOTE: a blanket `.ws-landing *, button, input { letter-spacing: normal;
+   text-transform: none }` used to sit here, and it was actively harmful.
+
+   `.ws-landing *` has the SAME specificity (0,1,0) as the component classes
+   it collided with, so the winner was decided by source order alone: every
+   `text-transform: uppercase` declared earlier in the cascade lost to it,
+   and every one declared later won. Since ModelsPanel.tsx imports this file
+   AFTER ModelsPanel.css while LocalFilesPanel.tsx imports it BEFORE
+   VaultPanel.css, the Models page and the Vault page disagreed about whether
+   their own section labels uppercase — from one reset neither page declares.
+   `.ws-library-kind` on the Library page lost its uppercase the same way.
+
+   It is also the most expensive selector in the app: a universal descendant
+   match re-evaluated against every node of a page that renders hundreds of
+   file rows, on every DOM mutation.
+
+   Nothing needs it. `font-family` and `letter-spacing` both inherit, and the
+   shell above sets them once on the container. */
+
+.ws-landing .ws-landing-title {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  color: var(--text-heading);
+}
+
+.ws-landing .ws-view-tab {
+  font-size: 14px;
+}
+
+.ws-landing .ws-landing-actions:empty {
+  display: none;
+}
+
+.ws-landing .ws-searchbar,
+.ws-landing .ws-searchbar:focus-within {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-surface);
+  max-width: var(--ws-column);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ws-landing .ws-search-icon,
+.ws-landing .ws-search-input {
+  color: var(--text-primary);
+}
+.ws-landing .ws-search-input::placeholder {
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+  opacity: 1;
+}
+.ws-landing .ws-create-folder {
+  height: 34px;
+  padding: 0 var(--sp-3);
+  font-size: 13px;
+}
+.ws-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 var(--sp-4);
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--ws-gray-100);
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.ws-pill:hover:not(:disabled) { background: var(--ws-gray-300); color: var(--text-primary); }
+.ws-pill:disabled { opacity: 0.45; cursor: default; }
+.ws-pill:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.ws-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: var(--ws-column);
+  margin: 0 auto;
+}
+
+.ws-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--bg-surface);
+  outline: none;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.ws-card:focus,
+.ws-card:focus-visible,
+.ws-card:active {
+  outline: none;
+}
+.ws-landing .ws-card,
+.ws-landing .ws-card:hover,
+.ws-landing .ws-card:focus,
+.ws-landing .ws-card:active {
+  background: var(--bg-surface) !important;
+  border-color: var(--bg-surface) !important;
+}
+
+.ws-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.ws-card-icon { color: inherit; flex: 0 0 auto; }
+.ws-card-title { font-size: 15px; color: inherit; }
+.ws-card-text {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+.ws-card-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-self: stretch;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+}
+.ws-card-buttons .ws-pill,
+.ws-card-buttons .ws-pill:hover:not(:disabled) {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: 13px;
+  background: var(--accent);
+  color: var(--ws-on-accent);
+  box-shadow: none;
+}
+.ws-card-buttons .ws-pill:hover:not(:disabled) {
+  color: var(--ws-on-accent-dim);
+}
+
+.ws-draft-box .ws-card-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  line-height: 1;
+  padding: 0 20px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--ws-on-accent);
+  transition: color var(--dur-1) var(--ease-out);
+}
+.ws-draft-box:hover:not(:disabled) .ws-card-head {
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+}.ws-draft-box .ws-card-head .ws-card-title { font-size: 14px; font-weight: 400; }
+.ws-draft-box .ws-card-head .ws-card-icon { width: 16px; height: 16px; }
+.ws-draft-anchor {
+  position: relative;
+  display: flex;
+}
+
+.ws-draft-box {
+  width: 100%;
+  font: inherit;
+  cursor: pointer;
+}
+.ws-draft-box:disabled { opacity: 0.45; cursor: default; }
+.ws-landing .ws-menu {
+  background: var(--bg-surface);
+  border: none;
+  border-radius: var(--ws-radius);
+  box-shadow: var(--ws-shadow);
+}
+.ws-landing .ws-menu-item {
+  font-size: 14px;
+  color: var(--text-primary);
+  border-radius: var(--ws-radius);
+}
+.ws-landing .ws-menu-item:hover { background: var(--ws-gray-100); }
+.ws-menu.ws-menu-center { left: 50%; right: auto; transform: translateX(-50%); }
+
+.ws-files-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  flex: 1 1 0;
+  width: 100%;
+  max-width: var(--ws-column);
+  margin: 0 auto;
+  min-height: 360px;
+  padding: var(--sp-5, 20px);
+  background: var(--bg-surface);
+  border-radius: 6px;
+  box-shadow: var(--ws-shadow);
+}
+
+.ws-files-head {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ws-landing .ws-item {
+  border-radius: 6px;
+}
+
+.ws-landing .ws-matter-card,
+.ws-landing .ws-matter-form,
+.ws-landing .ws-library-card,
+.ws-landing .ws-clause,
+.ws-landing .ws-clause-form {
+  border-radius: var(--ws-radius);
+}
+
+.ws-landing .ws-matter-card,
+.ws-landing .ws-library-card,
+.ws-landing .ws-clause,
+.ws-landing .ws-matter-form,
+.ws-landing .ws-clause-form {
+  background: var(--bg-surface);
+  box-shadow: var(--ws-shadow);
+}
+
+.ws-files-box .ws-browser {
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-files-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.ws-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.ws-filter-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ws-landing .ws-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--bg-surface);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.ws-landing .ws-filter:focus,
+.ws-landing .ws-filter:focus-visible {
+  border-color: var(--bg-surface);
+  outline: none;
+}
+.ws-landing .ws-filter:hover {
+  background: var(--ws-gray-100);
+  border-color: var(--ws-gray-100);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.ws-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-surface);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: var(--z-popover);
+}
+
+.ws-landing .ws-filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.ws-landing .ws-filter-option:hover,
+.ws-landing .ws-filter-option:focus-visible {
+  background: var(--ws-gray-100);
+}
+.ws-files-box .ws-grid-items,
+.ws-files-box .ws-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar,
+.ws-files-box .ws-search-results::-webkit-scrollbar {
+  width: 4px;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar-track,
+.ws-files-box .ws-search-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ws-files-box .ws-grid-items::-webkit-scrollbar-thumb,
+.ws-files-box .ws-search-results::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: var(--r-pill);
+}
+
+.ws-landing .ws-create-folder,
+.ws-landing .ws-create-folder:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--ws-on-accent);
+}
+.ws-landing .ws-create-folder:hover:not(:disabled) {
+  color: var(--ws-on-accent-dim);
+}
+
+.ws-landing .ws-views {
+  gap: 48px;
+}
+
+.ws-status-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ws-item-actions:has(.ws-status-anchor.is-open) {
+  opacity: 1;
+}
+
+.ws-filter-menu.ws-status-menu {
+  left: auto;
+  right: 0;
+  min-width: 140px;
+}
+
+.ws-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled),
+.ws-landing .ws-files-box:hover .ws-create-folder:not(:disabled) {
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+}
+
+.ws-card-buttons .ws-pill,
+.ws-draft-box .ws-card-head,
+.ws-landing .ws-create-folder {
+  color: var(--ws-on-accent-dim);
+}
+.ws-card-buttons .ws-pill:hover:not(:disabled),
+.ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled),
+.ws-draft-box:hover:not(:disabled) .ws-card-head,
+.ws-landing .ws-create-folder:hover:not(:disabled),
+.ws-landing .ws-files-box:hover .ws-create-folder:not(:disabled) {
+  background: var(--accent);
+  color: var(--ws-on-accent);
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  width: 106px;
+  padding: 0;
+  justify-content: center;
+}
+
+.ws-filter-menu.ws-draft-menu {
+  left: 0;
+  right: auto;
+  min-width: 180px;
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  background: var(--ws-gray-100) !important;
+  color: var(--text-primary) !important;
+  transition: none;
+}
+.ws-landing .ws-toolbar-actions .ws-create-folder:hover:not(:disabled) {
+  background: var(--ws-gray-200) !important;
+  color: var(--text-primary) !important;
+}
+.ws-landing .ws-toolbar-actions .ws-create-folder:active:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--ws-on-accent) !important;
+}
+
+.ws-landing .ws-card-buttons .ws-pill,
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  background: var(--ws-gray-200) !important;
+  color: var(--text-primary) !important;
+}
+.ws-landing .ws-card-buttons .ws-pill:hover:not(:disabled),
+.ws-landing .ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled),
+.ws-landing .ws-toolbar-actions .ws-create-folder:hover:not(:disabled),
+.ws-landing .ws-toolbar-actions .ws-create-folder:active:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--ws-on-accent) !important;
+}
+
+.ws-landing .ws-card-buttons .ws-pill,
+.ws-landing .ws-import-card:hover .ws-card-buttons .ws-pill:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--ws-on-accent-dim) !important;
+}
+.ws-landing .ws-card-buttons .ws-pill:hover:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--ws-on-accent) !important;
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.ws-import-card .ws-card-head {
+  padding-left: 3px;
+}
+
+.ws-landing .ws-toolbar-actions .ws-create-folder:not(:hover):not(:active) {
+  background: var(--ws-gray-100) !important;
+  color: var(--text-primary) !important;
+}
+
+/* ------------------------------------------------------ tiles and list */
+
+.ws-toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.ws-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ws-landing .ws-view-btn,
+.vault .ws-view-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 28px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ws-landing .ws-view-btn:hover,
+.vault .ws-view-btn:hover { background: var(--ws-gray-100); color: var(--text-primary); }
+.ws-landing .ws-view-btn.is-on,
+.vault .ws-view-btn.is-on { background: var(--ws-gray-200); color: var(--text-primary); }
+
+/* Checkbox, shared by tiles and rows. */
+.ws-landing .ws-check {
+  position: static;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--ws-line-strong);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--ws-on-accent);
+  opacity: 1;
+}
+.ws-landing .ws-check-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Three dots trigger. */
+.ws-item-menu {
+  position: relative;
+  display: inline-flex;
+}
+.ws-landing .ws-dots {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ws-landing .ws-dots:hover,
+.ws-item-menu.is-open .ws-dots {
+  background: var(--ws-gray-100);
+}
+
+.ws-filter-menu.ws-actions-menu {
+  left: auto;
+  right: 0;
+  min-width: 170px;
+}
+.ws-filter-menu.ws-actions-menu.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+/* Destructive entries (Remove, Delete) read as such, in the status palette. */
+.ws-landing .ws-filter-option.is-danger { color: var(--danger-fg); }
+.ws-landing .ws-filter-option.is-danger:hover { background: var(--danger-quiet); }
+:root[data-theme="dark"] .ws-landing .ws-filter-option.is-danger { color: var(--danger-fg); }
+
+.ws-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--ws-gray-200);
+}
+
+/* Compact tiles. */
+.ws-files-box .ws-grid-items.ws-tiles {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-3);
+  padding: 2px 6px var(--sp-4) 2px;
+}
+
+.ws-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.ws-tile:hover { background: var(--ws-gray-100); }
+.ws-tile-selected,
+.ws-tile-selected:hover { border-color: var(--accent); }
+.ws-tile-drop { border-color: var(--accent); background: var(--ws-gray-100); }
+
+.ws-tile-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 26px;
+}
+
+.ws-landing .ws-tile-open,
+.ws-landing .ws-tile-up,
+.vault .ws-tile-open,
+.vault .ws-tile-up {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.ws-landing .ws-tile-up,
+.vault .ws-tile-up {
+  flex-direction: row;
+  padding: 12px 14px;
+  border: 1px dashed var(--ws-line-strong);
+  border-radius: 6px;
+  background: var(--bg-surface);
+}
+
+.ws-tile-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--ws-gray-100);
+  color: var(--text-secondary);
+}
+.ws-tile:hover .ws-tile-icon { background: var(--bg-surface); }
+
+.ws-tile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.ws-tile-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-tile-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ws-tile .ws-chip {
+  align-self: flex-start;
+  margin-left: 4px;
+}
+
+/* The four file-type tint rules that used to sit here (.ws-icon-pdf red,
+   .ws-icon-docx blue, and so on) are gone: they were dead. The "Monochrome
+   icons" block at the end of this file lists the same four selectors at the
+   same specificity and later in source order, so it won every time and every
+   icon rendered black or white regardless. Monochrome is the decision; this
+   was the contradiction left behind. */
+.ws-icon-txt { color: var(--text-secondary); }
+.ws-icon-folder { color: var(--text-muted); }
+
+.ws-star {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  fill: var(--accent);
+}
+
+/* Status chip. */
+.ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--ws-gray-200);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ws-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--text-muted);
+}
+.ws-chip-in_review .ws-chip-dot { background: var(--warning); }
+.ws-chip-completed .ws-chip-dot { background: var(--success); }
+
+/* List. */
+.ws-file-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-list-head,
+.ws-list-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 3fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.4fr) 40px;
+  align-items: center;
+  column-gap: var(--sp-3);
+  padding: 0 8px;
+}
+
+.ws-list-head {
+  height: 36px;
+  border-bottom: 1px solid var(--ws-gray-200);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.ws-files-box .ws-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ws-files-box .ws-list-body::-webkit-scrollbar { width: 4px; }
+.ws-files-box .ws-list-body::-webkit-scrollbar-track { background: transparent; }
+.ws-files-box .ws-list-body::-webkit-scrollbar-thumb { background: var(--accent); border-radius: var(--r-pill); }
+
+.ws-list-row {
+  height: 48px;
+  border-bottom: 1px solid var(--ws-gray-200);
+  font-size: 14px;
+  color: var(--text-primary);
+  transition: background var(--dur-1) var(--ease-out);
+}
+.ws-list-row:hover { background: var(--ws-gray-100); }
+.ws-list-selected,
+.ws-list-selected:hover { background: var(--ws-gray-100); }
+.ws-list-drop { background: var(--ws-gray-200); }
+.ws-list-up { cursor: pointer; color: var(--text-secondary); }
+
+.ws-landing .ws-list-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.ws-list-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-list-icon { flex: 0 0 auto; }
+.ws-list-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.ws-list-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.ws-tile-icon.ws-tile-icon-file,
+.ws-tile:hover .ws-tile-icon.ws-tile-icon-file {
+  width: 36px;
+  height: 40px;
+  background: transparent;
+}
+.ws-tile-icon-file svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+
+.ws-list-row,
+.ws-landing .ws-list-name {
+  font-size: 13px;
+}
+
+.ws-list-icon-file {
+  display: inline-flex;
+  align-items: center;
+}
+.ws-list-icon-file svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+
+/* ---------------------------------------------------- "From Vault" mode */
+
+/* One timing for every part of the mode change, so the fades, the glide and
+   the content swap read as a single movement. */
+.ws-files-box {
+  --ws-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ws-dur: 880ms;
+}
+
+/* Left side: the filters and the Upload to Workspace button share one cell
+   and cross-fade in place. */
+.ws-toolbar-start {
+  display: grid;
+  align-items: center;
+  min-width: 0;
+}
+.ws-swap {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear 0s;
+}
+.ws-swap-vault {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear var(--ws-dur);
+}
+.ws-files-toolbar.is-vault .ws-swap-filters {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--ws-dur) var(--ws-ease),
+    transform var(--ws-dur) var(--ws-ease),
+    visibility 0s linear var(--ws-dur);
+}
+.ws-files-toolbar.is-vault .ws-swap-vault {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 80ms, 80ms, 0s;
+}
+
+.ws-landing .ws-upload-to-workspace {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 20px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--ws-on-accent-dim);
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, opacity 200ms ease;
+}
+.ws-landing .ws-upload-to-workspace:hover:not(:disabled) {
+  color: var(--ws-on-accent);
+}
+.ws-landing .ws-upload-to-workspace:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Right side: Upload and Folder collapse to nothing, so the view switch
+   glides to the right edge as the space closes. */
+.ws-toolbar-end {
+  gap: 0;
+}
+.ws-toolbar-collapse {
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+  margin-left: var(--sp-3);
+  overflow: hidden;
+  padding: 2px 0;
+  opacity: 1;
+  transition:
+    max-width var(--ws-dur) var(--ws-ease),
+    margin-left var(--ws-dur) var(--ws-ease),
+    opacity calc(var(--ws-dur) * 0.6) var(--ws-ease);
+}
+.ws-files-toolbar.is-vault .ws-toolbar-collapse {
+  max-width: 0;
+  margin-left: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Content swap: whatever mounts in the box eases in. */
+.ws-mode-in {
+  animation: ws-mode-in var(--ws-dur, 880ms) var(--ws-ease, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+@keyframes ws-mode-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ws-vault-state {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.ws-tile-disabled,
+.ws-list-disabled {
+  opacity: 0.45;
+}
+.ws-landing .ws-check:disabled {
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-swap,
+  .ws-swap-vault,
+  .ws-toolbar-collapse,
+  .ws-mode-in {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Tile ⋯ menu opens beside the dots, to their left, its first row level
+   with the dots. */
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--side {
+  top: 0;
+  bottom: auto;
+  left: auto;
+  right: calc(100% + 6px);
+}
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--side.is-up {
+  top: auto;
+  bottom: 0;
+}
+
+/* Tile icon sits at the tile's bottom-right corner; name and details on the left. */
+.ws-landing .ws-tile:not(.ws-tile-up),
+.vault .ws-tile:not(.ws-tile-up) {
+  padding-right: 56px;
+  min-height: 104px;
+}
+.ws-landing .ws-tile:not(.ws-tile-up) .ws-tile-top,
+.vault .ws-tile:not(.ws-tile-up) .ws-tile-top {
+  margin-right: -46px;
+}
+.ws-landing .ws-tile:not(.ws-tile-up) .ws-tile-icon,
+.vault .ws-tile:not(.ws-tile-up) .ws-tile-icon {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+}
+
+/* List ⋮ menu: pinned to the window, to the right of the dots. */
+.ws-filter-menu.ws-actions-menu.ws-actions-menu--fixed {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  z-index: var(--z-popover);
+}
+
+/* Returning from Vault mode runs at the same pace as entering it: the filters
+   wait for the Vault button to fade, just as the button waits on the way in,
+   and Upload/Folder fade over the full duration instead of 60% of it. */
+.ws-files-toolbar:not(.is-vault) .ws-swap-filters {
+  transition-delay: 80ms, 80ms, 0s;
+}
+.ws-toolbar-collapse,
+.ws-files-toolbar.is-vault .ws-toolbar-collapse {
+  transition:
+    max-width var(--ws-dur) var(--ws-ease),
+    margin-left var(--ws-dur) var(--ws-ease),
+    opacity var(--ws-dur) var(--ws-ease);
+}
+.ws-files-toolbar:not(.is-vault) .ws-toolbar-collapse {
+  transition-delay: 0s, 0s, 80ms;
+}
+
+/* Vault-mode items sit exactly where workspace items sit: the content swap
+   fades in place rather than sliding, and vault tiles keep the space the
+   workspace ⋯ button takes. */
+@keyframes ws-mode-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ws-dots-placeholder {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+}
+
+/* Collapse to and from the measured width, so closing and reopening both
+   take the full duration. */
+.ws-toolbar-collapse {
+  max-width: var(--ws-collapse-w, 420px);
+}

@@ -29,499 +29,91 @@
   overflow: hidden;
   background-color: var(--bg-canvas);
   position: relative;
+  padding-left: var(--rail-collapsed-width);
+  /*
+   * The other half of the rail animation, and the reason it used to look
+   * broken: the rail's WIDTH was transitioned but this padding was not, so
+   * the page content jumped to its final position in one frame while the
+   * rail spent 260ms catching up. The two must carry the same duration and
+   * the same curve or they visibly separate — most obviously on a wide
+   * window, where they are furthest apart.
+   *
+   * Yes, this animates a layout property, which the app otherwise avoids.
+   * It is unavoidable here and deliberate: a transform is painted only, so
+   * the rail would keep its original layout box and the content could never
+   * reclaim the space. Confined to one element on a user-initiated toggle,
+   * with `contain` on the rail limiting the work, this is the one place it
+   * is worth the cost.
+   */
+  /* padding-left follows the rail; padding-right follows Aurora panel
+     (assistant.css). Both on the app's animation cadence, declared together
+     because a second `transition` on .app-root elsewhere would replace this
+     one rather than add to it. */
+  transition: padding-left var(--dur-anim) var(--ease-out),
+    padding-right var(--dur-anim) var(--ease-out);
+  will-change: padding-left;
 }
 
-/* ═══════════════════════════════════════════════════
-   THE RAIL (sidebar) — one shade off the canvas, per theme
-   ═══════════════════════════════════════════════════
-
-   Every colour below still comes from a --rail-* token, and that indirection
-   is the point: this block did not change when the rail stopped being dark.
-
-   What DID change is where those tokens live. They used to be declared once
-   in tokens.css outside every theme block, making the rail structurally
-   incapable of flipping — a permanently dark spine in both themes, on the
-   reasoning that "the rail is chrome, not content".
-
-   That premise is now rejected. The rail is the same paper as the canvas, one
-   shade down, divided by a single hairline; a black spine bolted to a paper
-   product is the one element that does not belong to it. So --rail-* is
-   declared in BOTH theme blocks instead, which keeps the parity rule intact
-   (every token defined in both) while letting the plane track the theme.
-
-   The rail keeps its own ring and accent tokens even so. They are no longer
-   compensating for a fixed dark plane — they exist so the rail can be retuned
-   independently of the canvas without hunting through this file.
-   ═══════════════════════════════════════════════════ */
-
-.sidebar {
-  width: 260px;
-  height: 100vh;
-  background-color: var(--rail-bg);
-  border-right: 1px solid var(--rail-border);
-  display: flex;
-  flex-direction: column;
-  padding: 32px var(--sp-2) var(--sp-2);
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: var(--z-rail);
-  transform: translateX(-100%);
-  transition: transform var(--dur-3) var(--ease-out);
-  /* Text inside the rail inherits rail colours rather than the themed
-     --text-* set. Set once here so a descendant that forgets to specify a
-     colour still lands correctly. */
-  color: var(--rail-text);
+/*
+ * ── One layout rule for every page ────────────────────────────────────────
+ * The rail is positioned over the app root's left edge, so the root reserves
+ * exactly the rail's CURRENT width: the collapsed width while closed, the open
+ * width (a token that follows the window, see --rail-width below) while open.
+ * Every view is a flex sibling, so it is laid out only in the space that is
+ * left and centres its own content there. No page adds a sidebar offset of its
+ * own; one that did would be off-centre in one of the two states.
+ *
+ * The right edge is reserved the same way for the AI Assistant panel (see
+ * components/assistant/assistant.css), so nothing sits under either.
+ */
+.app-root[data-sidebar="open"] {
+  padding-left: var(--rail-width);
 }
 
-.app-root[data-sidebar="open"] .sidebar {
-  transform: translateX(0);
+/*
+ * ── The window band ───────────────────────────────────────────────────────
+ * The app reserves a band across the top of the page area and every page
+ * starts below it. The band is the page's own
+ * canvas colour (the root's background shows through), so it reads as the top
+ * margin of the page rather than as a title bar, and it is the window's drag
+ * handle. The rail is positioned against the root's edge, so it still runs the
+ * full height and its first row is untouched.
+ */
+:root {
+  --app-right-inset: 0px;
 }
 
-/* Scoped scrollbar: the rail's thumb must stay light-on-dark even in light
-   mode, so it cannot use the themed --scrollbar-* tokens. */
-.sidebar *::-webkit-scrollbar-thumb {
-  background: var(--rail-active);
-  background-clip: content-box;
-}
-.sidebar *::-webkit-scrollbar-thumb:hover {
-  background: var(--rail-selected);
-  background-clip: content-box;
+.app-root {
+  padding-top: var(--window-band-h);
 }
 
-/* The toggle sits OUTSIDE the rail (position: fixed, over the canvas) when the
-   rail is CLOSED, so it is the one sidebar-named control that must follow the
-   theme — it is drawn on themed canvas, not on the rail. When the rail is open
-   it overlaps the rail and flips to rail colours (rule below). */
-.sidebar-toggle-btn {
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  z-index: var(--z-rail-toggle);
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: var(--sp-2);
-  border-radius: var(--r-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out);
+/* The chat page's canvas is a shade cooler than the others; the band follows
+   whichever page is showing, so it never shows as a strip of another colour. */
+.app-root[data-view="chat"] {
+  background-color: var(--bg-chat);
 }
 
-.sidebar-toggle-btn:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
+:root:has(.app-root[data-assistant="open"]) {
+  --app-right-inset: var(--ai-panel-width, 380px);
 }
 
-/* When the rail is open the toggle overlaps it, so it flips to rail colours. */
-.app-root[data-sidebar="open"] .sidebar-toggle-btn {
-  color: var(--rail-text-dim);
-}
-.app-root[data-sidebar="open"] .sidebar-toggle-btn:hover {
-  background-color: var(--rail-hover);
-  color: var(--rail-text);
-}
-
-/* ── Identity row (top of the rail) ──────────────────────────────────────
-   The account control. Logged out: "Welcome User" + a login glyph. Logged
-   in: the user's full name in bold caps + a square initials tile, opening a
-   Logout menu. Sits ABOVE New Discussion and is the only place the user
-   signs in or out. All colours are --rail-* because the rail is black in
-   both themes. */
-.sidebar-identity-wrap {
-  position: relative;
-  margin-bottom: var(--sp-2);
-}
-
-.sidebar-identity {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  background: transparent;
-  border: none;
-  border-radius: var(--r-md);
-  cursor: pointer;
-  text-align: left;
-  transition: background-color var(--dur-1) var(--ease-out);
-}
-
-.sidebar-identity:hover {
-  background-color: var(--rail-hover);
-}
-
-.sidebar-identity:focus-visible {
-  outline: 2px solid var(--rail-ring);
-  outline-offset: -2px;
-}
-
-/* Bold caps, per the product spec. `text-transform` rather than uppercasing
-   the string so the accessible name and title tooltip keep the real casing. */
-.sidebar-identity__name {
+/*
+ * Every view is a flex sibling of the rail and takes the width the rail leaves.
+ *
+ * flex:1 with min-width:0, not width:100% — a flex item's width:100% resolves
+ * against the WHOLE container, so each view would ask for the full window and
+ * then have to be shrunk back, and any view with wide content (a spreadsheet
+ * grid, a long filename) would win that fight and overflow instead. min-width:0
+ * is the half that makes shrinking actually possible: the default min-width of
+ * auto refuses to go below content size.
+ */
+.app-root > .chat-window,
+.app-root > .settings-page,
+.app-root > .vault,
+.app-root > .ws-root,
+.app-root > .app-view {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--ls-wide);
-  color: var(--rail-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Square (not pill) tile, per the spec. */
-.sidebar-identity__initials {
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-sm);
-  background-color: var(--rail-accent-solid);
-  color: var(--rail-bg);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-normal);
-}
-
-.sidebar-identity__login {
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--rail-border);
-  color: var(--rail-text-dim);
-  transition: color var(--dur-1) var(--ease-out),
-    border-color var(--dur-1) var(--ease-out);
-}
-
-.sidebar-identity:hover .sidebar-identity__login {
-  color: var(--rail-text);
-  border-color: var(--rail-text-faint);
-}
-
-.sidebar-identity__menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: var(--z-popover);
-  padding: var(--sp-1);
-  background-color: var(--rail-bg-raised);
-  border: 1px solid var(--rail-border);
-  border-radius: var(--r-md);
-  box-shadow: var(--shadow-lg);
-}
-
-/* Icon buttons in three sizes. Consolidated to one declaration with size
-   modifiers driven by custom properties — previously three near-identical
-   rule pairs that had already drifted (only the xs variant changed colour on
-   hover, for no stated reason). */
-.sidebar-icon-btn,
-.sidebar-icon-btn-sm,
-.sidebar-icon-btn-xs {
-  --rail-btn-pad: var(--sp-2);
-  --rail-btn-radius: var(--r-md);
-  background: transparent;
-  border: none;
-  color: var(--rail-text-dim);
-  cursor: pointer;
-  padding: var(--rail-btn-pad);
-  border-radius: var(--rail-btn-radius);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out);
-}
-
-.sidebar-icon-btn-sm {
-  --rail-btn-pad: var(--sp-1);
-  --rail-btn-radius: var(--r-sm);
-}
-
-.sidebar-icon-btn-xs {
-  --rail-btn-pad: 2px;
-  --rail-btn-radius: var(--r-xs);
-}
-
-.sidebar-icon-btn:hover,
-.sidebar-icon-btn-sm:hover,
-.sidebar-icon-btn-xs:hover {
-  background-color: var(--rail-hover);
-  color: var(--rail-text);
-}
-
-.sidebar-icon-btn:focus-visible,
-.sidebar-icon-btn-sm:focus-visible,
-.sidebar-icon-btn-xs:focus-visible,
-.sidebar-nav-btn:focus-visible,
-.sidebar-search-input:focus-visible,
-.sidebar-chat-title:focus-visible,
-.sidebar-profile-row:focus-visible {
-  outline: 2px solid var(--rail-ring);
-  outline-offset: 2px;
-}
-
-.sidebar-nav-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  background: transparent;
-  border: none;
-  color: var(--rail-text);
-  font-size: var(--fs-md);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-normal);
-  cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out);
-  text-align: left;
-}
-
-.sidebar-nav-btn:hover {
-  background-color: var(--rail-hover);
-}
-
-.sidebar-nav-btn > svg {
-  color: var(--rail-text-dim);
-  flex: 0 0 auto;
-  transition: color var(--dur-1) var(--ease-out);
-}
-.sidebar-nav-btn:hover > svg {
-  color: var(--rail-text);
-}
-
-/* Popovers anchored inside the rail stay on the rail's plane — a themed
-   dropdown here would be a white card hanging off a black panel. */
-.sidebar-dropdown,
-.sidebar-profile-popup {
-  position: absolute;
-  left: 0;
-  background: var(--rail-bg-raised);
-  border: 1px solid var(--rail-border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
-  min-width: 200px;
-  padding: var(--sp-1);
-  z-index: var(--z-popover);
-}
-
-.sidebar-dropdown {
-  top: 100%;
-  margin-top: var(--sp-1);
-}
-
-.sidebar-profile-popup {
-  bottom: 100%;
-  margin-bottom: var(--sp-2);
-}
-
-.sidebar-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-sm);
-  background: transparent;
-  border: none;
-  color: var(--rail-text);
-  font-size: var(--fs-sm);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out);
-}
-
-.sidebar-dropdown-item:hover {
-  background-color: var(--rail-hover);
-}
-
-.sidebar-search-input {
-  width: 100%;
-  padding: 7px var(--sp-3);
-  border-radius: var(--r-md);
-  border: 1px solid var(--rail-border);
-  background: var(--rail-bg-raised);
-  color: var(--rail-text);
-  font-size: var(--fs-sm);
-  letter-spacing: var(--ls-normal);
-  outline: none;
-  transition: border-color var(--dur-1) var(--ease-out),
-    background-color var(--dur-1) var(--ease-out);
-  box-sizing: border-box;
-}
-
-.sidebar-search-input:focus {
-  border-color: var(--rail-accent);
-  background: var(--rail-hover);
-}
-
-.sidebar-search-input::placeholder {
-  color: var(--rail-text-faint);
-}
-
-.sidebar-section-title {
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--rail-text-faint);
-  padding: var(--sp-3) var(--sp-3) var(--sp-2);
-  margin-top: var(--sp-1);
-}
-
-.sidebar-chat-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.sidebar-empty-state {
-  padding: var(--sp-3);
-  color: var(--rail-text-faint);
-  font-size: var(--fs-sm);
-}
-
-.sidebar-chat-item {
-  border-radius: var(--r-md);
-  transition: background-color var(--dur-1) var(--ease-out);
-  cursor: pointer;
-  /* Reserve the selected state's border on every row so selecting one does
-     not shift its text by half a pixel. */
-  border: 1px solid transparent;
-}
-
-.sidebar-chat-item:hover {
-  background-color: var(--rail-hover);
-}
-
-/* Selection is carried by a left accent marker plus a fill, rather than the
-   previous 0.5px all-round border. A sub-pixel border renders inconsistently
-   at non-integer device pixel ratios (it was visibly absent on some rows),
-   and the two per-theme --chat-selected-border definitions it needed are
-   exactly the kind of override this rail removes. */
-.sidebar-chat-item.selected {
-  background-color: var(--rail-selected);
-  border-color: var(--rail-border);
-  position: relative;
-}
-
-.sidebar-chat-item.selected::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 60%;
-  border-radius: 0 var(--r-pill) var(--r-pill) 0;
-  background: var(--rail-accent);
-}
-
-.sidebar-chat-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-}
-
-.sidebar-chat-indicators {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.sidebar-pin-icon {
-  color: var(--rail-accent);
-}
-
-.sidebar-save-icon {
-  color: var(--rail-text-faint);
-}
-
-.sidebar-chat-title {
-  flex: 1;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: none;
-  border: none;
-  color: var(--rail-text);
-  font-size: var(--fs-sm);
-  letter-spacing: var(--ls-normal);
-  cursor: pointer;
-  padding: 0;
-}
-
-.sidebar-chat-actions {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-/* Settings + Help & Feedback, pinned to the bottom of the rail. Uses the
-   same .sidebar-nav-btn as the top group so the two ends of the rail match. */
-.sidebar-footer-section {
-  margin-top: auto;
-  padding-top: var(--sp-2);
-  border-top: 1px solid var(--rail-border);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sidebar-profile-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out);
-}
-
-.sidebar-profile-row:hover {
-  background-color: var(--rail-hover);
-}
-
-.sidebar-profile-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-pill);
-  /* Rail tokens, not --accent/--text-on-accent: those follow the theme, and
-     on the light theme --accent is near-black — a black disc with white
-     initials sitting on the (now always black) rail, i.e. invisible. */
-  background-color: var(--rail-accent-solid);
-  color: var(--rail-bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  flex-shrink: 0;
-}
-
-.sidebar-profile-name {
-  flex: 1;
-  font-size: var(--fs-sm);
-  color: var(--rail-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -532,7 +124,6 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100%;
   background-color: var(--bg-chat);
 }
 
@@ -564,27 +155,14 @@
   justify-content: center;
 }
 
-.chat-header-bar.centered .chat-header-left {
-  position: absolute;
-  left: 16px;
-}
-
 .chat-header-bar.centered .header-actions {
   position: absolute;
   right: 16px;
 }
 
-.chat-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-}
-
 .chat-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -688,7 +266,7 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -804,7 +382,6 @@
   box-shadow: var(--shadow-lg);
 }
 
-
 .header-brand {
   display: flex;
   align-items: center;
@@ -814,8 +391,8 @@
 }
 
 .header-brand-text {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   letter-spacing: 0.5px;
 }
 
@@ -827,7 +404,7 @@
   margin-top: 8px;
   background: var(--bg-dropdown);
   border: 1px solid var(--border-primary);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   box-shadow: 0 4px 12px var(--shadow);
   min-width: 180px;
   padding: 4px;
@@ -840,11 +417,11 @@
   gap: 12px;
   width: 100%;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--fs-md);
   text-align: left;
   cursor: pointer;
   transition: background-color 0.2s;
@@ -864,6 +441,38 @@
   overflow-y: auto;
   padding: 24px 16px;
   background-color: var(--bg-chat);
+}
+
+/* "Jump to latest": sticky to the scroller's bottom, so it floats over the
+   content once the user scrolls up, without shifting layout. The wrap lets
+   clicks pass through everywhere except the pill itself. */
+.chat-jump-wrap {
+  position: sticky;
+  bottom: 12px;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  margin-top: 8px;
+}
+.chat-jump-latest {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out);
+}
+.chat-jump-latest:hover {
+  color: var(--text-primary);
 }
 
 .chat-messages-container {
@@ -898,7 +507,7 @@
   font-weight: var(--fw-regular);
   color: var(--text-heading);
   margin: 0;
-  letter-spacing: var(--ls-tight);
+  letter-spacing: var(--ls-display);
 }
 
 /* Messages */
@@ -913,12 +522,17 @@
    points at --bg-inset instead, so the bubble reads as "the user's turn"
    through its fill and alignment rather than through colour. */
 .message-bubble.user {
+  /* ChatGPT's user turn: a borderless grey capsule, right-aligned, that only
+     grows as wide as its text. The hairline is gone on purpose — at this fill
+     it read as a second edge around an already-soft shape. */
   max-width: 70%;
-  padding: 12px 16px;
-  border-radius: var(--r-xl);
+  width: fit-content;
+  padding: 10px 20px;
+  border-radius: 24px;
   background-color: var(--bg-bubble-user);
-  border: 1px solid var(--border-subtle);
+  border: none;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .message-content-plain {
@@ -964,7 +578,7 @@
 }
 
 .message-attachment-icon {
-  font-size: 14px;
+  font-size: var(--fs-md);
   line-height: 1;
 }
 
@@ -977,19 +591,148 @@
 
 .loading-bubble { display: flex; gap: 6px; padding: 16px 20px; }
 
-.loading-dot {
-  width: 8px; height: 8px;
-  background-color: var(--text-muted);
-  border-radius: 50%;
-  animation: bounce 1.4s infinite ease-in-out both;
+/* The loading state, everywhere: inline orb + a status word with a
+   left-to-right glow sweep. Strictly monochrome — the sweep runs from muted
+   to heading ink and back, so it themes itself in both modes. No font-size:
+   it inherits, which is what keeps it the same size as streaming prose. */
+.thinking-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  line-height: var(--lh-normal);
 }
 
-.loading-dot:nth-child(1) { animation-delay: -0.32s; }
-.loading-dot:nth-child(2) { animation-delay: -0.16s; }
+.thinking-status__text {
+  background: linear-gradient(
+    100deg,
+    var(--text-muted) 35%,
+    var(--text-heading) 50%,
+    var(--text-muted) 65%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: think-sweep 1.8s linear infinite;
+  white-space: nowrap;
+}
 
-@keyframes bounce {
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
+@keyframes think-sweep {
+  from { background-position: 110% 0; }
+  to { background-position: -110% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-status__text {
+    animation: none;
+  }
+}
+
+/* ── Answer motion: one vocabulary for every surface ─────────────────────
+   Pace comes from api/pacedStream.ts; these only shape how it looks. Four
+   moves, all on the same ease so they read as one system:
+   - a status word cross-fades in when the phase changes,
+   - each new word fades and lifts in (only new ones; React keeps the rest),
+   - a caret trails the text while it is being written,
+   - a new exchange rises into the thread.
+   With reduced motion, words simply appear and the caret holds still. */
+.thinking-status__text {
+  animation: think-sweep 1.8s linear infinite, answer-fade-in 320ms var(--ease-out) both;
+}
+
+.stream-word {
+  animation: answer-word-in 360ms var(--ease-out) both;
+}
+
+
+/* ── Triangle mark (TriangleMark.tsx) ─────────────────────────────────────
+   AppMark's outline and stroke, in motion. The base outline is faint under
+   a moving part, so the shape always reads as the logo. */
+.tri-mark { flex: 0 0 auto; overflow: visible; }
+.tri-mark path {
+  fill: none;
+  stroke: var(--text-heading);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.tri-mark--thinking .tri-mark__base,
+.tri-mark--reading .tri-mark__base { opacity: 0.22; }
+
+/* Thinking: a short light runs the outline (pathLength 34 on the path). */
+.tri-mark__trace {
+  stroke-dasharray: 8 26;
+  animation: tri-trace 1.6s linear infinite;
+}
+
+/* Reading: the corners light one after another. */
+.tri-mark__corner {
+  fill: var(--text-heading);
+  opacity: 0.15;
+  animation: tri-corner 1.5s ease-in-out infinite;
+}
+.tri-mark__corner:nth-of-type(2) { animation-delay: 0.5s; }
+.tri-mark__corner:nth-of-type(3) { animation-delay: 1s; }
+
+/* Done: fills solid once, then the whole mark fades out. */
+.tri-mark--done .tri-mark__base { animation: tri-fill 2s var(--ease-out) both; }
+.answer-done {
+  display: inline-flex;
+  margin-top: 6px;
+  animation: tri-done-out 2s var(--ease-out) both;
+}
+
+.thinking-status.is-paused * { animation-play-state: paused; }
+
+@keyframes tri-trace { to { stroke-dashoffset: -34; } }
+@keyframes tri-corner { 0%, 100% { opacity: 0.15; } 30% { opacity: 1; } }
+@keyframes tri-fill {
+  0% { fill: transparent; }
+  35%, 70% { fill: var(--text-heading); }
+  100% { fill: transparent; }
+}
+@keyframes tri-done-out {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.message-wrapper.is-entering {
+  animation: answer-rise var(--dur-anim) var(--ease-out) both;
+}
+
+@keyframes answer-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes answer-word-in {
+  from { opacity: 0; filter: blur(2px); transform: translateY(2px); }
+  to { opacity: 1; filter: none; transform: none; }
+}
+
+@keyframes answer-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Stop arrives as a morph of Send rather than a swap. */
+.input-send-btn.stop {
+  animation: send-to-stop 220ms var(--ease-out) both;
+}
+
+@keyframes send-to-stop {
+  from { transform: scale(0.88); opacity: 0.6; }
+  to { transform: none; opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-status__text { animation: none; }
+  .stream-word,
+  .message-wrapper.is-entering,
+  .input-send-btn.stop { animation: none; }
+  .tri-mark__trace { animation: none; stroke-dasharray: none; }
+  .tri-mark__corner { animation: none; opacity: 1; }
+  .tri-mark--done .tri-mark__base { animation: none; fill: var(--text-heading); }
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1020,18 +763,75 @@
    Focus darkens the fill by one step and brings the hairline in, rather than
    swapping the border to full --text-primary as before — a near-black outline
    on focus was the single highest-contrast event in the app. */
+/* THE COMPOSER
+   ─────────────────────────────────────────────────────────────────────────
+   A rectangle with soft corners, laid out as two rows: the field fills the
+   first, and the controls sit along the bottom with Send at the right.
+
+   The rows are produced by `flex-wrap` and `order`, NOT by wrapping the
+   children in two container divs. That is deliberate. Three of these children
+   own absolutely-positioned popovers — the @ picker, the Vault picker, the
+   model dropdown — anchored to their own offset parent. Introducing a row
+   wrapper changes that parent and silently re-anchors all three. Ordering
+   the existing children moves nothing in the DOM, so every popover keeps the
+   containing block it was positioned against.
+
+   `align-items: flex-end` keeps the controls pinned to the bottom edge while
+   the field grows upward above them. */
 .chat-input-pill {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 8px;
   background-color: var(--bg-field);
   border: 1px solid transparent;
+  /* Soft, not a pill: at this height a fully rounded end would read as a
+     search bar. --r-lg is the app's card radius, so the composer matches the
+     cards it sits beneath. */
   border-radius: var(--r-lg);
-  padding: 8px 12px;
+  padding: var(--sp-3);
   transition: background-color var(--dur-1) var(--ease-out),
     border-color var(--dur-1) var(--ease-out);
   min-width: 0;
   overflow: visible;
+}
+
+/* Row one: the field, full width. */
+.chat-input-field {
+  position: relative;
+  order: 1;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+/* Row two: the model capsule and Send, together at the right. The capsule's
+   `margin-left: auto` pushes the pair to the right edge, so the model sits
+   directly beside the arrow it sends with. */
+.chat-input-pill .input-model-picker { order: 3; margin-left: auto; margin-right: 0; }
+.chat-input-pill .input-send-btn { order: 4; margin-left: 0; }
+
+/* Folder and paperclip sit ABOVE the composer, on its top-left corner —
+   folder first, then the paperclip — as a small tool row outside the box.
+   Positioned rather than moved in the DOM: neither button owns a popover, so
+   nothing re-anchors, and the field keeps the whole width of the box. The
+   form gains the same height on top so the row never sits on a message. */
+.chat-input-form { padding-top: 34px; }
+.chat-input-pill { position: relative; }
+.chat-input-pill .input-folder-btn,
+.chat-input-pill .input-attach-btn {
+  position: absolute;
+  top: -34px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--r-md);
+}
+.chat-input-pill .input-folder-btn { left: 0; }
+.chat-input-pill .input-attach-btn { left: 34px; }
+.chat-input-pill .input-folder-btn:hover,
+.chat-input-pill .input-attach-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .chat-input-pill:focus-within {
@@ -1063,32 +863,61 @@
    reference's "Ask Harvey" button; it now names --accent instead of borrowing
    --text-primary, so it tracks the accent role in both themes. Hover shifts
    the fill by one step rather than fading the whole control out. */
+/* Send — a labelled rectangle, not an icon puck.
+   The arrow sits AFTER the label: it reads as "Send →", the direction the
+   message travels, rather than decorating the word from the left. */
 .input-send-btn {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  /* Glyph only, centred. The button keeps the footprint it had when it read
+     "Send ↑" — the width is pinned rather than left to shrink-wrap the arrow,
+     so the composer's right edge does not move and the arrow has something to
+     be centred IN. */
+  justify-content: center;
+  gap: 0;
+  width: 76px;
+  height: 34px;
+  padding: 0;
   background-color: var(--accent);
   color: var(--text-on-accent);
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
   border: none;
+  border-radius: var(--r-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   transition: background-color var(--dur-1) var(--ease-out),
-    opacity var(--dur-1) var(--ease-out);
+    opacity var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
 }
+.input-send-btn__arrow { flex: 0 0 auto; }
+.input-send-btn:active:not(:disabled) { transform: translateY(1px); }
+.input-send-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
 .input-send-btn:hover:not(:disabled) { background-color: var(--accent-hover); }
 .input-send-btn:active:not(:disabled) { background-color: var(--accent-active); }
 .input-send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .chat-input {
-  flex: 1;
+  display: block;
   width: 100%;
+  /* The floor for the "big rectangular space": the box is this tall before a
+     single character is typed. It grows from here — see COMPOSER_MAX_HEIGHT
+     in ChatWindow.tsx, which owns the ceiling. */
+  min-height: 60px;
+  max-height: 200px;
+  padding: var(--sp-1) var(--sp-1) 0;
   background: transparent;
   border: none;
   outline: none;
+  /* A textarea is resizable and monospace-by-default in some engines; both
+     have to be turned off explicitly or the field disagrees with the rest of
+     the app and sprouts a drag handle in its corner. */
+  resize: none;
+  overflow-y: auto;
+  line-height: var(--lh-normal);
   /* Was a hardcoded 15px. --fs-lg is the same size today but now moves with
      the scale instead of pinning this one field to a literal. */
   font-size: var(--fs-lg);
@@ -1106,10 +935,12 @@
   bottom: 100%;
   left: 0;
   right: 0;
-  margin-bottom: 8px;
+  /* Clears the folder/paperclip row that sits above the composer: the
+     composer's 12px padding + the 34px row + a 6px gap. */
+  margin-bottom: 52px;
   background-color: var(--bg-primary);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
   max-height: 280px;
   overflow-y: auto;
@@ -1118,8 +949,8 @@
 
 .file-autocomplete-header {
   padding: 8px 12px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1141,13 +972,13 @@
 }
 
 .file-autocomplete-icon {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
 .file-autocomplete-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1157,7 +988,7 @@
 .chat-disclaimer {
   margin-top: 6px;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
 
@@ -1196,14 +1027,21 @@
   justify-content: flex-start;
 }
 
+/* Every card the SAME width, and two to a row.
+   They used to be sized by their own text, so a file with a long metadata line
+   pushed its card wider than its neighbour, a third card dropped to a row of
+   its own, and a tray of six looked like a broken layout rather than a list.
+   A fixed basis makes them a grid: the eye reads down a column of names
+   instead of tracking ragged edges. */
 .attachment-chip {
   position: relative;
   display: inline-flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  min-width: 208px;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 1 var(--attachment-chip-w, 296px);
+  min-width: 0;
   max-width: 100%;
-  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  padding: 7px var(--sp-2) 7px 9px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-surface);
@@ -1211,6 +1049,12 @@
   overflow: hidden;
   animation: attachment-chip-in var(--dur-3) var(--ease-entrance) both;
   transition: border-color var(--dur-1) var(--ease-out);
+}
+
+/* One per row below the tray's own two-column width, rather than two cramped
+   ones with three characters of filename each. */
+@media (max-width: 720px) {
+  .attachment-tray-above-input { --attachment-chip-w: 100%; }
 }
 
 @keyframes attachment-chip-in {
@@ -1228,21 +1072,15 @@
    differently per platform, carry no information beyond a rough category, and
    at 14px are illegible. Three or four letters of the actual extension are
    unambiguous and align in a column. */
+/* Holds the shared FileTypeIcon. No tinted plate behind it any more: the
+   glyph carries its own colour now, and a coloured page on a grey square is
+   two backgrounds arguing. */
 .attachment-glyph {
   display: flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0;
-  text-transform: uppercase;
+  width: 22px;
 }
 
 .attachment-body {
@@ -1255,7 +1093,7 @@
 }
 
 .attachment-name {
-  max-width: 260px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1266,14 +1104,18 @@
 }
 
 /* The metadata line. Carries state, so it is the element that changes between
-   extracting / ready / failed. */
+   extracting / ready / failed. Clipped rather than wrapped: this line must not
+   be what decides how tall a card is. */
 .attachment-meta {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
+  min-width: 0;
   font-size: var(--fs-2xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .attachment-meta__sep {
@@ -1389,7 +1231,7 @@
 .attachment-ocr-note {
   font-size: var(--fs-2xs);
   line-height: var(--lh-snug);
-  color: var(--warning-fg, #b45309);
+  color: var(--warning-fg);
   max-width: 260px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1438,7 +1280,6 @@
   border: 1.5px dashed var(--accent-border);
   border-radius: var(--r-xl);
   background: var(--bg-overlay);
-  backdrop-filter: blur(2px);
 }
 
 .chat-dropzone__label {
@@ -1499,13 +1340,13 @@
   align-items: center;
   gap: 6px;
   padding: 4px 8px 4px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background-color: var(--bg-input);
   border: 1px solid var(--border-primary);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
   animation: chipSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
   max-width: 220px;
   position: relative;
   overflow: hidden;
@@ -1556,8 +1397,7 @@
 }
 
 .attached-file-chip:not(.removing) {
-  animation: chipSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards,
-             chipPulse 1.5s ease-in-out 0.4s 1;
+  animation: chipSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .attached-file-icon {
@@ -1575,12 +1415,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 120px;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   color: var(--text-primary);
 }
 
 .attached-file-size {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -1592,11 +1432,11 @@
   padding: 2px;
   cursor: pointer;
   color: var(--text-muted);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
   opacity: 0.6;
 }
 
@@ -1607,7 +1447,7 @@
 }
 
 .attached-files-count {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
   padding: 2px 8px;
   display: flex;
@@ -1660,7 +1500,7 @@
 
 .modal {
   background-color: var(--bg-modal);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: 0 20px 25px -5px var(--shadow);
   padding: 24px;
   width: 90%;
@@ -1669,37 +1509,11 @@
 }
 
 .modal-header { display: flex; justify-content: center; margin-bottom: 12px; }
-.modal-icon { width: 48px; height: 48px; color: var(--warning); }
-
 .modal-title {
-  font-size: 18px; font-weight: 600;
+  font-size: var(--fs-xl); font-weight: var(--fw-semibold);
   color: var(--text-primary);
   margin: 0 0 8px 0;
 }
-
-.modal-message {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0 0 24px 0;
-}
-
-.modal-buttons { display: flex; gap: 12px; justify-content: center; }
-
-.modal-button {
-  padding: 10px 20px;
-  border-radius: 6px;
-  border: 1px solid var(--border-primary);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  min-width: 100px;
-}
-
-.modal-button.cancel { background-color: var(--bg-primary); color: var(--text-primary); }
-.modal-button.cancel:hover { background-color: var(--bg-hover); }
-.modal-button.delete { background-color: var(--danger); color: var(--text-on-accent); border-color: var(--danger); }
-.modal-button.delete:hover { background-color: var(--danger-hover); }
 
 /* ═══════════════════════════════════════════════════
    Search Modal
@@ -1718,7 +1532,7 @@
 
 .search-modal-container {
   background-color: var(--bg-modal);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: 0 10px 40px var(--shadow);
   width: 90%; max-width: 680px; max-height: 80vh;
   display: flex; flex-direction: column; overflow: hidden;
@@ -1733,7 +1547,7 @@
 .search-icon { width: 20px; height: 20px; color: var(--text-muted); flex-shrink: 0; }
 
 .search-modal-input {
-  flex: 1; border: none; outline: none; font-size: 16px;
+  flex: 1; border: none; outline: none; font-size: var(--fs-lg);
   background: transparent; color: var(--text-primary);
 }
 
@@ -1749,7 +1563,7 @@
 
 .search-modal-close-button {
   background: none; border: none; color: var(--text-muted);
-  cursor: pointer; font-size: 20px; padding: 4px 8px;
+  cursor: pointer; font-size: var(--fs-2xl); padding: 4px 8px;
   display: flex; transition: color 0.2s; flex-shrink: 0;
 }
 
@@ -1759,13 +1573,13 @@
 
 .search-empty-state {
   display: flex; align-items: center; justify-content: center;
-  height: 200px; color: var(--text-muted); font-size: 14px;
+  height: 200px; color: var(--text-muted); font-size: var(--fs-md);
 }
 
 .search-results-group { padding: 0; }
 
 .search-group-title {
-  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-secondary);
   padding: 12px 16px 8px; text-transform: capitalize;
 }
 
@@ -1779,7 +1593,7 @@
 
 .search-result-icon {
   width: 32px; height: 32px; background-color: var(--bg-tertiary);
-  border-radius: 6px; display: flex; align-items: center;
+  border-radius: var(--r-md); display: flex; align-items: center;
   justify-content: center; flex-shrink: 0;
 }
 
@@ -1787,12 +1601,12 @@
 .search-result-content { flex: 1; min-width: 0; }
 
 .search-result-title {
-  font-size: 14px; color: var(--text-primary); font-weight: 500; word-break: break-word;
+  font-size: var(--fs-md); color: var(--text-primary); font-weight: var(--fw-medium); word-break: break-word;
 }
 
 .search-modal-results::-webkit-scrollbar { width: 8px; }
 .search-modal-results::-webkit-scrollbar-track { background: transparent; }
-.search-modal-results::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
+.search-modal-results::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: var(--r-sm); }
 .search-modal-results::-webkit-scrollbar-thumb:hover { background-color: var(--text-muted); }
 
 /* ═══════════════════════════════════════════════════
@@ -1809,12 +1623,12 @@
 .markdown-p:last-child { margin-bottom: 0; }
 
 .markdown-h1 {
-  font-size: 1.4em; font-weight: 700; margin: 20px 0 10px;
+  font-size: 1.4em; font-weight: var(--fw-bold); margin: 20px 0 10px;
   color: var(--text-heading); border-bottom: 1px solid var(--border-primary); padding-bottom: 6px;
 }
 
-.markdown-h2 { font-size: 1.2em; font-weight: 700; margin: 16px 0 8px; color: var(--text-heading); }
-.markdown-h3 { font-size: 1.05em; font-weight: 600; margin: 14px 0 6px; color: var(--text-heading); }
+.markdown-h2 { font-size: 1.2em; font-weight: var(--fw-bold); margin: 16px 0 8px; color: var(--text-heading); }
+.markdown-h3 { font-size: 1.05em; font-weight: var(--fw-semibold); margin: 14px 0 6px; color: var(--text-heading); }
 
 /* Inline code was magenta (#d63384) — the last saturated accent left in the
    prose stream, and jarring against a monochrome page. It is now ordinary
@@ -1873,7 +1687,7 @@
 
 .code-block-pre::-webkit-scrollbar { height: 6px; }
 .code-block-pre::-webkit-scrollbar-track { background: var(--scrollbar-track); }
-.code-block-pre::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
+.code-block-pre::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: var(--r-sm); }
 
 .markdown-ul { margin: 8px 0; padding-left: 24px; list-style-type: disc; }
 .markdown-ol { margin: 8px 0; padding-left: 24px; list-style-type: decimal; }
@@ -1893,13 +1707,13 @@
 
 .table-wrapper {
   margin: 12px 0; overflow-x: auto;
-  border-radius: 8px; border: 1px solid var(--border-primary);
+  border-radius: var(--r-md); border: 1px solid var(--border-primary);
 }
 
-.markdown-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.markdown-table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 
 .markdown-table th {
-  background-color: var(--bg-tertiary); font-weight: 600;
+  background-color: var(--bg-tertiary); font-weight: var(--fw-semibold);
   text-align: left; padding: 10px 14px;
   border-bottom: 2px solid var(--border-primary); color: var(--text-primary);
 }
@@ -1924,13 +1738,14 @@
 }
 .markdown-link:hover { border-bottom-color: var(--accent-fg); }
 .markdown-hr { border: none; border-top: 1px solid var(--border-primary); margin: 20px 0; }
-.markdown-content strong { font-weight: 700; color: var(--text-heading); }
+.markdown-content strong { font-weight: var(--fw-bold); color: var(--text-heading); }
 .markdown-content em { font-style: italic; }
 .markdown-content del { text-decoration: line-through; color: var(--text-muted); }
-.markdown-content img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+.markdown-content img { max-width: 100%; border-radius: var(--r-md); margin: 8px 0; }
 
 .message-text {
-  font-size: 15px; line-height: 1.6;
+  margin: 0;
+  font-size: var(--fs-lg); line-height: 1.6;
   white-space: pre-wrap; word-wrap: break-word;
 }
 
@@ -1948,7 +1763,7 @@
 
 .activity-panel {
   background-color: var(--bg-modal);
-  border-radius: 16px;
+  border-radius: var(--r-xl);
   box-shadow: 0 20px 40px var(--shadow);
   width: 90%; max-width: 560px; max-height: 85vh;
   display: flex; flex-direction: column; overflow: hidden;
@@ -1959,11 +1774,11 @@
   padding: 20px 24px; border-bottom: 1px solid var(--border-primary);
 }
 
-.activity-header h2 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin: 0; }
+.activity-header h2 { font-size: var(--fs-xl); font-weight: var(--fw-semibold); color: var(--text-primary); margin: 0; }
 
 .activity-close-btn {
   background: transparent; border: none; color: var(--text-secondary);
-  cursor: pointer; padding: 4px; border-radius: 6px;
+  cursor: pointer; padding: 4px; border-radius: var(--r-md);
   display: flex; transition: background-color 0.2s;
 }
 
@@ -1973,23 +1788,23 @@
 
 .activity-notice {
   display: flex; gap: 10px; padding: 12px 14px;
-  background-color: var(--bg-tertiary); border-radius: 8px;
+  background-color: var(--bg-tertiary); border-radius: var(--r-md);
   margin-bottom: 20px; align-items: flex-start;
 }
 
 .activity-notice svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
-.activity-notice p { font-size: 12px; color: var(--text-secondary); margin: 0; line-height: 1.5; }
+.activity-notice p { font-size: var(--fs-xs); color: var(--text-secondary); margin: 0; line-height: 1.5; }
 
 .activity-setting-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 0; border-bottom: 1px solid var(--border-subtle); gap: 16px;
 }
 
-.activity-setting-info h3 { font-size: 14px; font-weight: 500; color: var(--text-primary); margin: 0 0 2px 0; }
-.activity-setting-info p { font-size: 12px; color: var(--text-muted); margin: 0; }
+.activity-setting-info h3 { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text-primary); margin: 0 0 2px 0; }
+.activity-setting-info p { font-size: var(--fs-xs); color: var(--text-muted); margin: 0; }
 
 .activity-toggle {
-  width: 44px; height: 24px; border-radius: 12px;
+  width: 44px; height: 24px; border-radius: var(--r-lg);
   background-color: var(--border-primary); border: none;
   cursor: pointer; position: relative; transition: background-color 0.2s; flex-shrink: 0;
 }
@@ -2005,24 +1820,24 @@
 .activity-toggle.active .activity-toggle-thumb { transform: translateX(20px); }
 
 .activity-select {
-  padding: 6px 10px; border-radius: 6px;
+  padding: 6px 10px; border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background-color: var(--bg-input); color: var(--text-primary);
-  font-size: 13px; cursor: pointer; flex-shrink: 0;
+  font-size: var(--fs-sm); cursor: pointer; flex-shrink: 0;
 }
 
 .activity-delete-btn {
-  padding: 6px 14px; border-radius: 6px;
+  padding: 6px 14px; border-radius: var(--r-md);
   border: 1px solid var(--danger); background: transparent;
-  color: var(--danger); font-size: 13px; cursor: pointer;
+  color: var(--danger); font-size: var(--fs-sm); cursor: pointer;
   transition: background-color 0.2s; flex-shrink: 0;
 }
 
 .activity-delete-btn:hover { background-color: var(--danger-bg); }
 
 .activity-recent { margin-top: 20px; }
-.activity-recent h3 { font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0; }
-.activity-empty { font-size: 13px; color: var(--text-muted); }
+.activity-recent h3 { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); margin: 0 0 12px 0; }
+.activity-empty { font-size: var(--fs-sm); color: var(--text-muted); }
 
 .activity-day-group { margin-bottom: 4px; }
 
@@ -2030,13 +1845,13 @@
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 10px 0; background: transparent; border: none;
   border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-primary); font-size: 13px;
+  color: var(--text-primary); font-size: var(--fs-sm);
   cursor: pointer; text-align: left; transition: color 0.2s;
 }
 
 .activity-day-header:hover { color: var(--accent); }
 
-.activity-day-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+.activity-day-count { font-size: var(--fs-xs); color: var(--text-muted); margin-left: auto; }
 
 .activity-chevron { transition: transform 0.2s; color: var(--text-muted); }
 .activity-chevron.expanded { transform: rotate(180deg); }
@@ -2045,19 +1860,19 @@
 
 .activity-conv-item {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; border-radius: 6px; transition: background-color 0.2s;
+  padding: 8px 12px; border-radius: var(--r-md); transition: background-color 0.2s;
 }
 
 .activity-conv-item:hover { background-color: var(--bg-hover); }
 
 .activity-conv-title {
-  font-size: 13px; color: var(--text-primary);
+  font-size: var(--fs-sm); color: var(--text-primary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
 
 .activity-conv-delete {
   background: transparent; border: none; color: var(--text-muted);
-  cursor: pointer; padding: 4px; border-radius: 4px;
+  cursor: pointer; padding: 4px; border-radius: var(--r-sm);
   display: flex; transition: color 0.2s, background-color 0.2s;
 }
 
@@ -2066,28 +1881,28 @@
 .activity-confirm-overlay {
   position: absolute; top: 0; left: 0; right: 0; bottom: 0;
   background-color: var(--bg-overlay);
-  display: flex; align-items: center; justify-content: center; border-radius: 16px;
+  display: flex; align-items: center; justify-content: center; border-radius: var(--r-xl);
 }
 
 .activity-confirm {
-  background-color: var(--bg-modal); border-radius: 12px;
+  background-color: var(--bg-modal); border-radius: var(--r-lg);
   padding: 24px; text-align: center; max-width: 320px;
 }
 
-.activity-confirm h3 { font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 8px 0; }
-.activity-confirm p { font-size: 13px; color: var(--text-secondary); margin: 0 0 20px 0; }
+.activity-confirm h3 { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); margin: 0 0 8px 0; }
+.activity-confirm p { font-size: var(--fs-sm); color: var(--text-secondary); margin: 0 0 20px 0; }
 .activity-confirm-buttons { display: flex; gap: 10px; justify-content: center; }
 
 .activity-confirm-cancel {
-  padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-primary);
-  background: transparent; color: var(--text-primary); font-size: 13px;
+  padding: 8px 16px; border-radius: var(--r-md); border: 1px solid var(--border-primary);
+  background: transparent; color: var(--text-primary); font-size: var(--fs-sm);
   cursor: pointer; transition: background-color 0.2s;
 }
 
 .activity-confirm-cancel:hover { background-color: var(--bg-hover); }
 
 .activity-confirm-delete {
-  padding: 8px 16px; border-radius: 6px; border: none;
+  padding: 8px 16px; border-radius: var(--r-md); border: none;
   background-color: var(--danger); color: var(--text-on-accent); font-size: var(--fs-md);
   cursor: pointer; transition: background-color 0.2s;
 }
@@ -2105,7 +1920,7 @@
 }
 
 .login-prompt {
-  background-color: var(--bg-modal); border-radius: 16px;
+  background-color: var(--bg-modal); border-radius: var(--r-xl);
   box-shadow: 0 20px 40px var(--shadow);
   padding: 32px; width: 90%; max-width: 420px;
   position: relative; text-align: center;
@@ -2114,7 +1929,7 @@
 .login-prompt-close {
   position: absolute; top: 12px; right: 12px;
   background: transparent; border: none; color: var(--text-muted);
-  cursor: pointer; padding: 6px; border-radius: 6px;
+  cursor: pointer; padding: 6px; border-radius: var(--r-md);
   display: flex; transition: background-color 0.2s;
 }
 
@@ -2122,22 +1937,22 @@
 
 .login-prompt-icon { margin-bottom: 16px; color: var(--accent); }
 
-.login-prompt h2 { font-size: 20px; font-weight: 600; color: var(--text-primary); margin: 0 0 20px 0; }
+.login-prompt h2 { font-size: var(--fs-2xl); font-weight: var(--fw-semibold); color: var(--text-primary); margin: 0 0 20px 0; }
 
 .login-prompt-features { list-style: none; padding: 0; margin: 0 0 16px 0; text-align: left; }
 
 .login-prompt-features li {
   display: flex; align-items: flex-start; gap: 10px;
-  padding: 6px 0; font-size: 14px; color: var(--text-primary);
+  padding: 6px 0; font-size: var(--fs-md); color: var(--text-primary);
 }
 
 .login-prompt-features svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
-.login-prompt-note { font-size: 12px; color: var(--text-muted); margin: 0 0 20px 0; }
+.login-prompt-note { font-size: var(--fs-xs); color: var(--text-muted); margin: 0 0 20px 0; }
 .login-prompt-actions { display: flex; flex-direction: column; gap: 10px; }
 
 .login-prompt-btn {
-  padding: 10px 20px; border-radius: 8px; font-size: 14px;
-  font-weight: 500; cursor: pointer; transition: all 0.2s; border: none;
+  padding: 10px 20px; border-radius: var(--r-md); font-size: var(--fs-md);
+  font-weight: var(--fw-medium); cursor: pointer; transition: background-color 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s, transform 0.2s; border: none;
 }
 
 .login-prompt-btn.primary { background-color: var(--accent); color: var(--text-on-accent); }
@@ -2151,26 +1966,12 @@
 
 .chat-messages::-webkit-scrollbar { width: 8px; }
 .chat-messages::-webkit-scrollbar-track { background: transparent; }
-.chat-messages::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
+.chat-messages::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: var(--r-sm); }
 .chat-messages::-webkit-scrollbar-thumb:hover { background-color: var(--text-muted); }
-
-/* Rail scrollbar. Uses --rail-* rather than the themed --scrollbar-* tokens:
-   this list lives on the permanently dark rail, so a themed thumb would go
-   near-black-on-black in light mode. Same specificity as the `.sidebar *`
-   rule above but later in source order, so it is what actually applies. */
-.sidebar-chat-list::-webkit-scrollbar { width: 6px; }
-.sidebar-chat-list::-webkit-scrollbar-track { background: transparent; }
-.sidebar-chat-list::-webkit-scrollbar-thumb {
-  background-color: var(--rail-active);
-  border-radius: var(--r-pill);
-}
-.sidebar-chat-list::-webkit-scrollbar-thumb:hover {
-  background-color: var(--rail-selected);
-}
 
 .activity-content::-webkit-scrollbar { width: 6px; }
 .activity-content::-webkit-scrollbar-track { background: transparent; }
-.activity-content::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
+.activity-content::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: var(--r-sm); }
 
 /* ═══════════════════════════════════════════════════
    Local Files Panel
@@ -2183,7 +1984,7 @@
   padding: 8px 12px;
   cursor: pointer;
   transition: background-color 0.2s;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-primary);
   gap: 8px;
 }
@@ -2202,7 +2003,7 @@
   color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   display: flex;
   opacity: 0;
   transition: opacity 0.2s, color 0.2s;
@@ -2223,11 +2024,11 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   transition: background-color 0.2s;
 }
@@ -2242,7 +2043,7 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -2264,18 +2065,42 @@
    Download Notification Bubble
    ═══════════════════════════════════════════════════ */
 
+/* Model downloads report from the TOP right.
+   They are not a toast. A toast says something happened and leaves; a download
+   is a thing in flight that stays on screen for minutes, and it was sitting in
+   the bottom-right corner the toast region also occupies, so a notification
+   arriving mid-download landed on top of it. Up here it has the corner to
+   itself, below the window band so it clears the window lights. */
 .download-bubble {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  top: calc(var(--window-band-h) + 68px);
+  right: calc(24px + var(--app-right-inset));
   z-index: 900;
   background-color: var(--bg-modal);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: 0 8px 24px var(--shadow);
   padding: 12px 16px;
   min-width: 300px;
   max-width: 400px;
+}
+
+/* The bubble lives in the Aurora column permanently — same right edge and
+   width whether the panel is open or closed — so it never jumps sideways
+   when the panel slides in or out. */
+.app-root[data-downloads='active'] .download-bubble {
+  right: 24px;
+  min-width: 0;
+  width: calc(var(--ai-panel-width, 380px) - 48px);
+  max-width: calc(var(--ai-panel-width, 380px) - 48px);
+}
+
+/* In chat view the Aurora search bar is fixed at the top, so the bubble
+   docks BELOW it — under the bar, and under the expanded answer space while
+   a chat is ongoing (--agent-h tracks the control's live height, published
+   by AgentSearch; 36px collapsed covers the circle). */
+.app-root[data-view='chat'][data-downloads='active'] .download-bubble {
+  top: calc(var(--window-band-h, 44px) + 12px + var(--agent-h, 36px) + 12px);
 }
 
 .download-bubble-header {
@@ -2286,8 +2111,8 @@
 }
 
 .download-bubble-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   color: var(--text-primary);
 }
 
@@ -2297,7 +2122,7 @@
   color: var(--text-muted);
   cursor: pointer;
   padding: 2px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   display: flex;
 }
 
@@ -2324,20 +2149,21 @@
   white-space: nowrap;
 }
 
-/* Download bubble entrance animation */
+/* Entrance. Drops IN from above now that it lives at the top — sliding up
+   from below would have it arrive from the far side of the window. */
 @keyframes bubbleSlideIn {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(-16px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
 .download-bubble {
-  animation: bubbleSlideIn 0.25s ease-out;
+  animation: bubbleSlideIn var(--dur-anim) var(--ease-out) both;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -2368,11 +2194,11 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background: transparent;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--fs-md);
   cursor: pointer;
   transition: background-color 0.2s;
 }
@@ -2384,8 +2210,8 @@
 .engines-header h1 {
   flex: 1;
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-semibold);
   text-align: center;
 }
 
@@ -2399,11 +2225,11 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   transition: background-color 0.2s;
 }
@@ -2439,13 +2265,13 @@
 
 .hardware-summary h3, .gpu-info h4 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .hardware-summary p, .gpu-info p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
@@ -2457,9 +2283,9 @@
 
 .accel-tag {
   padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: var(--r-lg);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
 }
 
 /* Accelerator tags were three saturated brand fills (#007acc / #333 / #ac32e4)
@@ -2483,8 +2309,8 @@
 
 .recommendations-section h3 {
   margin: 0 0 16px 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
 }
 
 .recommendations-grid {
@@ -2495,7 +2321,7 @@
 
 .recommendation-card {
   padding: 16px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background-color: var(--bg-primary);
 }
@@ -2509,22 +2335,22 @@
 
 .rec-header h4 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .priority-badge {
   padding: 2px 8px;
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   background-color: var(--accent);
   color: var(--text-on-accent);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 .recommendation-card p {
   margin: 8px 0;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
@@ -2542,22 +2368,21 @@
 }
 
 .metric span {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
 }
 
 .meter {
   height: 6px;
   background-color: var(--bg-hover);
-  border-radius: 3px;
+  border-radius: var(--r-sm);
   overflow: hidden;
 }
 
 .meter-fill {
   height: 100%;
   background-color: var(--accent);
-  border-radius: 3px;
-  transition: width 0.3s ease;
+  border-radius: var(--r-sm);
 }
 
 /* Controls Bar */
@@ -2579,11 +2404,11 @@
 .engines-search-input {
   width: 100%;
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background-color: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 
 .engines-search-input:focus {
@@ -2593,17 +2418,17 @@
 
 .engines-sort-container select {
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background-color: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .engines-stats {
   display: flex;
   gap: 16px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
@@ -2638,13 +2463,13 @@
 
 .engines-empty-state h3 {
   margin: 0 0 8px 0;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
 }
 
 .engines-empty-state p {
   margin: 0 0 20px 0;
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 
 .refresh-empty-btn {
@@ -2652,11 +2477,11 @@
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background: transparent;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--fs-md);
   cursor: pointer;
   transition: background-color 0.2s;
 }
@@ -2667,7 +2492,7 @@
 
 /* Engine Card */
 .engine-card {
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-primary);
   background-color: var(--bg-primary);
   overflow: hidden;
@@ -2702,16 +2527,16 @@
 
 .engine-name-section h3 {
   margin: 0 0 4px 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
 }
 
 .engine-version {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
   background-color: var(--bg-hover);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .compatibility-score {
@@ -2721,9 +2546,9 @@
 
 .score-badge {
   padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
+  border-radius: var(--r-lg);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 /* Score badges keep their colour — this is STATUS, where hue carries real
@@ -2747,7 +2572,7 @@
 .engine-description {
   padding: 16px;
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-md);
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border-primary);
 }
@@ -2763,7 +2588,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
@@ -2777,9 +2602,9 @@
 
 .acceleration-tags .accel-tag {
   padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 500;
+  border-radius: var(--r-lg);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
   background-color: var(--bg-hover);
   color: var(--text-secondary);
 }
@@ -2793,8 +2618,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
 }
 
 .status-active {
@@ -2829,10 +2654,10 @@
   gap: 8px;
   width: 100%;
   padding: 10px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: none;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   cursor: pointer;
   transition: background-color 0.2s;
 }
@@ -2865,15 +2690,14 @@
   flex: 1;
   height: 6px;
   background-color: var(--bg-hover);
-  border-radius: 3px;
+  border-radius: var(--r-sm);
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
   background-color: var(--accent);
-  border-radius: 3px;
-  transition: width 0.3s ease;
+  border-radius: var(--r-sm);
 }
 
 /* Loading State */
@@ -2893,4 +2717,3757 @@
   border-top: 3px solid var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
+}
+
+.app-root > .chat-window,
+.app-root > .settings-page,
+.app-root > .vault,
+.app-root > .ws-root,
+.app-root > .app-view,
+.app-root > .models-page {
+  height: 100% !important;
+}
+
+.chat-window {
+  position: relative;
+}
+
+/* Download bubble: the same card as notifications -- and now literally the
+   same values, because both read the role tokens. It used to be a light card
+   with four `[data-theme="dark"]` overrides, which is how it drifted from the
+   toast it is supposed to match. */
+.download-bubble {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+.download-bubble-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  color: var(--text-heading);
+}
+.download-bubble .ui-progress__fill {
+  background: var(--accent);
+}
+.download-bubble-close {
+  color: var(--text-primary);
+}
+
+/* Model picker inside the chat input, just left of the send arrow. Its menu
+   opens upward, since the input sits at the bottom of the window. */
+.chat-input-pill .input-model-picker {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-right: 6px;
+}
+/* Inside the composer the capsule is a sibling of the paperclip and folder
+   buttons, not a header chip — so it drops the inverse near-black fill and
+   becomes the same quiet ghost control they are: transparent, muted, with the
+   fill only appearing on hover. It keeps the pill radius and sizes itself to
+   its label rather than holding the header's fixed 176px. */
+.chat-input-pill .input-model-picker .model-capsule {
+  width: auto;
+  max-width: 180px;
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: var(--fw-regular);
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.chat-input-pill .input-model-picker .model-capsule:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chat-input-pill .input-model-picker .model-capsule__name {
+  flex: 0 1 auto;
+}
+
+.chat-input-pill .input-model-picker .dropdown-menu {
+  top: auto !important;
+  bottom: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  margin-top: 0 !important;
+}
+
+/* Toasts are fixed to the bottom-right; they move clear of the AI Assistant. */
+.ui-toast-region {
+  right: calc(var(--sp-6) + var(--app-right-inset));
+}
+
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  opacity: 0;
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.msg-actions.is-pinned,
+.message-wrapper:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; }
+
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+              color var(--dur-1) var(--ease-out),
+              border-color var(--dur-1) var(--ease-out);
+}
+.msg-action:hover { background: var(--bg-hover); border-color: var(--border); color: var(--text-primary); }
+.msg-action:active { transform: translateY(1px); }
+.msg-action:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODEL CAPSULE MENU
+   ═══════════════════════════════════════════════════════════════════════════
+   The capsule sits at the bottom of the composer, so its menu rises ABOVE it
+   rather than dropping below, and it is centred on the capsule rather than
+   edge-aligned — the capsule is not at either end of the composer, and an
+   edge-aligned panel there looks like it belongs to something else.
+
+   The caret is the state indicator: up at rest (the menu will rise into that
+   space), down while the menu is open (clicking again sends it back). Only
+   the caret rotates, so the animation is a transform and nothing else.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.model-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.model-capsule__caret {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  color: currentColor;
+  transition: transform var(--dur-2, 180ms) var(--ease-out, ease);
+}
+
+.model-capsule__caret.is-open {
+  transform: rotate(180deg);
+}
+
+.model-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  /* Symmetric on the capsule: the panel's centre line is the capsule's. */
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 232px;
+  max-width: 280px;
+  padding: 4px;
+  background: var(--bg-dropdown);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--r-lg);
+  box-shadow: 0 4px 12px var(--shadow);
+  z-index: var(--z-popover, 1000);
+  /* Arriving, not responding — so this is an ANIMATION on --dur-anim, and it
+     moves only transform and opacity. */
+  animation: model-menu-rise var(--dur-anim) var(--ease-out, ease) both;
+}
+
+@keyframes model-menu-rise {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.model-menu__label {
+  padding: 8px 10px 6px;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold, 600);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.model-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1, 0.12s) var(--ease-out, ease);
+}
+
+.model-menu__item:hover {
+  background: var(--bg-hover);
+}
+
+.model-menu__item.is-active {
+  background: var(--bg-tertiary);
+}
+
+.model-menu__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--success);
+  flex: 0 0 auto;
+}
+
+.model-menu__dot--idle {
+  background: var(--text-muted);
+}
+
+.model-menu__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-menu__tag {
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* The route out of the switcher and into the catalogue. Separated by a rule
+   so it never reads as a third model. */
+.model-menu__item--all {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-primary);
+  border-radius: 0 0 6px 6px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+/* With nothing installed this is the only row in the menu, and a separator
+   above the first item would be a rule dividing it from nothing. */
+.model-menu__item--all:first-child {
+  margin-top: 0;
+  padding-top: 8px;
+  border-top: none;
+  border-radius: var(--r-md);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE MODEL CAPSULE'S STATUS LIGHT
+   ═══════════════════════════════════════════════════════════════════════════
+   Three states, three colours, each with a soft glow that breathes. This is
+   the only indicator on the composer that answers "can this thing reply to me
+   right now", and it was previously binary: green, or a grey that read as
+   "disabled" whether the cause was an empty disk or a model simply not loaded
+   yet. Those are different problems with different fixes, so they now look
+   different:
+
+     idle — models on disk, none loaded. Turmeric yellow: one click away.
+     live — a model is selected and ready. Dark mango green.
+
+   There is deliberately no third colour. When nothing is installed the light
+   is not drawn at all (see ChatWindow): a pulsing red dot is alarm, and an
+   app that has just been installed is not in a fault state. The capsule's own
+   label, "Browse Models", is the whole message there.
+
+   The glow is a box-shadow on a 6px dot, so it reads at a glance without
+   making the dot itself any bigger. The pulse animates box-shadow and opacity
+   only — no width, height or layout property — and its cycle is derived from
+   --dur-anim rather than being a new loose number: twice the standard beat,
+   which is slow enough to read as breathing rather than blinking.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.model-capsule__dot {
+  /* Each state sets these two; everything below is shared. */
+  --dot-color: var(--text-heading);
+  --dot-glow: color-mix(in srgb, var(--text-heading) 45%, transparent);
+
+  background: var(--dot-color);
+  position: relative;
+}
+
+/* The glow is drawn once on a pseudo element and only its OPACITY breathes.
+   Animating box-shadow repainted the dot on every frame, forever, wherever
+   the capsule is shown; opacity is composited on the GPU with no repaint. */
+.model-capsule__dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 6px 2px var(--dot-glow);
+  opacity: 0;
+  animation: model-dot-breathe 1.76s var(--ease-in-out, ease-in-out) infinite;
+}
+
+/* Downloaded but not loaded — a hollow ring: present, not running. */
+.model-capsule__dot--idle {
+  --dot-color: transparent;
+  --dot-glow: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-secondary);
+}
+
+/* Loaded and ready — a solid ink dot that breathes. */
+.model-capsule__dot--live {
+  --dot-color: var(--text-heading);
+  --dot-glow: color-mix(in srgb, var(--text-heading) 45%, transparent);
+}
+
+@keyframes model-dot-breathe {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* A pulsing light is motion the user did not ask for. Honour the system
+   setting: the colour still carries the whole message without it. */
+@media (prefers-reduced-motion: reduce) {
+  .model-capsule__dot {
+    box-shadow: 0 0 4px 1px var(--dot-glow);
+  }
+  .model-capsule__dot::after {
+    animation: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RAIL ICONS OUTSIDE THE RAIL
+   ═══════════════════════════════════════════════════════════════════════════
+   The icon set moved out of Sidebar.tsx into its own component so the chat
+   home's Library and Vault cards can carry the SAME marks as the rail entries
+   they lead to. Two of its rules were scoped to `.sidebar` but are not about
+   the rail at all:
+
+   `.rail-line` marks a stroke that must never be filled (the padlock shackle
+   on Vault, the gear teeth). The parent <svg> sets `fill: currentColor`, so
+   without this the shackle fills in and the padlock becomes a solid blob
+   anywhere but the sidebar. That is a property of the DRAWING, so it belongs
+   here, unscoped.
+
+   `.rail-cut` is a detail knocked out of a filled shape, which has to be
+   painted in whatever the icon is sitting ON. On the rail that is --rail-bg;
+   elsewhere it is the surface. The token carries the default and the rail's
+   own more-specific rule still overrides it, so the sidebar is untouched.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.rail-icon .rail-line {
+  fill: none;
+}
+
+.rail-icon .rail-cut {
+  fill: none;
+  stroke: var(--rail-cut-ink, var(--bg-surface));
+  stroke-width: 1.6;
+}
+
+.rail-icon .rail-solid {
+  stroke: none;
+}
+
+/* On a suggestion row these sit beside 16px lucide glyphs. 20px is the rail's
+   size, tuned for a 44px row; here it would out-weigh the title next to it. */
+.ui-suggest__icon .rail-icon {
+  width: 17px;
+  height: 17px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODEL SETUP PROMPT — "download a model" in the chat and Aurora
+   ═══════════════════════════════════════════════════════════════════════════ */
+.model-setup {
+  margin: var(--sp-4) 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  animation: model-setup-in var(--dur-anim) var(--ease-out);
+}
+
+@keyframes model-setup-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.model-setup__title {
+  margin: 0 0 var(--sp-1);
+  font-family: var(--font-sans);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.model-setup__lead {
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+.model-setup__list {
+  list-style: none;
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.model-setup__card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: var(--r-lg);
+  background: var(--bg-surface-alt);
+}
+
+.model-setup__info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-setup__name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-setup__badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--accent-quiet);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+}
+
+.model-setup__meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-setup__empty {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.model-setup__action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 96px;
+  justify-content: center;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), opacity var(--dur-1) var(--ease-out);
+}
+.model-setup__action:hover:not(:disabled) { background: var(--accent-hover); }
+.model-setup__action:disabled { opacity: 0.6; cursor: default; }
+.model-setup__action:focus-visible,
+.model-setup__browse-btn:focus-visible,
+.model-setup__menu-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.model-setup__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.model-setup__browse {
+  position: relative;
+}
+
+.model-setup__browse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.model-setup__browse-btn:hover { background: var(--bg-hover); }
+.model-setup__browse-btn svg { transition: transform var(--dur-2) var(--ease-out); }
+.model-setup__browse-btn svg.is-open { transform: rotate(180deg); }
+
+.model-setup__menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: var(--z-popover);
+  width: 320px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  animation: model-setup-in var(--dur-anim) var(--ease-out);
+}
+
+.model-setup__menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.model-setup__menu-item:hover:not(:disabled) { background: var(--bg-hover); }
+.model-setup__menu-item:disabled { cursor: default; }
+.model-setup__menu-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.model-setup__menu-item--all {
+  margin-top: var(--sp-1);
+  border-top: 1px solid var(--border-subtle, var(--border));
+  border-radius: 0 0 6px 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.model-setup__message {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* In Aurora panel the prompt sits in a narrow column. */
+.dr-assistant .model-setup {
+  padding: var(--sp-4);
+}
+.dr-assistant .model-setup__menu {
+  width: 100%;
+  min-width: 240px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   APP CHROME — title bar, sidebar, chat surface
+   ═══════════════════════════════════════════════════════════════════════════
+   The single place the app's frame is styled. Every colour and size used
+   here is a token in styles/tokens.css (--win-light-*, --rail-*,
+   --light-*, --rail-width, --titlebar-h); change the look there, and
+   change structure here. No other stylesheet may target .sidebar*,
+   .win-titlebar* or .win-light*.
+
+   Kept last in this file so nothing earlier can outrank it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Title bar ───────────────────────────────────────────────────────────
+   No bar of its own: the page band (--window-band-h) is the title area on
+   every page, chat included. The drag strip covers the band over the page,
+   and the window lights float at its right end. */
+.app-root {
+  margin-top: var(--titlebar-h);
+  height: calc(100vh - var(--titlebar-h));
+}
+
+.win-titlebar {
+  position: fixed;
+  top: 0;
+  left: var(--rail-collapsed-width);
+  right: 96px;
+  height: var(--window-band-h);
+  z-index: 2000;
+  user-select: none;
+}
+.app-root[data-sidebar="open"] .win-titlebar {
+  left: var(--rail-width);
+}
+
+/* ── Window lights ───────────────────────────────────────────────────────
+   Three 12px dots, 8px apart, pinned to the right of the window band.
+
+   The same three dots at all times. They used to sit at a third of their size
+   in grey, drawing a ⋯, and bloom into colour and full size on hover. That
+   made the buttons move as the pointer approached — a target that dodges — and
+   hid the colour that tells them apart until after you had found them. Now the
+   only thing hover changes is a slight darkening in place, so nothing reflows
+   and nothing has to be aimed at twice.
+
+   Empty, too: no × or − inside. At 12px a glyph is a smudge, and position plus
+   colour is the entire convention these dots borrow. The words live in the
+   tooltip below. */
+.win-lights {
+  position: fixed;
+  top: calc((var(--window-band-h) - 34px) / 2);
+  right: 12px;
+  z-index: 2001;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 28px;
+  border-radius: var(--r-md);
+}
+
+/* Each light names its own two colours, so everything below is written once
+   rather than three times. */
+.win-light.is-close { --light-fill: var(--light-close); --light-rim: var(--light-close-rim); }
+.win-light.is-minimize { --light-fill: var(--light-minimize); --light-rim: var(--light-minimize-rim); }
+.win-light.is-toggleMaximize { --light-fill: var(--light-zoom); --light-rim: var(--light-zoom-rim); }
+
+.win-light {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: default;
+  background: var(--light-fill);
+  /* The rim is what stops a bright dot dissolving into a pale title bar. */
+  box-shadow: inset 0 0 0 0.5px var(--light-rim);
+  transition: box-shadow var(--dur-1) var(--ease-out);
+}
+
+/* Pressed and hover states are an inset wash rather than `filter:
+   brightness()`.
+   Not a stylistic choice: a filter makes the element a containing block for
+   fixed-position descendants, and the tooltip below is fixed to the window.
+   With a filter on hover — the exact moment the tooltip appears — `right:
+   12px` would resolve against the 12px dot instead of the window, and the
+   label would land somewhere off in the corner. An inset shadow reads the
+   same and changes nothing about positioning. */
+.win-light:hover {
+  box-shadow:
+    inset 0 0 0 0.5px var(--light-rim),
+    inset 0 0 0 12px rgba(0, 0, 0, 0.13);
+}
+.win-light:active {
+  box-shadow:
+    inset 0 0 0 0.5px var(--light-rim),
+    inset 0 0 0 12px rgba(0, 0, 0, 0.26);
+}
+
+/* An outline, not a box-shadow ring: box-shadow is carrying the rim and the
+   press state, and the two would overwrite each other. */
+.win-light:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ---- The tooltip.
+
+   The app's own, because the browser's cannot be styled: `title` renders an
+   OS chip in a font and a colour that belong to no part of this application,
+   after a delay nothing here controls. This is a surface, a border, a radius
+   and a shadow from the same tokens as every other floating panel.
+
+   `position: fixed` and pinned to the same corner for all three, rather than
+   centred under each dot. Centred, the rightmost tooltip would run off the
+   edge of the window — and three labels appearing in three different places
+   as the pointer travels 40px is busier than one that stays put. */
+.win-light::after {
+  content: attr(data-label);
+  position: fixed;
+  top: calc(var(--window-band-h) + 2px);
+  right: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  /* Rises the same 4px every floating thing in the app rises, and only
+     opacity and transform move. */
+  transform: translateY(-4px);
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+
+.win-light:hover::after,
+.win-light:focus-visible::after {
+  opacity: 1;
+  transform: none;
+}
+
+/* Someone who has asked for less motion still gets the label, just without
+   the rise. */
+@media (prefers-reduced-motion: reduce) {
+  .win-light::after {
+    transform: none;
+    transition: opacity var(--dur-1) var(--ease-out);
+  }
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--rail-width);
+  height: 100vh;
+  background-color: var(--rail-bg);
+  border-right: none;
+  display: flex;
+  flex-direction: column;
+  padding: 32px var(--sp-2) var(--sp-2);
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: var(--z-rail);
+  transition: width var(--dur-anim) var(--ease-out);
+  color: var(--rail-text);
+  /* Always clipped, not just when collapsed: mid-animation the labels are
+     full-size while the rail is still narrow, and without this they spill
+     over the page instead of revealing inside it. */
+  overflow: hidden;
+}
+
+.sidebar--rail {
+  width: var(--rail-collapsed-width);
+  overflow: hidden;
+}
+
+/* The LABEL never leaves the layout — no display:none anywhere. Icons are
+   <svg> children, so these rules still reach only the text. While the rail
+   travels, each word fades and drifts in place ("New" before "Chat"), and
+   the rail's own clipping does the hiding. Rows keep their 44px box in both
+   states, so nothing above or below ever shifts. */
+.sidebar-nav-btn > span:not(.rail-icon),
+.sidebar-bottom-btn > span:not(.rail-icon) {
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rail-word {
+  display: inline-block;
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+
+.sidebar--rail .rail-word {
+  opacity: 0;
+  transform: translateX(-8px);
+  visibility: hidden;
+  transition-delay: 0ms;
+}
+
+/* Staggered by word index: single words appear once, "New" lands before
+   "Chat" and "Help" before "&" before "Support". */
+.sidebar:not(.sidebar--rail) .rail-word {
+  transition-delay: calc(140ms + var(--i, 0) * 80ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-word {
+    transform: none;
+  }
+  .sidebar:not(.sidebar--rail) .rail-word {
+    transition-delay: 0ms;
+  }
+}
+
+.sidebar--rail .sidebar-nav-btn {
+  justify-content: flex-start;
+  gap: 0;
+  padding-left: var(--sp-3);
+  padding-right: 0;
+}
+
+.app-root[data-sidebar="open"] .sidebar {
+  width: var(--rail-width);
+  box-shadow: 4px 0 16px rgba(0, 0, 0, 0.18);
+}
+
+.sidebar *::-webkit-scrollbar-thumb {
+  background: var(--rail-active);
+  background-clip: content-box;
+}
+
+.sidebar *::-webkit-scrollbar-thumb:hover {
+  background: var(--rail-selected);
+  background-clip: content-box;
+}
+
+.sidebar-icon-btn-xs {
+  background: transparent;
+  border: none;
+  color: var(--rail-text-dim);
+  cursor: pointer;
+  padding: var(--rail-btn-pad);
+  border-radius: var(--rail-btn-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+  --rail-btn-pad: 2px;
+  --rail-btn-radius: var(--r-xs);
+}
+
+.sidebar-icon-btn-xs:hover {
+  background-color: var(--rail-hover);
+  color: var(--rail-text);
+}
+
+.sidebar-icon-btn-xs:focus-visible,
+.sidebar-nav-btn:focus-visible,
+.sidebar-chat-title:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: 2px;
+}
+
+.sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: transparent;
+  border: none;
+  color: var(--rail-text);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+  text-align: left;
+}
+
+.sidebar-nav-btn:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-nav-btn > svg {
+  color: var(--rail-text-dim);
+  flex: 0 0 auto;
+  transition: color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-nav-btn:hover > svg {
+  color: var(--rail-text);
+}
+
+.sidebar-chat-item {
+  border-radius: var(--r-md);
+  transition: background-color var(--dur-1) var(--ease-out);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.sidebar-chat-item:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-chat-item.selected {
+  background-color: var(--rail-selected);
+  border-color: var(--rail-border);
+  position: relative;
+}
+
+.sidebar-chat-item.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 60%;
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
+  background: var(--rail-accent);
+}
+
+.sidebar-chat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.sidebar-chat-indicators {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sidebar-pin-icon {
+  color: var(--rail-accent);
+}
+
+.sidebar-save-icon {
+  color: var(--rail-text-faint);
+}
+
+.sidebar-chat-title {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  color: var(--rail-text);
+  font-size: var(--fs-sm);
+  letter-spacing: var(--ls-normal);
+  cursor: pointer;
+  padding: 0;
+}
+
+.sidebar-chat-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sidebar--rail .sidebar-nav-btn {
+  height: 40px;
+}
+
+.sidebar--rail .sidebar-nav-btn > svg {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+  color: var(--rail-icon);
+  shape-rendering: geometricPrecision;
+}
+
+.sidebar--rail .sidebar-nav-btn:hover > svg {
+  color: var(--rail-text);
+}
+
+.sidebar--rail {
+  cursor: pointer;
+}
+
+.sidebar--rail button {
+  cursor: pointer;
+}
+
+.sidebar {
+  contain: layout style;
+  will-change: width;
+}
+
+.sidebar--rail .sidebar-nav-btn,
+.sidebar--rail .sidebar-bottom-btn {
+  width: 48px;
+  margin-left: 0;
+  margin-right: 0;
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-3);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border-radius: var(--r-lg);
+}
+
+.sidebar--rail .sidebar-nav-btn > svg {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+  flex: 0 0 var(--rail-icon-size);
+  aspect-ratio: 1 / 1;
+}
+
+.sidebar--rail .sidebar-nav-btn > svg path {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.75;
+}
+
+.sidebar-nav-btn > svg {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+  flex: 0 0 var(--rail-icon-size);
+  aspect-ratio: 1 / 1;
+}
+
+.sidebar .sidebar-nav-btn,
+.sidebar--rail .sidebar-nav-btn {
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  gap: 12px;
+  justify-content: flex-start;
+  border-radius: var(--r-lg);
+}
+
+.sidebar .sidebar-nav-btn > svg,
+.sidebar--rail .sidebar-nav-btn > svg {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+  flex: 0 0 var(--rail-icon-size);
+  aspect-ratio: 1 / 1;
+}
+
+.sidebar .sidebar-nav-btn > svg path,
+.sidebar--rail .sidebar-nav-btn > svg path {
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.sidebar--rail .sidebar-nav-btn > svg,
+.sidebar-bottom-btn,
+.sidebar-bottom-btn > svg {
+  color: var(--rail-text);
+}
+
+.sidebar-bottom {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  margin-top: auto;
+  padding: 8px 0 4px;
+  border-top: none;
+}
+
+.sidebar-bottom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-normal);
+  text-align: left;
+  border: none;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--rail-text);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-bottom-btn:hover {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-bottom-btn:focus-visible {
+  outline: 2px solid var(--rail-ring);
+  outline-offset: 2px;
+}
+
+.sidebar-bottom-btn > svg {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+}
+
+.sidebar-bottom-btn > svg path {
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.sidebar .rail-icon,
+.sidebar--rail .rail-icon {
+  width: var(--rail-icon-size);
+  height: var(--rail-icon-size);
+  flex: 0 0 var(--rail-icon-size);
+  color: var(--rail-icon);
+}
+
+.sidebar .rail-icon *,
+.sidebar--rail .rail-icon * {
+  stroke-width: 1.5;
+  vector-effect: none;
+}
+
+.sidebar-nav-btn:hover > .rail-icon,
+.sidebar-bottom-btn:hover > .rail-icon {
+  color: var(--rail-text);
+}
+
+.sidebar .rail-icon .rail-line {
+  fill: none;
+}
+
+.sidebar .rail-icon .rail-cut {
+  fill: none;
+  stroke: var(--rail-bg);
+  stroke-width: 1.6;
+}
+
+.sidebar .rail-icon circle.rail-cut {
+  fill: var(--rail-bg);
+  stroke: none;
+}
+
+.sidebar .rail-icon .rail-line[d*="M12 3v3"] {
+  stroke-width: 2.25;
+}
+
+.app-root > .sidebar,
+.app-root .sidebar {
+  height: 100% !important;
+}
+
+.sidebar-plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar-plain-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px 0 18px;
+  border: none;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--rail-text);
+  font: inherit;
+  font-size: var(--rail-row-size);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-plain-row:hover,
+.sidebar-plain-row.is-on {
+  background-color: var(--rail-hover);
+}
+
+.sidebar-plain-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-spacer {
+  flex: 1;
+  min-height: 12px;
+}
+
+.sidebar .login-glyph {
+  color: var(--rail-text);
+}
+
+.sidebar .login-glyph * {
+  stroke-width: 1.5;
+}
+
+.sidebar .sidebar-bottom {
+  margin-top: 0;
+}
+
+.sidebar--rail .sidebar-plain-list {
+  display: none;
+}
+
+.sidebar-context-list {
+  margin-top: 14px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar--rail .sidebar-context-list {
+  display: none;
+}
+
+.sidebar .rail-icon .rail-solid {
+  stroke: none;
+}
+
+.sidebar,
+.sidebar--rail {
+  padding-top: 16px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.sidebar .sidebar-nav-btn,
+.sidebar--rail .sidebar-nav-btn {
+  padding-left: 14px;
+}
+
+/* An empty spacer. It holds nothing now that the wordmark has gone, and it
+   holds the height the rail below it has always started at. */
+.sidebar-brand {
+  margin-bottom: var(--sp-2);
+  height: 36px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+
+/* Aurora's mark. It is an <svg> child of the button, exactly like every other
+   rail icon, so the shared `> svg` rules size it and set its stroke — there is
+   nothing format-specific left to say here beyond keeping it unfilled.
+
+   It must NOT be wrapped in a span: the collapsed rail drops a button's direct
+   span children to hide the labels, which took the mark with it and left
+   Aurora as the one rail entry with no icon when the sidebar was closed. */
+.sidebar .sidebar-nav-mark path,
+.sidebar--rail .sidebar-nav-mark path {
+  fill: none;
+}
+
+.sidebar-row {
+  position: relative;
+}
+
+.sidebar-row-actions {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 10px;
+  background: linear-gradient(to right, transparent, var(--rail-hover) 10px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.sidebar-row:hover .sidebar-row-actions,
+.sidebar-row:focus-within .sidebar-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-row-actions .sidebar-icon-btn-xs {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--rail-text-dim);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-row-actions .sidebar-icon-btn-xs:hover {
+  background-color: var(--rail-active, rgba(255, 255, 255, 0.12));
+  color: var(--rail-text);
+}
+
+.sidebar-row-actions .sidebar-icon-btn-xs.is-on {
+  color: var(--rail-text);
+}
+
+.sidebar-row-actions .sidebar-icon-btn-xs--danger:hover {
+  background-color: var(--rail-danger-quiet);
+  color: var(--rail-danger-strong);
+}
+
+.sidebar-row:has(.sidebar-icon-btn-xs.is-on) .sidebar-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+  background: none;
+}
+
+.sidebar-row:has(.sidebar-icon-btn-xs.is-on):not(:hover):not(:focus-within) .sidebar-icon-btn-xs:not(.is-on) {
+  opacity: 0;
+}
+
+.sidebar--rail .sidebar-row-actions {
+  display: none;
+}
+
+.app-root .sidebar {
+  background-color: var(--rail-bg);
+  color: var(--rail-text);
+  border-right: none;
+}
+
+.app-root .sidebar .sidebar-nav-btn,
+.app-root .sidebar .sidebar-bottom-btn {
+  color: var(--rail-text);
+  font-size: var(--rail-label-size);
+  font-weight: 400;
+  letter-spacing: normal;
+  border-radius: var(--r-md);
+}
+
+.app-root .sidebar .sidebar-nav-btn > svg,
+.app-root .sidebar .sidebar-bottom-btn > svg {
+  color: var(--rail-icon);
+}
+
+.app-root .sidebar .sidebar-nav-btn:hover,
+.app-root .sidebar .sidebar-bottom-btn:hover,
+.app-root .sidebar .sidebar-nav-btn.is-active {
+  background-color: var(--rail-hover);
+}
+
+.app-root .sidebar .sidebar-dot {
+  display: none;
+}
+
+.app-root .sidebar .sidebar-plain-row {
+  color: var(--rail-text);
+  font-size: var(--rail-row-size);
+  font-weight: 400;
+  border-radius: var(--r-md);
+}
+
+.app-root .sidebar .sidebar-plain-row:hover {
+  background-color: var(--rail-hover);
+}
+
+.app-root .sidebar .sidebar-plain-row.is-on {
+  background-color: var(--rail-selected);
+  box-shadow: none;
+}
+
+.sidebar-nav-btn.is-active {
+  background-color: var(--rail-selected);
+}
+
+.sidebar-nav-btn.is-active > svg,
+.sidebar-nav-btn.is-active > .rail-icon {
+  color: var(--rail-accent);
+}
+
+/* Icons sit a step under their labels at rest and come up to full white on
+   hover or when active — the lift is what makes the row feel responsive. */
+.app-root .sidebar .sidebar-nav-btn:hover > svg,
+.app-root .sidebar .sidebar-bottom-btn:hover > svg,
+.app-root .sidebar .sidebar-nav-btn.is-active > svg {
+  color: var(--rail-text);
+}
+
+/* ── Chat surface ──────────────────────────────────────────────────────── */
+/* The chat does not move when a panel opens.
+   ─────────────────────────────────────────────────────────────────────────
+   Everywhere else the page RESERVES the rail's and Aurora panel's width
+   (the padding transitions on .app-root above), so the content lays out
+   beside them. In the chat that would drag the conversation and the composer
+   sideways — the two things the eye is fixed on — every time the sidebar or
+   Aurora is opened or closed.
+
+   Here the padding stays at the closed widths and both panels float over the
+   page instead: the rail is already positioned above the canvas (z-index
+   --z-rail) and Aurora panel is fixed. Because the padding never changes,
+   its transition never runs, so nothing shifts and the centred column keeps
+   its place. The chat's own content is a centred measure, so what the panels
+   cover is gutter.
+
+   Specificity is what makes this win: two attributes plus the class beat the
+   single-attribute rules it overrides, whatever order the stylesheets load
+   in. */
+/* The chat makes room for the open rail at EVERY width, like every other
+   page. Answers now start at the chat area's left edge rather than in a
+   centred column, so a floating rail would cover the start of every answer. */
+.app-root[data-view="chat"][data-sidebar="open"] {
+  padding-left: var(--rail-width);
+}
+
+.app-root[data-view="chat"][data-assistant="open"] {
+  padding-right: 0;
+}
+
+.chat-window .chat-input-pill {
+  background-color: var(--chat-composer-bg);
+  border: 1px solid var(--chat-composer-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--chat-composer-shadow);
+}
+.chat-window .chat-input-pill:focus-within {
+  background-color: var(--chat-composer-bg);
+  /* Minimal: the border just steps one shade darker. No halo, no ring. */
+  border-color: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  box-shadow: var(--chat-composer-shadow);
+}
+.chat-window .input-send-btn {
+  border-radius: var(--r-lg);
+}
+
+/* ── What was sent with a message ────────────────────────────────────────
+   The composer's tray clears on send, and until now nothing replaced it: a
+   document you had just attached left no trace in the transcript, which is
+   why the chips looked like they had failed to attach at all.
+
+   Smaller and quieter than the tray chip it echoes. The tray chip is a
+   CONTROL — it reports extraction state and can be removed — while this is a
+   record of something already done, so it carries the type and the name and
+   nothing else. */
+
+.sent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+/* The same document glyph as everywhere else, at pill size. No plate behind
+   it: the glyph brings its own colour, and the type still reads from that
+   colour at a size where no lettering would. */
+.sent-chip-glyph {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 15px;
+}
+
+.sent-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The bubble is tinted, so the chips sit ON it rather than beside it. */
+.message-bubble.user .sent-attachments {
+  border-top-color: var(--border);
+}
+
+/* ── Sources under an answer ─────────────────────────────────────────────
+   Replaces the tagged plain-text dump a small model produced when it recited
+   its own prompt. Closed by default: the answer is what was asked for, and
+   checking it is a second, deliberate act. */
+
+.src {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.src.is-open { background: var(--bg-surface); }
+
+.src-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.src-summary:hover { color: var(--text-primary); }
+.src-summary:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+/* Transform only: the row must not reflow as it turns. */
+.src-chevron {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.src.is-open .src-chevron { transform: rotate(90deg); }
+
+.src-summary-icon { flex: 0 0 auto; color: var(--text-muted); }
+
+.src-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.src-summary-text strong { font-weight: var(--fw-medium); color: var(--text-primary); }
+
+.src-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-3);
+  list-style: none;
+}
+
+.src-card {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  transition: border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+
+/* The expanded card: the same box, opened up. A stronger border and a
+   raised fill mark it as the active one; the excerpt unclamps below so the
+   full passage reads. */
+.src-card.is-expanded {
+  border-color: var(--border-strong);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow);
+}
+.src-card.is-expanded .src-text {
+  display: block;
+  overflow: visible;
+}
+
+.src-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.src-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+}
+
+.src-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+}
+
+/* Where in the file — the part a citation is actually checked against. */
+.src-where,
+.src-tag {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.src-open {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+}
+.src-open:hover { background: var(--bg-hover); color: var(--text-primary); }
+.src-open.is-active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--bg-surface);
+}
+
+/* Inline document context: the cited area inside its own card. The passage
+   itself is the highlighted span; the rest is the surrounding context. */
+.src-context {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+.src-context-text {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+.src-hit {
+  background: var(--hl, var(--highlight));
+  color: inherit;
+  border-radius: var(--r-sm);
+  padding: 0 1px;
+}
+.src-context--loading {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.src-context-note {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+.src-ellipsis { color: var(--text-muted); }
+
+/* Clamped: a passage is prompt-sized, not reading-sized. Anyone who wants
+   the whole thing wants the document, not a taller card. */
+.src-text {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   VIEW ERROR — a page that failed to load
+   ═══════════════════════════════════════════════════════════════════════════
+   Shown by ViewBoundary (components/ViewBoundary.tsx) in place of one page,
+   never the whole app. It is a flex sibling of the rail like every other view,
+   so it centres in the space the rail leaves and the rail keeps working.
+   ─────────────────────────────────────────────────────────────────────────── */
+.view-error {
+  display: grid;
+  place-items: center;
+  padding: var(--sp-8);
+  background: var(--bg-canvas);
+}
+
+.view-error__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  max-width: 44ch;
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.view-error__title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.view-error__body {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+/* The exception's own message. Monospace because it is machine text, and
+   muted because it is for a bug report, not for the person reading it. */
+.view-error__detail {
+  margin: 0;
+  align-self: stretch;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+
+/* ── Attachment stacks ────────────────────────────────────────────────────
+   On the composer's top-right corner, sharing the line the folder and
+   paperclip buttons hold at its top-left (see .chat-input-form). Two stacks
+   side by side — paperclip: files from this computer; folder: Vault and
+   Library files — each a column of compact chips. The stacks sit in the
+   form's top band and grow UPWARD from it, so they never cover the field.
+   Soft rectangles throughout (6px corners), neutral tokens, so light and
+   dark mode differ only by the theme. */
+.attachment-stacks {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto -31px;   /* sit on the tool row: 3px above the box, like the buttons */
+  padding-left: 80px;     /* keep clear of the folder + paperclip buttons */
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.attachment-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 220px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  pointer-events: auto;
+  animation: attachment-chip-in var(--dur-anim) var(--spring-smooth) both;
+}
+.attachment-stack__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px 2px;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.stack-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  animation: attachment-chip-in var(--dur-anim) var(--spring-smooth) both;
+}
+.stack-chip__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stack-chip .index-status-chip,
+.stack-chip [class*='index-status'] { flex: 0 0 auto; transform: scale(0.9); }
+.stack-chip__remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.stack-chip__remove:hover { background: var(--bg-active); color: var(--text-primary); }
+.stack-chip.is-extracting { color: var(--text-secondary); }
+.stack-chip.is-failed {
+  border-color: var(--danger-border);
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+}
+.stack-chip--more {
+  justify-content: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+/* Reading: a thin line along the chip's foot, sweeping. Transform only. */
+.stack-chip__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--text-muted);
+  transform-origin: left center;
+  animation: stack-chip-read 1.4s var(--ease-in-out) infinite;
+}
+@keyframes stack-chip-read {
+  0%   { transform: translateX(-100%) scaleX(0.4); }
+  100% { transform: translateX(100%) scaleX(0.4); }
+}
+@media (max-width: 720px) {
+  .attachment-stacks { padding-left: 0; margin-bottom: var(--sp-2); }
+  .attachment-stack { width: auto; flex: 1 1 0; }
+}
+
+/* ── Stacks: capsule at rest, chips when expanded ──────────────────────────
+   At rest a stack is ONE small capsule: its icon (paperclip / folder) and the
+   types it holds — "PDF · DOC". Hovering it, or tabbing into it, expands it:
+   the files rise above the capsule as chips, and there is no box or border
+   around them — the stack container itself is invisible in both states. Each
+   chip carries its own soft edge so it stands on its own. */
+.attachment-stack {
+  flex-direction: column-reverse;   /* capsule at the bottom, chips rise above */
+  width: auto;
+  max-width: 240px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.attachment-stack__head {
+  align-self: flex-end;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  cursor: default;
+  transition: border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.attachment-stack__head:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.attachment-stack__types { white-space: nowrap; }
+.attachment-stack:hover .attachment-stack__head,
+.attachment-stack:focus-within .attachment-stack__head {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+/* Chips: hidden at rest, rising in when the stack expands. */
+.attachment-stack > .stack-chip {
+  display: none;
+  width: 220px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+.attachment-stack:hover > .stack-chip,
+.attachment-stack:focus-within > .stack-chip {
+  display: flex;
+  animation: stack-chip-rise var(--dur-anim) var(--spring-smooth) both;
+}
+.attachment-stack > .stack-chip.is-failed {
+  border-color: var(--danger-border);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-surface));
+}
+.attachment-stack > .stack-chip--more { box-shadow: none; border-style: dashed; }
+@keyframes stack-chip-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+/* A failed file stays noticeable at rest: the capsule takes the red edge. */
+.attachment-stack:has(> .stack-chip.is-failed) .attachment-stack__head {
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+
+/* ── Stacks are monochrome, every state ────────────────────────────────────
+   No status colour in the capsules or the chips: a failed file reads through
+   a neutral "!" mark and a dimmed, struck name, and its reason is in the
+   tooltip — the same quiet greys as every other stack, in both themes. */
+.attachment-stack > .stack-chip.is-failed,
+.stack-chip.is-failed {
+  border-color: var(--border);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+}
+.stack-chip.is-failed .stack-chip__name {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-faint);
+}
+.attachment-stack:has(> .stack-chip.is-failed) .attachment-stack__head {
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.stack-chip__flag {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+}
+
+/* ── Folder / paperclip buttons: filled while files are attached ───────────
+   No tile or shadow behind the icon. "Attached" is shown by the icon itself:
+   at full ink, the folder filled in, the paperclip drawn heavier. Tokens
+   only, so light and dark read the same way. */
+.chat-input-pill .input-folder-btn.has-items,
+.chat-input-pill .input-attach-btn.has-items,
+.chat-input-pill .input-folder-btn.has-items:hover,
+.chat-input-pill .input-attach-btn.has-items:hover {
+  background: none;
+  box-shadow: none;
+  color: var(--text-primary);
+}
+.chat-input-pill .input-folder-btn.has-items svg path {
+  fill: color-mix(in srgb, var(--text-primary) 55%, transparent);
+}
+.chat-input-pill .input-attach-btn.has-items svg path {
+  stroke-width: 2.5;
+}
+.chat-input-pill .input-folder-btn.attach-btn-active,
+.chat-input-pill .input-attach-btn.attach-btn-active {
+  color: var(--text-primary) !important;
+}
+.chat-input-pill .input-folder-btn.attach-btn-active::after,
+.chat-input-pill .input-attach-btn.attach-btn-active::after { display: none; }
+
+
+/* ── Folder button: where to attach from ───────────────────────────────────
+   Three pills slide out on the composer's tool row, right of the folder
+   and paperclip: Vault, Workspace, Library. Each opens SourcePane, a panel
+   from the right edge over a dimmed chat, with that place's files to check
+   and attach. Both are drawn from the theme's tokens, so they read the same
+   in light and dark. (AttachSources.tsx) */
+.attach-source-pills {
+  position: absolute;
+  /* On the tool row above the box, level with the folder (left 0) and
+     paperclip (left 34px, 30px wide), just right of them. */
+  top: -34px;
+  left: 70px;
+  z-index: 20;
+  display: flex;
+  gap: 4px;
+}
+.attach-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  --rail-cut-ink: var(--bg-surface);
+  animation: attach-pill-in var(--dur-3, 240ms) var(--ease-out) both;
+  transition: color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+.attach-source-pill svg { width: 14px; height: 14px; }
+.attach-source-pill:hover,
+.attach-source-pill:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  --rail-cut-ink: var(--bg-hover);
+  outline: none;
+}
+@keyframes attach-pill-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.source-pane-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, #000 28%, transparent);
+  animation: source-scrim-in var(--dur-2, 200ms) var(--ease-out) both;
+}
+.source-pane {
+  display: flex;
+  flex-direction: column;
+  width: min(480px, 100vw);
+  height: 100%;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  --rail-cut-ink: var(--bg-surface);
+  animation: source-pane-in var(--dur-anim) var(--ease-out) both;
+}
+@keyframes source-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes source-pane-in {
+  from { transform: translateX(32px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+.source-pane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4, 16px) var(--sp-5, 20px) var(--sp-3);
+}
+.source-pane__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-heading);
+  font-size: var(--fs-md, 15px);
+  font-weight: var(--fw-medium);
+}
+.source-pane__title svg { width: 18px; height: 18px; }
+.source-pane__close {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.source-pane__close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.source-pane__search {
+  margin: 0 var(--sp-5, 20px);
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.source-pane__search:focus { border-color: var(--border-strong); }
+
+.source-pane__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-5, 20px) var(--sp-2, 8px);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.source-pane__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.source-pane__count { color: var(--text-muted); }
+
+.source-pane input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.source-pane__rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2, 8px) var(--sp-3);
+}
+.source-pane__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.source-pane__row:hover { background: var(--bg-hover); }
+.source-pane__row.is-picked { background: color-mix(in srgb, var(--text-primary) 6%, transparent); }
+.source-pane__row.is-off { opacity: 0.5; cursor: default; }
+.source-pane__row.is-off:hover { background: transparent; }
+.source-pane__name { display: flex; flex-direction: column; min-width: 0; }
+.source-pane__file,
+.source-pane__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-pane__file { color: var(--text-primary); font-size: var(--fs-sm); }
+.source-pane__meta { color: var(--text-muted); font-size: var(--fs-xs, 12px); }
+.source-pane__empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.source-pane__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: var(--sp-3) var(--sp-5, 20px);
+  border-top: 1px solid var(--border);
+}
+.source-pane__btn {
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.source-pane__btn:hover:not(:disabled) { background: var(--bg-hover); }
+.source-pane__btn--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.source-pane__btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.source-pane__btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .attach-source-pill, .source-pane-scrim, .source-pane { animation: none; }
+}
+
+/* Keyboard focus is always visible; a row lights when its checkbox has it. */
+.attach-source-pill:focus-visible,
+.source-pane__close:focus-visible,
+.source-pane__btn:focus-visible,
+.source-pane__search:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.source-pane__row:has(input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.source-pane input[type="checkbox"]:focus-visible { outline: none; }
+
+/* Increased contrast (system setting): hairlines and faint states firm up,
+   so nothing depends on a barely-there gray. */
+@media (prefers-contrast: more) {
+  .attach-source-pill,
+  .source-pane,
+  .source-pane__search,
+  .source-pane__btn,
+  .source-pane__bar,
+  .source-pane__foot { border-color: var(--text-secondary); }
+  .source-pane__count,
+  .source-pane__meta { color: var(--text-secondary); }
+  .source-pane__row.is-off { opacity: 0.7; }
+  .source-pane-scrim { background: color-mix(in srgb, #000 45%, transparent); }
+  .tri-mark--thinking .tri-mark__base,
+  .tri-mark--reading .tri-mark__base { opacity: 0.45; }
+  .tri-mark__corner { opacity: 0.4; }
+}
+
+/* ── Conversation: user at the right edge, answers from the left ──────────
+   The ChatGPT arrangement, across the FULL chat area rather than a centred
+   column: your message is a soft grey bubble against the right edge, the
+   answer is plain prose starting at the left edge. Both keep a 32px margin
+   from the edges. The empty-state home keeps its centred column, and the
+   composer stays centred beneath. */
+.chat-messages-container:not(:has(> .home)) {
+  max-width: none;
+  padding: 0 32px;
+  box-sizing: border-box;
+}
+.chat-messages-container:not(:has(> .home)) .message-bubble.user {
+  max-width: min(70%, 640px);
+}
+/* Answers read from the left edge but keep a comfortable line length. */
+.chat-messages-container:not(:has(> .home)) .message-content-plain {
+  max-width: min(100%, 860px);
+}
+/* System cards in the conversation (the model-setup prompt) read like an
+   answer: from the left edge, at the answers' width. */
+.chat-messages-container:not(:has(> .home)) > .model-setup {
+  max-width: min(100%, 860px);
+  margin-left: 0;
+  margin-right: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CHAT: THE SIDEBAR STRIP
+   ═══════════════════════════════════════════════════════════════════════════
+   The chat page reserves, on its left, the strip the sidebar slides over when
+   it opens (--chat-gutter: open width minus collapsed width). The sidebar
+   OVERLAYS the chat again, but everything that matters — answers, your
+   messages, the action buttons, the composer, the welcome screen — starts to
+   the right of that strip, so opening it covers only what lives in the strip:
+   each answer's sources stack. Declared last so it settles the earlier
+   chat-padding rules. */
+.chat-window { --chat-gutter: calc(var(--rail-width) - var(--rail-collapsed-width)); }
+.app-root[data-view="chat"][data-sidebar="open"] {
+  padding-left: var(--rail-collapsed-width);
+}
+.chat-window .chat-messages { padding-left: calc(16px + var(--chat-gutter)); }
+.chat-window .chat-input-bar { padding-left: calc(16px + var(--chat-gutter)); }
+
+/* ── Answer footer: sources stack + actions on one line ────────────────── */
+.answer-footer {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-height: 30px;
+  margin-top: var(--sp-2);
+}
+.answer-footer .msg-actions { margin-top: 0; }
+/* The stack hangs left of the row, in the strip. Answers start 48px right of
+   the open sidebar's edge (16px chat padding + 32px column padding), so a
+   48px offset puts the stack's right edge exactly ON that edge: the open
+   sidebar covers the whole stack and none of the buttons. Capsule at the
+   bottom, chips rise above it on hover. */
+.src-stack {
+  position: absolute;
+  right: calc(100% + 48px);
+  bottom: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 4px;
+  width: max-content;
+  max-width: calc(var(--chat-gutter) - 16px);
+  z-index: 3;
+}
+.src-stack__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: default;
+  transition: border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.src-stack__head:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.src-stack:hover .src-stack__head,
+.src-stack:focus-within .src-stack__head { border-color: var(--border-strong); color: var(--text-primary); }
+.src-chip {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  width: 200px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+.src-stack:hover > .src-chip,
+.src-stack:focus-within > .src-chip {
+  display: flex;
+  animation: stack-chip-rise var(--dur-anim) var(--spring-smooth) both;
+}
+.src-chip:hover { border-color: var(--border-strong); }
+.src-chip.is-open { background: color-mix(in srgb, var(--text-primary) 7%, var(--bg-surface)); border-color: var(--border-strong); }
+.src-chip__name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-chip__where { flex: 0 0 auto; color: var(--text-muted); font-size: var(--fs-2xs); }
+
+/* The opened passage: below the row, in the answer's own column. */
+.src-passage {
+  flex: 1 1 100%;
+  order: 3;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  animation: stack-chip-rise var(--dur-anim) var(--spring-smooth) both;
+}
+.src-passage__head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.src-passage__file { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-heading); }
+.src-passage__where { font-size: var(--fs-xs); color: var(--text-muted); }
+.src-passage__close {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.src-passage__close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* ── Sources: a pill, and a card above it ──────────────────────────────────
+   The pill is the island's shape (fully rounded), sitting in the sidebar
+   strip on the answer's action row. Clicking it opens a small card above it:
+   a header, then one entry per source — where it is from, and the cited line
+   itself — scrolling inside the card when there are many. Light surface,
+   16px corners, hairline dividers, nothing else: the Apple sheet idiom. */
+.src-stack { align-items: flex-start; }
+.src-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+.src-pill:hover,
+.src-stack.is-open .src-pill { border-color: var(--border-strong); color: var(--text-primary); }
+.src-pill:active { transform: scale(0.96); transition-duration: 60ms; }
+.src-pill:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.src-card-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 48px));
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  transform-origin: bottom left;
+  animation: src-pop-in var(--dur-anim) var(--spring-bouncy) both;
+}
+@keyframes src-pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+.src-card-pop__head {
+  flex: 0 0 auto;
+  padding: 12px 16px 8px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+.src-card-pop__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0 6px 6px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.src-entry {
+  padding: 10px 10px 12px;
+  border-radius: var(--r-lg);
+}
+.src-entry + .src-entry { border-top: 1px solid var(--border-subtle); border-radius: 0; }
+.src-entry__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.src-entry__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+  text-decoration: none;
+}
+a.src-entry__name:hover { text-decoration: underline; }
+.src-entry__where { flex: 0 0 auto; font-size: var(--fs-2xs); color: var(--text-muted); }
+/* The cited line: the passage the answer drew on, set as a quiet quote. */
+.src-entry__line {
+  margin: 8px 0 0 24px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.src-entry__more {
+  margin: 6px 0 0 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.src-entry__more:hover { text-decoration: underline; }
+.src-entry .src-context { margin: 8px 0 0 24px; font-size: var(--fs-sm); }
+.src-card-pop.is-below {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform-origin: top left;
+}
+
+/* Sources card: wider and shorter (more of each cited line per row, fewer
+   rows of chrome), and each entry is one button that opens the source. */
+.src-card-pop { width: min(520px, calc(100vw - 48px)); }
+.src-card-pop__list > li { list-style: none; }
+.src-card-pop__list > li + li .src-entry { border-top: 1px solid var(--border-subtle); }
+.src-entry,
+.src-entry + .src-entry {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.src-entry:hover,
+.src-entry:focus-visible {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  outline: none;
+}
+.src-entry__go { flex: 0 0 auto; color: var(--text-muted); font-size: var(--fs-sm); }
+.src-entry__line {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+}
+
+/* ── Answer row: white capsules, like the notification island ──────────────
+   The sources pill and the Copy / Retry / Ask buttons under an answer wear
+   the notification bar's exact surface: white, black text, a 50%-white
+   border and a faint grey shadow just around the edge — one capsule look
+   across the app. White in both themes, as the notification bar is. */
+.src-pill,
+.answer-footer .msg-action {
+  height: 28px;
+  padding: 0 12px;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--r-pill);
+  background: #ffffff;
+  color: #0a0a0a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  transition: box-shadow var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.src-pill:hover,
+.src-stack.is-open .src-pill,
+.answer-footer .msg-action:hover {
+  background: #ffffff;
+  color: #0a0a0a;
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+}
+.answer-footer .msg-action:active { transform: scale(0.96); transition-duration: 60ms; }
+.answer-footer .msg-actions { gap: 8px; }
+.answer-footer .msg-action svg { color: #0a0a0a; }
+
+/* ── "No model yet": a pill at the composer's top-right ────────────────────
+   Same white capsule as the sources pill; its card is the sources card,
+   narrower, holding the download suggestions in a compact form. */
+.model-chip { position: relative; align-self: flex-end; pointer-events: auto; }
+.model-chip__pill { gap: 7px; }
+.model-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  /* Hollow: "nothing loaded yet", matching the idle model dot. */
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-secondary);
+}
+.model-chip__card {
+  left: auto;
+  right: 0;
+  width: min(400px, calc(100vw - 48px));
+  max-height: 300px;
+  transform-origin: bottom right;
+}
+.model-chip__body { overflow-y: auto; padding: 4px 6px 8px; }
+/* The suggestions, tightened to fit the card. */
+.model-chip__body .model-setup {
+  margin: 0;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  max-width: none;
+}
+.model-chip__body .model-setup__title { font-size: var(--fs-sm); margin: 0 0 2px; }
+.model-chip__body .model-setup__lead { font-size: var(--fs-xs); margin: 0 0 8px; }
+.model-chip__body .model-setup__list { gap: 4px; }
+.model-chip__body .model-setup__card { padding: 8px 10px; border-radius: var(--r-lg); }
+
+/* ── Model card: small and minimal ─────────────────────────────────────────
+   A medium rectangle: one small heading, no paragraph, a row per model
+   (name over size) with an icon-only download button, and the browse
+   link. Scoped to the composer's chip; Aurora's own prompt is unchanged. */
+.model-chip__card { width: 300px; max-height: 240px; }
+.model-chip__body { padding: 2px 4px 6px; }
+.model-chip__body .model-setup { padding: 8px 6px 4px; }
+.model-chip__body .model-setup__title {
+  margin: 0 4px 6px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+}
+.model-chip__body .model-setup__lead,
+.model-chip__body .model-setup__badge { display: none; }
+.model-chip__body .model-setup__list { gap: 2px; margin: 0; }
+.model-chip__body .model-setup__card {
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+}
+.model-chip__body .model-setup__card:hover { background: color-mix(in srgb, var(--text-primary) 5%, transparent); }
+.model-chip__body .model-setup__info { min-width: 0; gap: 0; }
+.model-chip__body .model-setup__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.model-chip__body .model-setup__meta { font-size: var(--fs-2xs); }
+/* Icon-only action: the label is hidden, the download glyph stays. */
+.model-chip__body .model-setup__action {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  min-width: 0;
+  border-radius: 50%;
+  font-size: 0;
+}
+.model-chip__body .model-setup__action svg { width: 13px; height: 13px; }
+.model-chip__body .model-setup__footer { margin: 4px 4px 0; }
+.model-chip__body .model-setup__browse-btn {
+  height: auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+}
+.model-chip__body .model-setup__browse-btn:hover { color: var(--text-primary); }
+
+/* The composer sits in the MIDDLE of the page at the bottom: the input bar
+   reserves the sidebar strip on BOTH sides, so the box is centred while still
+   clearing the open sidebar. (The conversation above keeps its own layout.) */
+.chat-window .chat-input-bar {
+  padding-left: calc(16px + var(--chat-gutter));
+  padding-right: calc(16px + var(--chat-gutter));
+}
+
+/* Download control in the model card: an Apple-style round button — a soft
+   grey circle with a dark arrow, the "arrow.down.circle" idiom. */
+.model-chip__body .model-setup__action,
+.model-chip__body .model-setup__action:hover:not(:disabled) {
+  width: 26px;
+  height: 26px;
+  min-width: 0;
+  border: 0;
+  background: rgba(120, 120, 128, 0.14);
+  color: var(--text-primary);
+  box-shadow: none;
+  transition: background-color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.model-chip__body .model-setup__action:hover:not(:disabled) { background: rgba(120, 120, 128, 0.24); }
+.model-chip__body .model-setup__action:active:not(:disabled) { transform: scale(0.9); transition-duration: 60ms; }
+.model-chip__body .model-setup__action:disabled { font-size: var(--fs-2xs); width: auto; padding: 0 8px; border-radius: var(--r-pill); }
+
+/* Downloads report from the top middle, where the notification island sits,
+   on every page. Centred with auto margins rather than a transform so the
+   slide-in animation keeps its own. */
+.app-root .download-bubble,
+.app-root[data-downloads='active'] .download-bubble,
+.app-root[data-view='chat'][data-downloads='active'] .download-bubble {
+  top: calc((var(--window-band-h) - 34px) / 2);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: 340px;
+  min-width: 0;
+  max-width: calc(100vw - 2 * var(--island-side-reserve, 96px));
+}
+
+/* "Browse all models": the capsule's one action when nothing is installed.
+   Small, grey, no border; a shade darker on hover. */
+.model-browse-btn {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  z-index: var(--z-popover, 1000);
+  height: 24px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.model-browse-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 15%, transparent);
+  color: var(--text-primary);
+}
+.model-browse-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ── The open sidebar overlays the page ─────────────────────────────────────
+   The root always reserves the COLLAPSED rail only; opening the sidebar slides
+   it over the page (it is absolutely positioned, with a shadow) instead of
+   pushing every screen to the right. Declared last, with the heavier selector,
+   so it settles the per-view rules above. */
+html body .app-root[data-sidebar="open"],
+html body .app-root[data-view][data-sidebar="open"] {
+  padding-left: var(--rail-collapsed-width);
+}
+html body .app-root[data-sidebar="open"] .win-titlebar {
+  left: var(--rail-collapsed-width);
+}
+html body .app-root[data-sidebar="open"] .island-region {
+  left: calc(var(--rail-collapsed-width) + var(--island-side-reserve));
+}
+
+/* The composer's own box is the corner's reference for the browse button. */
+.chat-input-form { position: relative; }
+
+/* Download notice as a pill, the same shape and colours as the island's
+   notifications: white in light mode, black in dark. One line (name, percent,
+   View) with a hairline of progress along its bottom edge. */
+.app-root .download-bubble,
+.app-root[data-downloads='active'] .download-bubble,
+.app-root[data-view='chat'][data-downloads='active'] .download-bubble {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 2 * var(--island-side-reserve, 96px)));
+  height: 34px;
+  padding: 0 8px 0 16px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--r-pill);
+  background: #ffffff;
+  color: #0a0a0a;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+}
+[data-theme='dark'] .app-root .download-bubble {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #2a2a2a;
+  color: #f5f5f5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+.download-bubble-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+.download-bubble-pct {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+.app-root .download-bubble .download-bubble-close {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  height: 20px;
+  align-items: center;
+  border-radius: var(--r-pill);
+  color: inherit;
+  background: rgba(127, 127, 127, 0.16);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.app-root .download-bubble .download-bubble-close:hover { background: rgba(127, 127, 127, 0.28); color: inherit; }
+.download-bubble-line {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: calc(var(--progress) * 1%);
+  background: currentColor;
+  opacity: 0.55;
+  transition: width 600ms var(--ease-out);
+}
+
+/* ── Attachments tray ──────────────────────────────────────────────────────
+   The types capsule is now a button. Clicking it opens a tall, narrow,
+   translucent tray in the free space to the right of the composer, listing
+   every file attached to this question; clicking away or Esc closes it. */
+button.attachment-stack__head {
+  font-family: inherit;
+  cursor: pointer;
+}
+.attach-tray {
+  position: absolute;
+  z-index: 60;
+  bottom: 56px;
+  left: min(calc(50% + 400px), calc(100% - 276px));
+  width: 260px;
+  max-height: min(60vh, 520px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
+  border-radius: var(--r-xl);
+  background: color-mix(in srgb, var(--bg-surface) 62%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.16);
+  animation: attach-tray-in var(--dur-anim) var(--spring-smooth) both;
+}
+@keyframes attach-tray-in {
+  from { opacity: 0; transform: translateX(10px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.attach-tray__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+}
+.attach-tray__head span { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.attach-tray__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 8px 10px;
+  overflow-y: auto;
+}
+.attach-tray__group { display: flex; flex-direction: column; gap: 4px; }
+.attach-tray__group h4 {
+  margin: 0;
+  padding: 0 6px;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.attach-tray .stack-chip {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  border: 0;
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) { .attach-tray { animation: none; } }
+
+/* ── Folder / paperclip "has files": shaded INSIDE the icon, no tile ───────
+   No background or shadow behind the button; the folder fills its interior
+   and the paperclip's wire thickens to a solid stroke, both at full ink. */
+.chat-input-pill .input-folder-btn.has-items,
+.chat-input-pill .input-attach-btn.has-items,
+.chat-input-pill .input-folder-btn.has-items:hover,
+.chat-input-pill .input-attach-btn.has-items:hover {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-primary);
+}
+.chat-input-pill .input-folder-btn.has-items svg path {
+  fill: color-mix(in srgb, var(--text-primary) 42%, transparent);
+}
+.chat-input-pill .input-attach-btn.has-items svg { stroke-width: 2.6; }
+
+.attachment-stack__types--words { text-transform: lowercase; letter-spacing: 0; }
+
+/* ── Typing squares ─────────────────────────────────────────────────────────
+   A negative layer inside the chat window's own stacking context: it paints
+   over the window's background but under all of its content, so cards, the
+   composer and the title hide the squares. */
+.chat-window { isolation: isolate; }
+.chat-window > .typing-squares {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.typing-square {
+  position: absolute;
+  border-radius: var(--r-sm);
+  opacity: 0;
+  animation: typing-square-blink ease-out both;
+}
+@keyframes typing-square-blink {
+  0% { opacity: 0; transform: scale(0.4); }
+  30% { opacity: 0.85; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.8); }
+}
+
+/* ── Thoughts (reasoning models) ───────────────────────────────────────────
+   Sits flush with the answer's left edge, above it: "Thinking ›" with a
+   shimmer and the newest line peeking under it while live, then
+   "Thought for Ns ›". Opens with a height glide (grid 0fr → 1fr), not a jump. */
+.thoughts { margin: 0 0 12px; }
+.thoughts__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: -2px;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out);
+}
+.thoughts__toggle:hover { color: var(--text-primary); }
+.thoughts__chevron { transition: transform 260ms var(--ease-out); }
+.thoughts.is-open .thoughts__chevron { transform: rotate(90deg); }
+.thoughts.is-live .thoughts__label {
+  background: linear-gradient(90deg, var(--text-muted) 0%, var(--text-muted) 40%, var(--text-heading) 50%, var(--text-muted) 60%, var(--text-muted) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thoughts-shimmer 2s linear infinite;
+}
+.thoughts__peek {
+  margin-top: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-size: var(--fs-xs);
+  animation: answer-fade-in 300ms var(--ease-out) both;
+}
+.thoughts__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 320ms var(--ease-out), opacity 240ms var(--ease-out);
+}
+.thoughts.is-open .thoughts__panel { grid-template-rows: 1fr; opacity: 1; }
+.thoughts__panel-inner { min-height: 0; overflow: hidden; }
+.thoughts__body {
+  margin: 8px 0 2px 3px;
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow-y: auto;
+}
+@keyframes thoughts-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -150% 0; }
+}
+
+/* Streaming answer: each new block (paragraph, list item, heading, table)
+   fades up once as it is added. Renderers are stable now, so blocks already
+   on screen never replay; this costs one animation per block, not per word. */
+.markdown-content.is-streaming :is(.markdown-p, .markdown-li, .markdown-h1, .markdown-h2, .markdown-h3, .table-wrapper, .code-block-wrapper, .markdown-blockquote) {
+  animation: answer-block-in 280ms var(--ease-out) both;
+}
+@keyframes answer-block-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thoughts.is-live .thoughts__label { animation: none; color: var(--text-muted); background: none; }
+  .thoughts__panel, .thoughts__chevron { transition: none; }
+  .thoughts__peek,
+  .markdown-content.is-streaming :is(.markdown-p, .markdown-li, .markdown-h1, .markdown-h2, .markdown-h3, .table-wrapper, .code-block-wrapper, .markdown-blockquote) { animation: none; }
+}
+
+/* Aurora's two page starters, under the lead line. */
+.dr-assistant-suggestions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.dr-assistant-suggestion {
+  max-width: 100%;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: center;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.dr-assistant-suggestion:hover { background: var(--cap-secondary-bg-hover); }
+.dr-assistant-suggestion:active { transform: scale(0.96); }
+
+/* ── Composer tool row (above the box) ─────────────────────────────────────
+   Left: folder, paperclip, then Vault / Workspace / Library when the folder
+   is open. Right: On Computer | On Cloud. All 30px tall on one line. */
+.chat-input-pill .attach-source-pills { top: -33px; left: 70px; }
+.chat-input-pill .attach-source-pill { height: 28px; padding: 0 11px; font-size: var(--fs-xs); }
+.attachment-stacks { padding-right: 250px; }
+
+.answer-source {
+  position: absolute;
+  top: -34px;
+  right: 0;
+  z-index: 25;
+}
+.answer-source__seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  box-shadow: inset 0 0 0 1px var(--cap-edge);
+}
+.answer-source__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  max-width: 200px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+}
+.answer-source__opt:hover { color: var(--text-primary); }
+.answer-source__opt.is-on {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--cap-edge);
+}
+.answer-source__model { overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+
+.cloud-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(560px, 90vw);
+  padding: 14px;
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18), inset 0 0 0 1px var(--border);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  animation: answer-block-in 200ms var(--ease-out) both;
+}
+.cloud-panel__head strong { font-size: var(--fs-md, 15px); font-weight: var(--fw-semibold); }
+.cloud-panel__head p { margin: 4px 0 12px; color: var(--text-secondary); font-size: var(--fs-xs); line-height: 1.5; }
+.cloud-panel__cols { display: grid; grid-template-columns: 180px 1fr; gap: 12px; min-height: 230px; }
+.cloud-panel__providers { margin: 0; padding: 0; list-style: none; overflow-y: auto; max-height: 280px; }
+.cloud-panel__provider,
+.cloud-panel__model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cloud-panel__provider:hover,
+.cloud-panel__model:hover { background: var(--bg-hover); }
+.cloud-panel__provider.is-on,
+.cloud-panel__model.is-on { background: color-mix(in srgb, var(--text-primary) 9%, transparent); }
+.cloud-panel__model span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-panel__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-ok); flex: 0 0 auto; }
+.cloud-panel__detail { display: flex; flex-direction: column; min-width: 0; padding-left: 12px; border-left: 1px solid var(--border-subtle, var(--border)); }
+.cloud-panel__connect { display: flex; flex-direction: column; gap: 6px; }
+.cloud-panel__connect label { font-weight: var(--fw-medium); }
+.cloud-panel__connect input,
+.cloud-panel__models input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.cloud-panel__connect input:focus,
+.cloud-panel__models input:focus { border-color: var(--border-strong); }
+.cloud-panel__row { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+.cloud-panel__go { height: 30px; padding: 0 16px; }
+.cloud-panel__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cloud-panel__link:hover { color: var(--text-primary); text-decoration: underline; }
+.cloud-panel__models { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.cloud-panel__models ul { margin: 0; padding: 0; list-style: none; max-height: 200px; overflow-y: auto; }
+.cloud-panel__disconnect { align-self: flex-start; margin-top: 4px; }
+.cloud-panel__muted { color: var(--text-muted); font-size: var(--fs-xs); }
+.cloud-panel__error { margin: 8px 0 0; color: var(--danger-fg); font-size: var(--fs-xs); }
+
+/* ── Sent attachments: file cards under the user's message ─────────────────
+   Soft rectangles (8px corners), right-aligned under the bubble: a small
+   type glyph, the name, and the extension in muted caps. */
+.message-wrapper.user > .sent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 6px 0 0 auto;
+  padding: 0;
+  border: 0;
+  max-width: 80%;
+}
+.message-wrapper.user > .sent-attachments .sent-chip {
+  gap: 7px;
+  max-width: 260px;
+  padding: 6px 10px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+}
+.sent-chip-ext {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+}
+/* The bubble and its file cards stack, both on the right. */
+.message-wrapper.user { flex-direction: column; align-items: flex-end; }
+
+/* ── Cloud panel: tabs and the by-maker model menu ─────────────────────── */
+.cloud-panel { width: min(600px, 92vw); }
+.cloud-panel__title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cloud-panel__tabs {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.cloud-panel__tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.cloud-panel__tabs button.is-on { background: var(--cap-primary-bg); color: var(--cap-primary-fg); box-shadow: inset 0 0 0 1px var(--cap-edge); }
+.cloud-panel__count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--status-ok);
+  color: #fff;
+  font-size: var(--fs-2xs);
+  line-height: 16px;
+  text-align: center;
+}
+.cloud-models { display: flex; flex-direction: column; gap: 8px; }
+.cloud-models__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-field);
+  color: var(--text-muted);
+}
+.cloud-models__search:focus-within { border-color: var(--border-strong); }
+.cloud-models__search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text-primary); font: inherit; font-size: var(--fs-sm); outline: none; }
+.cloud-models__list { max-height: 320px; overflow-y: auto; margin-right: -6px; padding-right: 6px; }
+.cloud-models__group h4 {
+  margin: 10px 0 2px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.cloud-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cloud-model:hover { background: var(--bg-hover); }
+.cloud-model.is-on { background: color-mix(in srgb, var(--text-primary) 9%, transparent); }
+.cloud-model__text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.cloud-model__name { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+.cloud-model__note { color: var(--text-muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-model__tag {
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+}
+.cloud-model__route { flex: 0 0 auto; color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; }
+.cloud-model.is-locked .cloud-model__name { color: var(--text-secondary); }
+.cloud-model.is-locked .cloud-model__route { color: var(--text-secondary); text-decoration: underline; text-underline-offset: 2px; }
+
+/* The model capsule while On Cloud: the same cloud model in every composer. */
+.model-capsule--cloud {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.model-capsule__cloud-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--status-info); flex: 0 0 auto; }
+
+/* ── Attachments: one capsule, centred above the composer ──────────────────
+   On the tool row, between the folder/paperclip (left) and On Computer /
+   On Cloud (right). An icon per file type, the count, and the tray on click. */
+.attachment-stacks {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.attach-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px 0 8px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  pointer-events: auto;
+  animation: attachment-chip-in var(--dur-anim) var(--spring-smooth) both;
+  transition: background-color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.attach-capsule:hover { background: var(--cap-secondary-bg-hover); }
+.attach-capsule:active { transform: scale(0.96); }
+.attach-capsule[aria-expanded='true'] { background: var(--cap-secondary-bg-hover); }
+.attach-capsule__icons { display: inline-flex; align-items: center; }
+/* Icons overlap a little, like a fanned stack. */
+.attach-capsule__icons > .file-glyph + .file-glyph { margin-left: -6px; }
+.attach-capsule__count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.attach-capsule.is-reading .attach-capsule__count { color: var(--text-muted); }
+.attach-capsule.is-error { box-shadow: inset 0 0 0 1px var(--danger-fg); }
+
+/* ── File capsule: the one shape for attachments ───────────────────────────
+   Above the composer it names the TYPES attached (PDF · DOCX ×2); under a
+   sent message the same capsule names each FILE (icon, name, type). Soft
+   rectangle, quiet fill, hairline edge — in the DeepSeek / Qwen register. */
+.file-capsule,
+.message-wrapper.user > .sent-attachments .file-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  max-width: 280px;
+  padding: 0 10px 0 7px;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.file-capsule__type { display: inline-flex; align-items: center; gap: 5px; letter-spacing: 0.02em; }
+.file-capsule__n { color: var(--text-muted); font-weight: var(--fw-regular); }
+.file-capsule__state { color: var(--text-muted); font-weight: var(--fw-regular); }
+.attach-capsule { gap: 12px; padding: 0 12px 0 8px; }
+
+/* Under the sent message: one capsule per file, right-aligned. */
+.message-wrapper.user > .sent-attachments { gap: 6px; margin-top: 6px; }
+.message-wrapper.user > .sent-attachments .file-capsule { gap: 6px; padding: 0 10px 0 6px; }
+.file-capsule .sent-chip-glyph { width: auto; }
+.file-capsule .sent-chip-name { font-weight: var(--fw-medium); }
+.file-capsule .sent-chip-ext { color: var(--text-muted); font-weight: var(--fw-regular); font-size: var(--fs-2xs); }
+
+/* Type list above the composer: plain text, no tile. */
+.attach-capsule,
+.attach-capsule:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Attached tray: pinned to the far right of the window, away from the composer. */
+.attach-tray {
+  position: fixed;
+  left: auto;
+  right: 16px;
+}
+
+.index-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.index-dot.is-ok { background: var(--status-ok); }
+
+/* Minimal tray: centred title, no card chrome on rows. */
+.attach-tray {
+  width: 240px;
+  border-color: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+.attach-tray__head {
+  justify-content: center;
+  text-align: center;
+}
+.attach-tray .stack-chip {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Folder + paperclip: inside the composer, bottom-left, on the model/send row. */
+.chat-input-pill .input-folder-btn,
+.chat-input-pill .input-attach-btn {
+  position: static;
+  order: 2;
+}
+.chat-input-pill .input-folder-btn { order: 2; }
+.chat-input-pill .input-attach-btn { order: 3; margin-right: auto; }
+.chat-input-pill .input-model-picker { margin-left: 0; }
+/* Vault / Workspace / Library pills open just above that bottom-left corner. */
+.chat-input-pill .attach-source-pills { top: auto; bottom: 46px; left: 8px; }
+
+/* File types: on the tool row's left, where the folder and paperclip were. */
+.attachment-stacks {
+  justify-content: flex-start;
+  padding-left: 0;
+  padding-right: 250px;
+}
+
+.input-send-btn__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); line-height: 1; }
+
+/* Send: a plain rectangle with slightly rounded corners. */
+.chat-window .input-send-btn,
+.input-send-btn { border-radius: 6px; }
+
+/* Cloud panel: small, minimal rectangle. Right edge sits over the toggle's
+   right edge (right: 0) and it grows leftward; short enough to stay below
+   the home cards. */
+.cloud-panel {
+  width: min(380px, 90vw);
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1), inset 0 0 0 1px var(--border);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+}
+.cloud-panel .cloud-models { display: flex; flex-direction: column; min-height: 0; }
+.cloud-panel .cloud-models__list { max-height: 200px; overflow-y: auto; }
+.cloud-panel .cloud-model__note { display: none; }
+.cloud-panel .cloud-model { padding-top: 5px; padding-bottom: 5px; }
+.cloud-panel .cloud-models__search { height: 30px; }
+.cloud-panel__cols { grid-template-columns: 120px 1fr; min-height: 0; }
+.cloud-panel__providers { max-height: 200px; }
+.cloud-panel__models ul { max-height: 150px; }
+
+/* ── Source pane: minimal search, no lines, Select all bottom-left ──────── */
+.source-pane__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-muted);
+  outline: none;
+}
+.source-pane__search:focus-within { color: var(--text-primary); background: var(--bg-field-focus); }
+.source-pane__search:focus-visible { outline: none; }
+.source-pane__search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.source-pane__search input::placeholder { color: var(--text-muted); }
+.source-pane__head,
+.source-pane__foot,
+.source-pane__bar { border: 0; box-shadow: none; }
+.source-pane__foot { align-items: center; justify-content: flex-start; }
+.source-pane__foot .source-pane__count { margin-right: auto; color: var(--text-muted); font-size: var(--fs-xs); }
+.source-pane__btn { border: 0; }
+
+/* Theme audit: these are labels/chips, not buttons, so they must not take the
+   (inverted) button colours — that made the type list white-on-white in light
+   and the sent-file chips solid black. */
+.attach-capsule:not(#_),
+.attach-capsule:not(#_):hover,
+.attach-capsule[aria-expanded='true']:not(#_) {
+  background: transparent;
+  color: var(--text-primary);
+}
+.file-capsule:not(#_),
+.message-wrapper.user > .sent-attachments .file-capsule:not(#_) {
+  background: var(--bg-field);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+/* Panel title icon: a confident size beside the heading (18px -> 26px). */
+.source-pane__title { gap: 12px; font-size: var(--fs-lg, 17px); font-weight: var(--fw-semibold); }
+.source-pane__title svg { width: 26px; height: 26px; }
+
+/* Folder menu: a small box opening ABOVE the composer, at its left edge,
+   with "From Vault" and "From Library" one under the other. */
+.chat-input-pill .attach-source-pills.attach-source-menu:not(#_) {
+  top: auto;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  padding: 6px;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.attach-source-menu .attach-source-pill:not(#_) {
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  animation: none;
+}
+.attach-source-menu .attach-source-pill:not(#_):hover { background: var(--bg-hover); }
+
+/* Sidebar's Sign in and Settings: no grey hover fill, just the hand cursor. */
+.app-root .sidebar .sidebar-bottom-btn:not(#_),
+.app-root .sidebar .sidebar-bottom-btn:not(#_):hover,
+.app-root .sidebar .sidebar-bottom-btn:not(#_):active {
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+/* Sidebar sign-in icon: same icon and size, with a soft glow that slowly
+   brightens and fades, over and over. White: the sidebar is black in both
+   themes. */
+.app-root .sidebar .sidebar-login-btn > svg {
+  animation: login-icon-glow 1.2s ease-in-out infinite;
+}
+@keyframes login-icon-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(255, 255, 255, 0)); }
+  50%      { filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 10px rgba(255, 255, 255, 0.45)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-root .sidebar .sidebar-login-btn > svg { animation: none; }
+}
+
+/* ── Toggle pop-ups (On Computer and On Cloud) ────────────────────────────
+   One panel shape for both: a plain rectangle (small corners) whose right
+   edge sits over the toggle's right edge, growing left. Its height is
+   capped in code to the room between the toggle and the chat home's cards,
+   so it never covers them; the lists inside scroll within that room. */
+.cloud-panel:not(#_) { border-radius: 4px; }
+.cloud-panel .cloud-models { flex: 1; min-height: 0; }
+.cloud-panel .cloud-models__list { flex: 1; min-height: 0; max-height: none; }
+.cloud-panel__cols { flex: 1; min-height: 0; }
+.local-panel__list {
+  flex: 1;
+  min-height: 0;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+.local-panel__all { align-self: flex-start; margin-top: 8px; }
+
+/* Toggle pop-ups: wide and short. Right edge over the toggle's right edge,
+   growing left; height stays within the room above (set in code), capped. */
+.cloud-panel:not(#_) {
+  width: min(620px, calc(100vw - 48px));
+  max-height: 260px;
+}
+
+/* Computer pop-up: installed models on the left, downloads and the token
+   on the right — wide rather than tall. */
+.local-panel__cols {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.local-panel__col { display: flex; flex-direction: column; min-height: 0; }
+.local-panel__h {
+  margin: 0 0 4px;
+  font-size: var(--fs-2xs, 11px);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+.local-panel__list { margin: 0; }
+.local-panel__rec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+}
+.local-panel__rec .cloud-model__text { flex: 1; min-width: 0; }
+.local-panel__rec .cloud-model__note { display: block; color: var(--text-muted); font-size: var(--fs-2xs, 11px); }
+.local-panel__get { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
+.local-panel__pct { font-size: var(--fs-xs); color: var(--text-secondary); }
+.local-panel__token {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+}
+.local-panel__token input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  outline: none;
+}
+
+/* Context / download gauge, on the left inside the model capsule. */
+.model-gauge { flex: 0 0 auto; margin-right: 6px; }
+.model-gauge__track { fill: none; stroke: color-mix(in srgb, currentColor 22%, transparent); stroke-width: 2.2; }
+.model-gauge__fill { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; transition: stroke-dasharray 300ms ease; }
+.model-capsule--cloud { display: inline-flex; align-items: center; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
+
+/* ── Pages centred on the WINDOW, not on the space beside the rail ─────────
+   The root always reserves the collapsed rail (56px) on the left, so content
+   centred in the rest sat 28px right of the window's centre. Each scrolling
+   page mirrors that strip on its right — inside the scroller, so scrollbars
+   stay at the window edge — which puts its centre line on the window's. */
+.ws-landing:not(#_) {
+  padding-right: calc(32px + var(--rail-collapsed-width));
+}
+.settings-content:not(#_) {
+  padding-right: calc(var(--sp-8) + var(--rail-collapsed-width));
+}
+.settings-top:not(#_) {
+  position: relative;
+  left: calc(var(--rail-collapsed-width) / -2);
+}
+.chat-window .chat-messages:not(#_),
+.chat-window .chat-input-bar:not(#_) {
+  padding-right: calc(16px + var(--chat-gutter) + var(--rail-collapsed-width));
+}
+
+/* Expanded sidebar: no edge — no border, no shadow, no outline. */
+html body .app-root .sidebar:not(#_),
+html body .app-root[data-sidebar="open"] .sidebar:not(#_) {
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+/* ── Attached files: the capsule opens in place ───────────────────────────
+   Clicking the file-type capsule grows it, from its own bottom-left corner,
+   into a small box listing the files: three rows in view, the rest scroll.
+   No separate panel elsewhere. Only transform and opacity animate, so the
+   change is composited by the GPU and costs no layout. */
+.attachment-stacks:not(#_) { position: relative; }
+.attach-tray.attach-tray--from-capsule:not(#_) {
+  position: absolute;
+  top: auto;
+  right: auto;
+  left: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(320px, 100%);
+  max-height: none;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bg-raised);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  transform-origin: 0 100%;
+  animation: tray-from-capsule 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes tray-from-capsule {
+  from { opacity: 0; transform: scale(0.6, 0.35); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .attach-tray.attach-tray--from-capsule:not(#_) { animation: none; }
+}
+.attach-tray--from-capsule .attach-tray__head:not(#_) {
+  justify-content: flex-start;
+  padding: 2px 6px 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+/* Three rows in view; more scroll inside. */
+.attach-tray--from-capsule .attach-tray__body:not(#_) {
+  max-height: 126px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.attach-tray--from-capsule .stack-chip:not(#_) { min-height: 40px; }
+/* The capsule hands its place to the box while it is open. */
+.attachment-stacks:has(.attach-tray--from-capsule) .attach-capsule { visibility: hidden; }
+
+/* ── No band of its own for the island ────────────────────────────────────
+   The root used to reserve a 52px strip at the top, painted the base canvas,
+   so the notification / agent capsule sat in a section of its own (a visible
+   strip above pages with another background, like the sign-in screen). Now
+   every page runs to the window's top edge with its own background, keeping
+   the same breathing room as padding inside itself, and the capsule and the
+   window lights float over it — ambient, not boxed. */
+html body .app-root:not(#_) { padding-top: 0; }
+.app-root > :is(.chat-window, .app-view, .vault, .ws-root, .login-page, .view-error):not(#_) {
+  box-sizing: border-box;
+  padding-top: var(--window-band-h);
+  height: 100vh;
+}
+
+/* Collapsed rail: each nav button (New Chat, Workspace, Library, Vault,
+   Models, Agent Lara) is a 40px square centred in the rail, icon centred in
+   it, so the hover square sits evenly behind the icon. */
+html body .sidebar.sidebar--rail .sidebar-nav-btn:not(#_) {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: var(--r-md);
+}
+html body .sidebar.sidebar--rail .sidebar-nav-btn:not(#_) > :not(svg) {
+  display: none;
+}
+
+/* Collapsed rail, bottom: Sign in and Settings get the same centred 40px
+   square — and the same grey square on hover — as the nav icons above. */
+html body .app-root .sidebar.sidebar--rail .sidebar-bottom-btn:not(#_) {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+html body .app-root .sidebar.sidebar--rail .sidebar-bottom-btn:not(#_):hover {
+  background: var(--rail-hover);
+}
+html body .app-root .sidebar.sidebar--rail .sidebar-bottom-btn:not(#_) > :not(svg) {
+  display: none;
+}
+
+/* ── Filled icons, app-wide ──────────────────────────────────────────────
+   Every icon that is a solid shape draws filled, not outlined. Line icons
+   (X, chevrons, search, check…) have no inside and stay as they are.
+   .lucide-outline opts one out (the PDF editor's Box tool draws a box). */
+:is(
+  .lucide-pause, .lucide-play, .lucide-square, .lucide-star, .lucide-folder,
+  .lucide-folder-open, .lucide-cloud, .lucide-message-square, .lucide-send,
+  .lucide-zap, .lucide-sparkles, .lucide-layout-grid
+):not(.lucide-outline) {
+  fill: currentColor;
 }

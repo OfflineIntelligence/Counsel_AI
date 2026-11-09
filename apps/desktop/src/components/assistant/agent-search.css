@@ -1,0 +1,227 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   AGENT SEARCH — the agent as a top-right search bar (chat view only)
+   ─────────────────────────────────────────────────────────────────────────
+   Collapsed it is a 36px circle with a magnifier. Opening grows the bar
+   LEFTWARD (the container is right-anchored, so width growth extends to the
+   left) with the icon pinned at the field's left — the icon visibly travels
+   left as the bar expands. Asking grows the answer rectangle beneath it.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.agent-search {
+  position: absolute;
+  /* Top-right of the chat window, on the same axis as the sidebar's first
+     row just under the window band. FIXED here: the control never moves —
+     the download bubble docks below its measured height (--agent-h) instead.
+     The chat window is the positioning context (position: relative). */
+  top: 12px;
+  right: 24px;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+}
+
+/* ── The bar ─────────────────────────────────────────────────────────── */
+.agent-search__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  width: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  /* The app's single animation cadence: var(--dur-anim) open, the same closed — one
+     transition declaration governs both directions so they never drift. */
+  transition: width var(--dur-anim) var(--ease-out),
+    padding var(--dur-anim) var(--ease-out);
+}
+
+.agent-search.is-open .agent-search__bar {
+  width: min(380px, calc(100vw - 96px));
+  padding: 0 6px 0 10px;
+}
+
+.agent-search__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+button.agent-search__icon:hover {
+  color: var(--text-primary);
+}
+
+.agent-search__icon.is-static {
+  width: auto;
+  height: auto;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.agent-search__field {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+  opacity: 0;
+  transition: opacity var(--dur-anim) var(--ease-out);
+}
+
+.agent-search.is-open .agent-search__field {
+  opacity: 1;
+}
+
+.agent-search__field::placeholder {
+  color: var(--text-faint);
+}
+
+.agent-search__go,
+.agent-search__close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.agent-search__go:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+}
+
+.agent-search__go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.agent-search__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ── The answer space ──────────────────────────────────────────────────
+   One rectangle that grows downward as prompts arrive. Prompts are
+   rectangles; answers are sharp-cornered squares. */
+.agent-space {
+  width: min(420px, calc(100vw - 96px));
+  max-height: 55vh;
+  display: flex;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: agent-space-in var(--dur-anim) var(--ease-out) both;
+}
+
+@keyframes agent-space-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.agent-space__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+/* User prompt: a rectangle. */
+.agent-rect {
+  align-self: stretch;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Agent answer: a square — sharp corners, bordered card. */
+.agent-square {
+  align-self: stretch;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-square.is-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.agent-square__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.agent-square__copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-search__bar,
+  .agent-space {
+    animation: none;
+    transition: none;
+  }
+  .agent-search__field {
+    opacity: 1;
+  }
+}
+
+/* The field is borderless inside the bar, so the bar shows keyboard focus. */
+.agent-search:has(.agent-search__field:focus-visible) { box-shadow: 0 0 0 2px var(--ring); }

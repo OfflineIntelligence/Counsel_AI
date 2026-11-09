@@ -2,13 +2,32 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderWithProviders, screen, fireEvent, waitFor } from '../../test/renderWithProviders';
 import userEvent from '@testing-library/user-event';
 import { ChatWindow } from '../ChatWindow';
+import { useAssistant } from '../../contexts/AssistantContext';
 import type { Message } from '../../api/chat';
 
 // Mock the API modules
 vi.mock('../../api/chat', () => ({
   streamChat: vi.fn(),
   updateConversationTitle: vi.fn(),
+  ModelNotReadyError: class ModelNotReadyError extends Error {},
 }));
+
+// The send path asks /models/readiness first; report a loaded model so the
+// tests exercise sending, not the setup prompt.
+// Keep the module's real exports (constants such as MODELS_CHANGED_EVENT,
+// helpers such as canAsk) and replace only the calls that reach the backend.
+vi.mock('../../api/models', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/models')>()),
+  getReadiness: vi.fn().mockResolvedValue({ state: 'ready', installed: 1 }),
+  announceModelsChanged: vi.fn(),
+  prewarmModel: vi.fn(),
+}));
+
+/** Shows the title the assistant currently sees. */
+function AssistantPageProbe() {
+  const { page } = useAssistant();
+  return <span data-testid="assistant-page-title">{page.title ?? ''}</span>;
+}
 
 describe('ChatWindow Component', () => {
   // Test fixtures
@@ -50,9 +69,16 @@ describe('ChatWindow Component', () => {
     expect(screen.getByRole('main')).toBeTruthy();
   });
 
-  it('displays chat title when provided', () => {
-    renderWithProviders(<ChatWindow {...defaultProps} chatTitle="My Chat" />);
-    expect(screen.getByText('My Chat')).toBeTruthy();
+  // The chat no longer shows its title as a header; the title tells the
+  // assistant which conversation the user is looking at (useAssistantPage).
+  it('passes the chat title to the assistant as the page title', () => {
+    renderWithProviders(
+      <>
+        <ChatWindow {...defaultProps} chatTitle="My Chat" />
+        <AssistantPageProbe />
+      </>,
+    );
+    expect(screen.getByTestId('assistant-page-title').textContent).toBe('My Chat');
   });
 
   it('displays all messages', () => {
@@ -93,13 +119,17 @@ describe('ChatWindow Component', () => {
     expect(screen.getByText('New message')).toBeTruthy();
   });
 
-  it('updates title when chatTitle prop changes', () => {
-    const { rerender } = renderWithProviders(<ChatWindow {...defaultProps} chatTitle="Old Title" />);
-    expect(screen.getByText('Old Title')).toBeTruthy();
-
-    rerender(<ChatWindow {...defaultProps} chatTitle="New Title" />);
-    expect(screen.getByText('New Title')).toBeTruthy();
-    expect(screen.queryByText('Old Title')).toBeNull();
+  it('updates the assistant page title when chatTitle prop changes', () => {
+    const view = (title: string) => (
+      <>
+        <ChatWindow {...defaultProps} chatTitle={title} />
+        <AssistantPageProbe />
+      </>
+    );
+    const { rerender } = renderWithProviders(view('Old Title'));
+    expect(screen.getByTestId('assistant-page-title').textContent).toBe('Old Title');
+    rerender(view('New Title'));
+    expect(screen.getByTestId('assistant-page-title').textContent).toBe('New Title');
   });
 
   it('handles null chatTitle gracefully', () => {
@@ -275,7 +305,9 @@ describe('ChatWindow Component', () => {
     
     rerender(<ChatWindow {...defaultProps} messages={mockMessages} />);
     rerender(<ChatWindow {...defaultProps} messages={mockMessages} chatTitle="Updated" />);
-    
-    expect(screen.getByText('Updated')).toBeTruthy();
+
+    // Messages survive the re-renders.
+    expect(screen.getByText('Hello')).toBeTruthy();
+    expect(screen.getByText('Hi there!')).toBeTruthy();
   });
 });

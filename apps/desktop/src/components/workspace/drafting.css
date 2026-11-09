@@ -1,0 +1,1570 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   DRAFTING STUDIO — the editor view of the Workspace
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Loaded after workspace.css and layered on top of it. Same monochrome paper
+   language as the rest of the app: ink for the one primary action, hairlines
+   for structure, colour only for status. Everything is written against the
+   role tokens in styles/tokens.css, so both themes resolve without a single
+   [data-theme] selector here.
+
+   Motion follows the app rule: var(--dur-anim), transform and opacity only.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ------------------------------------------------------------------ header */
+
+.dr-header {
+  min-height: 58px;
+  /* The traffic lights live in the app's window band above every page (see
+     App.css), so the header needs no reservation for them. */
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.ws-compare .ws-header { border-top: 1px solid var(--border); }
+
+/* ---- status, now in the ⋯ menu */
+
+.ws-menu-label {
+  padding: var(--sp-1) var(--sp-2) 2px;
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ws-menu-item.is-checked { font-weight: var(--fw-medium); }
+.ws-menu-check { margin-left: auto; color: var(--text-secondary); }
+
+.dr-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.dr-status-dot.dr-status-draft:not(#_) { background: var(--text-faint); }
+.dr-status-dot.dr-status-in_review:not(#_) { background: var(--warning); }
+.dr-status-dot.dr-status-completed:not(#_) { background: var(--success); }
+
+/* ---- Save and History in the ribbon's tab row */
+
+.rb-doc-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: var(--sp-2);
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--border);
+}
+
+.rb-doc-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.rb-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.rb-save:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.rb-save:disabled { opacity: 0.6; cursor: default; }
+.rb-save:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.dr-header .ws-tool {
+  height: 30px;
+}
+
+.dr-header-rule {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex: 0 0 auto;
+  margin: 0 var(--sp-1);
+}
+
+.dr-format-badge {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--bg-field);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-wide);
+}
+
+.dr-title-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.dr-title-button {
+  display: block;
+  max-width: 100%;
+  padding: 1px var(--sp-2);
+  margin-left: calc(var(--sp-2) * -1);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+  transition: background-color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
+}
+
+.dr-title-button:hover { background: var(--bg-hover); border-color: var(--border-subtle); }
+.dr-title-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+/* The field must be the same size, weight and offset as the heading it
+   replaces, or clicking the title would make the title jump. */
+.dr-title-input,
+.dr-title-stack h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: var(--lh-snug);
+}
+
+.dr-title-input {
+  width: min(48ch, 40vw);
+  padding: 1px var(--sp-2);
+  margin-left: calc(var(--sp-2) * -1);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-sm);
+  background: var(--bg-field);
+  color: var(--text-heading);
+  outline: none;
+}
+
+.dr-save {
+  padding-left: var(--sp-1);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.dr-save-saving { color: var(--text-secondary); }
+.dr-save-error { color: var(--danger-fg); font-weight: var(--fw-medium); }
+
+/* ------------------------------------------------------------- comparison */
+
+/* Two columns of a Letter page cannot both fit on one; side by side gets a
+   wider sheet. */
+.ws-diff-split { --paper-width: 1180px; }
+
+.ws-compare .ws-surface-host { padding-top: var(--sp-4); }
+
+.cmp-versions { display: inline-flex; align-items: center; gap: var(--sp-1); margin-left: var(--sp-2); }
+.cmp-nav { display: inline-flex; align-items: center; gap: 2px; padding: 0 var(--sp-2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+.cmp-nav .ws-hint { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; }
+
+.cmp-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-6);
+  width: min(1180px, 100%);
+  margin: 0 auto var(--sp-2);
+  padding: 0 var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  box-sizing: border-box;
+}
+
+.ws-diff [data-op] { scroll-margin: 120px; border-radius: var(--r-sm); }
+
+.ws-diff .is-current {
+  outline: 2px solid rgba(26, 26, 24, 0.55);
+  outline-offset: 4px;
+}
+
+.cmp-legend { display: flex; justify-content: center; gap: var(--sp-4); padding: var(--sp-3) 0 var(--sp-6); font-size: var(--fs-xs); color: var(--text-secondary); }
+.cmp-key { display: inline-flex; align-items: center; gap: 6px; }
+.cmp-key::before { content: ""; width: 12px; height: 12px; border-radius: var(--r-sm); border-left: 3px solid; }
+.cmp-key-ins::before { background: var(--success-quiet); border-color: var(--success); }
+.cmp-key-del::before { background: var(--danger-quiet); border-color: var(--danger); }
+.cmp-key-chg::before { background: transparent; border-color: var(--warning); }
+
+.cmp-message { margin: auto; max-width: 440px; padding: var(--sp-8); text-align: center; }
+.cmp-message h2 { margin: 0 0 var(--sp-2); font-size: var(--fs-xl); font-weight: var(--fw-display); color: var(--text-heading); }
+.cmp-message p { margin: 0 0 var(--sp-4); font-size: var(--fs-md); line-height: var(--lh-normal); color: var(--text-secondary); }
+
+.cmp-filters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-3); }
+
+.cmp-filter {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.cmp-filter span { color: var(--text-muted); margin-left: 2px; }
+.cmp-filter.is-active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
+.cmp-filter.is-active span { color: inherit; opacity: 0.7; }
+
+.cmp-entry { width: 100%; background: none; border-left: none; border-right: none; border-top: none; text-align: left; cursor: pointer; font: inherit; }
+.cmp-entry:hover { background: var(--bg-hover); }
+.cmp-entry.is-active { background: var(--bg-selected); }
+
+.ws-version-actions { grid-row: 1 / span 2; grid-column: 2; display: inline-flex; gap: 4px; }
+
+/* -------------------------------------------------------------------- body */
+
+.dr-body {
+  position: relative;
+  background: var(--bg-canvas);
+}
+
+.dr-editor-host {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Room at the foot of the page so the last line never sits under the
+   floating composer. */
+.dr-host-docx .ws-surface-host,
+.dr-host-txt .ws-surface-host {
+  padding: var(--sp-4) var(--sp-8) 128px;
+}
+
+/* ---------------------------------------------------------- floating toolbar */
+
+.dr-floatbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  align-self: center;
+  width: max-content;
+  max-width: 100%;
+  min-height: 42px;
+  margin: 0 auto var(--sp-4);
+  padding: 5px var(--sp-2);
+  gap: 2px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-md);
+  flex-shrink: 0;
+}
+
+.dr-floatbar .ws-tool {
+  height: 32px;
+  min-width: 32px;
+  border-radius: var(--r-pill);
+  color: var(--text-primary);
+}
+
+.dr-floatbar .ws-tool-icon { width: 32px; }
+
+.dr-floatbar .ws-tool-divider {
+  height: 20px;
+  margin: 0 var(--sp-1);
+}
+
+.dr-floatbar .ws-hint {
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-2);
+  white-space: nowrap;
+}
+
+.dr-floatbar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+  white-space: nowrap;
+}
+
+.dr-floatbar-label svg { color: var(--text-muted); }
+
+.dr-style-select {
+  appearance: none;
+  min-width: 128px;
+  height: 32px;
+  padding: 0 28px 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  background-color: transparent;
+  font-weight: var(--fw-medium);
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 15px) 14px, calc(100% - 11px) 14px;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.dr-style-select:hover:not(:disabled) { background-color: var(--bg-hover); }
+.dr-style-select option { color: #1f1f1d; background: #fff; }
+
+/* A toolbar that sits in normal flow (slides, where the stage is not a
+   scrolling page). */
+.dr-floatbar-static {
+  position: relative;
+  margin: var(--sp-3) auto var(--sp-2);
+}
+
+/* ------------------------------------------------------------------- paper */
+
+.dr-editor-host .ws-surface {
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.05), 0 10px 32px rgba(20, 20, 19, 0.07);
+  border: 1px solid rgba(20, 20, 19, 0.05);
+}
+
+.dr-editor-host .ws-page {
+  padding: 76px 88px var(--sp-16);
+}
+
+.dr-editor-host .ws-paragraph {
+  line-height: 1.75;
+  color: #1f1f1d;
+}
+
+.dr-editor-host .ws-paragraph-heading {
+  font-size: 17pt;
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-display);
+  color: #141413;
+  margin: var(--sp-8) 0 var(--sp-3);
+}
+
+.dr-editor-host .ws-page > .ws-paragraph-heading:first-child {
+  margin-top: 0;
+  font-size: 22pt;
+}
+
+.dr-editor-host .ws-paragraph:focus {
+  background: transparent;
+  box-shadow: -14px 0 0 -12px #1a1a18;
+}
+
+.dr-editor-host .ws-textarea {
+  line-height: 1.75;
+  min-height: 60vh;
+}
+
+.dr-editor-host .ws-text-status {
+  justify-content: flex-end;
+  padding: var(--sp-2) var(--sp-5);
+}
+
+/* ---------------------------------------------------------------- composer */
+
+@keyframes dr-rise {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ── The Aurora on the page ───────────────────────────────────────────────
+   The bar is Aurora in a draft: always there, always ready. Answers rise
+   ABOVE it, floating over the document, so the page never resizes or shifts
+   to make room (that is the whole reason the side panel is not used here). */
+.dr-agent {
+  position: absolute;
+  left: 50%;
+  bottom: var(--sp-5);
+  z-index: 8;
+  transform: translateX(-50%);
+  width: min(660px, calc(100% - 48px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  /* Hidden at rest. Revealed the way Apple surfaces a floating control: a
+     slow fade with a slight lift, scale and un-blur on a soft spring curve.
+     Leaving is slower still, so it dissolves rather than vanishes.
+     visibility trails the fade so the hidden bar leaves the tab order. */
+  /* opacity and transform only: both run on the GPU compositor. (A filter
+     blur here repainted the whole bar on every frame of the transition.) */
+  opacity: 0;
+  transform: translateX(-50%) translateY(14px) scale(0.96);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 1.1s var(--ease-agent),
+    transform 1.1s var(--ease-agent),
+    visibility 0s linear 1.1s;
+}
+
+.dr-agent.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.7s var(--ease-agent),
+    transform 0.7s var(--ease-agent),
+    visibility 0s;
+}
+
+.dr-agent__thread {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(48vh, 460px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  animation: dr-fade-up var(--dur-anim) var(--ease-out) both;
+  overflow: hidden;
+}
+
+.dr-agent__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dr-agent__title {
+  flex: 1;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+}
+
+.dr-agent__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+}
+
+.dr-composer {
+  position: relative;
+  width: 100%;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 7px 0 var(--sp-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-lg);
+}
+
+.dr-composer:focus-within { border-color: var(--accent-border); }
+
+
+/* The model capsule sits inside the bar, between the question and Send. */
+.dr-composer-model {
+  flex: 0 0 auto;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.dr-composer-model .model-capsule {
+  height: 30px;
+  max-width: 170px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: var(--fw-regular);
+}
+
+.dr-composer-model .model-capsule:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* The menu opens upward: the bar sits at the foot of the page. */
+.dr-composer-model .model-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+.dr-send--stop {
+  background: var(--bg-field);
+  color: var(--text-primary);
+}
+
+.dr-composer-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.dr-composer input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+}
+
+.dr-composer input::placeholder { color: var(--text-faint); }
+
+/* ── Document tools, from the corner ─────────────────────────────────────
+   Sits on the composer's horizon at the right edge, so the two float over the
+   page as a pair. Opacity and transform only while the panel opens. */
+.dr-tools-fab {
+  position: absolute;
+  right: var(--sp-5);
+  bottom: var(--sp-5);
+  z-index: 8;
+  display: inline-grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  animation: dr-rise var(--dur-anim) var(--ease-out) both;
+  transition: color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out);
+}
+
+.dr-tools-fab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dr-tools-fab:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.dr-tools-fab.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* The grid and the slide stage push their composer up by its own bottom
+   margin; the button follows so the pair stays on one line. */
+.dr-host-xlsx .dr-tools-fab,
+.dr-host-pptx .dr-tools-fab {
+  bottom: var(--sp-4);
+}
+
+/* Grids and slide stages have their own footers; the composer joins the flow
+   there instead of covering the sheet tabs. */
+.dr-host-xlsx .dr-composer,
+.dr-host-pptx .dr-composer {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  animation: none;
+  margin: var(--sp-3) auto var(--sp-4);
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+}
+
+.dr-send {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.dr-send:hover:not(:disabled) { background: var(--accent-hover); }
+.dr-send:disabled { opacity: 0.3; cursor: default; }
+.dr-send:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ----------------------------------------------------------------- opening */
+
+@keyframes dr-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.dr-opening {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.dr-opening-page {
+  width: 112px;
+  height: 145px;
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  animation: dr-breathe 1.76s var(--ease-in-out) infinite;
+}
+
+/* -------------------------------------------------------------------- xlsx */
+
+.dr-host-xlsx {
+  padding: var(--sp-4) var(--sp-5) 0;
+}
+
+.dr-host-xlsx .ws-xlsx {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.dr-sheetbar {
+  position: static;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  min-height: 48px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dr-sheetbar .ws-formula-bar { border-radius: var(--r-pill); }
+.dr-sheetbar .ws-cell-ref { border-radius: var(--r-pill); }
+
+.dr-fx {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  padding: 0 2px;
+}
+
+.dr-host-xlsx .ws-grid-head,
+.dr-host-xlsx .ws-grid-corner {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+.dr-host-xlsx .ws-grid-cell { height: 28px; padding: 0 var(--sp-2); }
+
+.dr-host-xlsx .ws-grid-cell-selected {
+  outline: 2px solid var(--accent);
+  background: var(--accent-quiet);
+}
+
+.dr-host-xlsx .ws-sheet-tabs {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface-alt);
+}
+
+.dr-host-xlsx .ws-sheet-tab { border-radius: var(--r-pill); }
+
+.dr-host-xlsx .ws-sheet-tab-active,
+.dr-host-xlsx .ws-sheet-tab-active:hover {
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  border: 1px solid var(--border);
+}
+
+/* -------------------------------------------------------------------- pptx */
+
+.dr-host-pptx .ws-slide-rail {
+  width: 196px;
+  flex-basis: 196px;
+  background: transparent;
+  border-right: 1px solid var(--border);
+  padding: var(--sp-3);
+}
+
+.dr-host-pptx .ws-slide-thumb {
+  align-items: flex-start;
+  border: none;
+  background: transparent;
+  padding: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+
+.dr-host-pptx .ws-slide-thumb:hover { background: transparent; }
+.dr-host-pptx .ws-slide-thumb-number { font-size: var(--fs-2xs); padding-top: 2px; width: 14px; text-align: right; }
+
+.dr-thumb-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.dr-thumb-col .ws-slide-thumb-title { font-size: var(--fs-2xs); color: var(--text-muted); }
+
+.dr-mini-slide {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  background: #ffffff;
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  box-shadow: var(--shadow-xs);
+}
+
+.dr-host-pptx .ws-slide-thumb:hover .dr-mini-slide { border-color: var(--border-strong); }
+
+.dr-host-pptx .ws-slide-thumb-active .dr-mini-slide {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dr-mini-shape {
+  position: absolute;
+  overflow: hidden;
+  font-size: var(--fs-2xs);
+  line-height: 1.2;
+  color: #55544f;
+  word-break: break-word;
+}
+
+.dr-mini-shape.is-frame { background: #efeeea; }
+
+.dr-host-pptx .ws-slide-stage { background: transparent; padding: var(--sp-4) var(--sp-8); }
+
+.dr-host-pptx .ws-slide-canvas {
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.05), 0 12px 36px rgba(20, 20, 19, 0.08);
+}
+
+/* ------------------------------------------------------------- side column */
+
+.dr-side-wrap {
+  width: 348px;
+  flex: 0 0 348px;
+  display: flex;
+  min-height: 0;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+}
+
+.dr-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dr-side-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 48px;
+}
+
+.dr-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.dr-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dr-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dr-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+/* Inactive tabs are glyphs; the active one names itself. Four labels at once
+   would not fit the column without truncating all of them. */
+.dr-tab span { display: none; }
+.dr-tab.is-active span { display: inline; }
+
+.dr-tab.is-active {
+  background: var(--bg-field);
+  border-color: var(--border-subtle);
+  color: var(--text-heading);
+  font-weight: var(--fw-medium);
+}
+
+.dr-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.dr-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dr-fill[hidden] { display: none; }
+
+.dr-side-body .ws-versions { padding: var(--sp-4); }
+
+.dr-pad { padding: var(--sp-4); }
+
+.dr-label {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dr-empty {
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+.dr-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dr-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.dr-stat-value {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dr-stat-key { font-size: var(--fs-2xs); color: var(--text-muted); }
+
+.dr-field {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+}
+
+.dr-field-key { color: var(--text-muted); flex: 0 0 auto; }
+.dr-field-value { color: var(--text-primary); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.dr-field-value.is-mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
+
+.dr-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+/* outline */
+
+.dr-outline { list-style: none; margin: 0; padding: 0; }
+
+.dr-outline-item {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dr-outline-item:hover { background: var(--bg-hover); }
+
+/* clauses */
+
+.dr-search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 34px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  border: 1px solid transparent;
+  color: var(--text-muted);
+}
+
+.dr-search:focus-within { border-color: var(--accent-border); }
+
+.dr-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+
+.dr-clauses { list-style: none; margin: var(--sp-3) 0 0; padding: 0; }
+
+.dr-clause {
+  padding: 10px 12px;
+  margin-bottom: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.dr-clause.is-open { border-color: var(--border-strong); background: var(--bg-surface-alt); }
+
+.dr-clause-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dr-clause-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-heading);
+}
+
+.dr-clause-body {
+  margin: 6px 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dr-clause.is-open .dr-clause-body {
+  display: block;
+  margin-bottom: var(--sp-3);
+}
+
+/* inspectors */
+
+.dr-cell-hero {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.dr-cell-ref {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-display);
+  letter-spacing: var(--ls-display);
+  color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.dr-cell-sheet { font-size: var(--fs-sm); color: var(--text-muted); }
+
+.dr-shapes { list-style: none; margin: 0; padding: 0; }
+
+.dr-shapes li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+
+.dr-shapes li.is-active { background: var(--bg-selected); }
+
+.dr-shape-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --------------------------------------------------------------- assistant */
+
+.dr-assistant { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.dr-assistant-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+}
+
+.dr-assistant-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-4);
+}
+
+.dr-assistant-lead {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--ls-tight);
+  color: var(--text-heading);
+}
+
+.dr-suggestions { display: flex; flex-direction: column; gap: 6px; }
+
+.dr-suggestion {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dr-suggestion:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+
+@keyframes dr-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.dr-turn {
+  margin-bottom: var(--sp-4);
+  animation: dr-fade-up var(--dur-anim) var(--ease-out) both;
+}
+
+.dr-turn-body {
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dr-turn-user .dr-turn-body {
+  width: fit-content;
+  max-width: 88%;
+  margin-left: auto;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--bg-field);
+  color: var(--text-heading);
+}
+
+.dr-turn-error .dr-turn-body {
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--danger-quiet);
+  color: var(--danger-fg);
+  font-size: var(--fs-sm);
+}
+
+.dr-turn-actions { display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
+
+.dr-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dr-mini:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
+
+.dr-mini-ink,
+.dr-mini-ink:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.dr-mini-ink:hover { background: var(--accent-hover); }
+
+@keyframes dr-blink {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 1; }
+}
+
+.dr-typing {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--text-muted);
+  animation: dr-blink 1s var(--ease-in-out) infinite;
+}
+
+.dr-new-thread {
+  align-self: center;
+  margin: 0 0 var(--sp-2);
+}
+
+.dr-assistant-input {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  margin: 0 var(--sp-3) var(--sp-3);
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-field);
+}
+
+.dr-assistant-input:focus-within { border-color: var(--accent-border); background: var(--bg-surface); }
+
+.dr-assistant-input textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+}
+
+.dr-assistant-input textarea::placeholder { color: var(--text-faint); }
+
+.dr-assistant-input .dr-send { width: 30px; height: 30px; }
+
+/* ------------------------------------------------------------- responsive */
+
+/* On a narrow window the column floats over the page instead of squeezing
+   it below a readable measure. */
+@media (max-width: 1180px) {
+  .dr-side-wrap {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .dr-editor-host .ws-page { padding: var(--sp-12) 56px var(--sp-12); }
+}
+
+@media (max-width: 860px) {
+  .dr-title-input { width: min(28ch, 50vw); }
+}
+
+
+/* ── Document actions in the tools panel ─────────────────────────────────
+   The old ⋯ menu, unpacked. A menu hid Delete one pixel from Rename; here the
+   verbs are a list you have to have opened the panel to reach, and Delete is
+   the only one that carries a colour. */
+
+.dr-side-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.dr-status-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dr-status-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dr-status-pick:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.dr-status-pick:disabled { opacity: 0.6; cursor: default; }
+.dr-status-pick:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+
+.dr-status-pick.is-on {
+  background: var(--bg-field);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+}
+
+.dr-status-check { margin-left: auto; color: var(--text-secondary); }
+
+.dr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dr-action {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dr-action:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dr-action:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+.dr-action-danger { color: var(--danger-fg); }
+.dr-action-danger:hover { background: var(--danger-quiet); color: var(--danger-fg); }
+
+/* ═════════════════════════════════════════════════════════════════════════
+   THE PAGE, AS A DOCUMENT RATHER THAN A TEXT BOX
+
+   The geometry was already right — US Letter at 96dpi, 72px margins, 11pt
+   body — but the page was still being TYPED IN like a web form, and that is
+   what broke the illusion. Three things did it, and all three are below:
+
+     1. The text was set in the app's UI sans. Everything a person writes in
+        Word, and everything this editor SAVES, is Calibri; rendering it in
+        another face means the draft on screen is not the draft in the file.
+     2. The paragraph under the caret lit up — a fill and a margin rule. No
+        word processor does that. A band sliding down the page as you type is
+        the single loudest signal that this is a form and not a document.
+     3. Headings were set in the display face. Word's heading styles are
+        Calibri Light in its own blue; a document opened here and in Word
+        should not look like two documents.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* Calibri first, then the metric-compatible substitutes that exist where it
+   does not (Carlito on Linux, Aptos on new Office installs), then the stack's
+   own fallback. Metric-compatible matters: line breaks land in the same place,
+   so a page here is the same length as a page in Word. */
+.dr-editor-host .ws-surface {
+  --doc-font: Calibri, Aptos, Carlito, 'Segoe UI', system-ui, sans-serif;
+  --doc-heading-ink: #2f5496; /* Word's Heading 1/2 blue */
+}
+
+.dr-editor-host .ws-paragraph,
+.dr-editor-host .ws-textarea {
+  font-family: var(--doc-font);
+}
+
+.dr-editor-host .ws-paragraph-heading {
+  font-family: var(--doc-font);
+  font-weight: 400; /* Word's headings are LIGHT, not bold */
+  letter-spacing: 0;
+  color: var(--doc-heading-ink);
+}
+
+/* Nothing happens to a paragraph when the caret enters it. Word puts the
+   caret in and that is all, and "that is all" is the whole point: the page
+   must look identical whether it is being read or written. */
+.dr-editor-host .ws-paragraph:focus {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The one selection colour every Office app uses. The app's own accent
+   selection is nearly black, which on a white page reads as a redaction. */
+.dr-editor-host .ws-page ::selection,
+.dr-editor-host .ws-textarea::selection {
+  background: var(--highlight);
+  color: inherit;
+}
+
+/* A text caret over the whole writing area, including its margins: clicking
+   the margin in Word puts the caret on the nearest line, and a pointer arrow
+   there says "this is a picture of a page" instead. */
+.dr-editor-host .ws-page {
+  cursor: text;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTONS — the Apple register
+   ═══════════════════════════════════════════════════════════════════════════
+   Three kinds, as on the system's own controls:
+     • plain   — no box; a soft grey fill appears under the pointer.
+     • tinted  — a quiet grey fill, no outline (a standalone secondary button).
+     • filled  — the one prominent action, solid, in the theme's ink.
+   Fills are mixes of the text colour, so one rule reads right in both themes.
+   Press is a small scale-down with a deeper fill, not a colour change.
+   Layered last, over workspace.css; markup and handlers are untouched. */
+
+.ws-tool,
+.rb-save {
+  --btn-tint: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --btn-tint-hover: color-mix(in srgb, var(--text-primary) 11%, transparent);
+  --btn-tint-press: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--btn-tint);
+  font-weight: var(--fw-medium);
+  transition:
+    background-color 140ms var(--ease-out),
+    color 140ms var(--ease-out),
+    transform 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+.ws-tool:hover:not(:disabled) { background: var(--btn-tint-hover); border-color: transparent; }
+.ws-tool:active:not(:disabled) { background: var(--btn-tint-press); transform: scale(0.97); }
+.ws-tool:focus-visible,
+.rb-save:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--text-primary) 22%, transparent);
+  outline-offset: 1px;
+}
+.ws-tool:disabled { opacity: 0.35; }
+
+/* Plain: inside a toolbar the buttons carry no fill until touched. */
+.ws-toolbar .ws-tool,
+.dr-floatbar .ws-tool,
+.dr-header .ws-tool-icon {
+  background: transparent;
+  font-weight: var(--fw-regular);
+}
+.ws-toolbar .ws-tool:hover:not(:disabled),
+.dr-floatbar .ws-tool:hover:not(:disabled) { background: var(--btn-tint-hover); }
+.ws-toolbar .ws-tool:active:not(:disabled),
+.dr-floatbar .ws-tool:active:not(:disabled) { background: var(--btn-tint-press); }
+
+/* On state: a grey fill, not a black block. */
+.ws-tool-active,
+.ws-toolbar .ws-tool-active,
+.dr-floatbar .ws-tool-active {
+  background: var(--btn-tint-press);
+  color: var(--text-heading);
+  border-color: transparent;
+}
+.ws-tool-active:hover:not(:disabled),
+.ws-toolbar .ws-tool-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 20%, transparent);
+  color: var(--text-heading);
+  border-color: transparent;
+}
+
+/* Filled: the single prominent action. */
+.ws-tool-primary,
+.rb-save {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-radius: var(--r-pill);
+  padding-left: var(--sp-4);
+  padding-right: var(--sp-4);
+}
+.ws-tool-primary:hover:not(:disabled),
+.rb-save:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; }
+.ws-tool-primary:active:not(:disabled),
+.rb-save:active:not(:disabled) { background: var(--accent-active); transform: scale(0.97); }
+.rb-save:disabled { opacity: 0.4; }
+
+.ws-tool-danger:hover:not(:disabled),
+.ws-toolbar .ws-tool-danger:hover:not(:disabled) { border-color: transparent; }
+
+/* Pills and chips: same grammar, no outline. */
+.cmp-filter { border: 0; background: var(--btn-tint, color-mix(in srgb, var(--text-primary) 7%, transparent)); transition: background-color 140ms var(--ease-out), transform 140ms var(--ease-out); }
+.cmp-filter:active { transform: scale(0.97); }
+.cmp-filter.is-active { background: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-tool, .rb-save, .cmp-filter { transition: none; }
+  .ws-tool:active:not(:disabled), .rb-save:active:not(:disabled), .cmp-filter:active { transform: none; }
+}
+
+/* The document header: Back pinned near the left edge, the badge and title
+   centred on the page in a slot of fixed width. Neither moves when the title
+   is clicked into, because the field and the label are the same size. */
+.dr-header {
+  position: relative;
+  justify-content: flex-start;
+  min-height: 60px;
+}
+.dr-header .ws-back { position: relative; z-index: 1; flex: 0 0 auto; }
+.dr-header .dr-header-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(52ch, calc(100% - 260px));
+  justify-content: center;
+  margin: 0;
+}
+.dr-header .dr-title-stack { flex: 1 1 auto; align-items: stretch; }
+.dr-header .dr-title-button,
+.dr-header .dr-title-input {
+  width: 100%;
+  margin-left: 0;
+  text-align: center;
+  box-sizing: border-box;
+}
+.dr-header .dr-title-button { border: 1px solid transparent; }
+.dr-header .dr-save { text-align: center; padding-left: 0; }
+
+/* ── The ground behind each document ───────────────────────────────────────
+   One neutral ground for every format, in both themes: the page is the
+   colour on screen, the desk under it is not. */
+[data-theme='light'] .ws-editor-host.dr-host-docx,
+[data-theme='light'] .ws-editor-host.dr-host-pdf,
+[data-theme='light'] .ws-editor-host.dr-host-pptx,
+[data-theme='light'] .ws-editor-host.dr-host-xlsx { background: #3a3a3a; }
+[data-theme='dark'] .ws-editor-host.dr-host-docx,
+[data-theme='dark'] .ws-editor-host.dr-host-pdf,
+[data-theme='dark'] .ws-editor-host.dr-host-pptx,
+[data-theme='dark'] .ws-editor-host.dr-host-xlsx { background: #2a2a2d; }
+
+/* ── History tray ──────────────────────────────────────────────────────────
+   A tall, narrow, translucent tray on the right of the document, like the
+   chat composer's attachments tray, instead of a column that squeezes the
+   page. */
+.dr-history-tray {
+  position: absolute;
+  z-index: 40;
+  top: 12px;
+  right: 16px;
+  bottom: 16px;
+  width: 272px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
+  border-radius: var(--r-xl);
+  background: color-mix(in srgb, var(--bg-surface) 66%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.18);
+}
+.dr-history__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 10px 8px 14px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+}
+.dr-history__head span { flex: 1; }
+.dr-history__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 8px 10px;
+  list-style: none;
+  overflow-y: auto;
+}
+.dr-history__card {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.dr-history__card.is-current { background: color-mix(in srgb, var(--text-primary) 11%, transparent); }
+.dr-history__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.dr-history__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.dr-history__date { font-size: var(--fs-2xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.dr-history__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+.dr-history__icon:hover { background: color-mix(in srgb, var(--text-primary) 12%, transparent); color: var(--text-primary); }
+.dr-history__icon:active { transform: scale(0.9); transition-duration: 60ms; }
+.dr-history__empty { padding: 8px 14px; font-size: var(--fs-xs); color: var(--text-muted); }

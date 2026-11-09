@@ -48,17 +48,11 @@
   font-family: var(--font-display);
   font-size: var(--fs-2xl);
   font-weight: var(--fw-regular);
-  letter-spacing: var(--ls-tight);
+  letter-spacing: var(--ls-display);
   color: var(--text-heading);
 }
 .metrics-title > svg {
   color: var(--text-muted);
-}
-
-.metrics-subtitle {
-  margin-top: var(--sp-1);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
 }
 
 .metrics-header__actions {
@@ -66,55 +60,6 @@
   align-items: center;
   gap: var(--sp-2);
   flex-shrink: 0;
-}
-
-/* Live indicator. Replaces a bare checkbox labelled "Auto-refresh" — a pulsing
-   dot says the same thing and doubles as feedback that samples are arriving. */
-.metrics-live {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  height: 28px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
-  letter-spacing: var(--ls-normal);
-  cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out),
-    border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
-}
-.metrics-live:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-}
-.metrics-live.is-live {
-  border-color: var(--success-quiet);
-  color: var(--success-fg);
-}
-.metrics-live__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--r-pill);
-  background: var(--text-faint);
-  flex-shrink: 0;
-}
-.metrics-live.is-live .metrics-live__dot {
-  background: var(--success);
-  animation: metrics-pulse 2s var(--ease-in-out) infinite;
-}
-@keyframes metrics-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.4;
-    transform: scale(0.82);
-  }
 }
 
 .metrics-body {
@@ -147,9 +92,14 @@
   background: transparent;
 }
 
+/* The header sits in the same vertical rhythm as the gaps below it, so the
+   distance from the title to the first card matches the distance between
+   every pair of cards after it. */
 .metrics.is-embedded .metrics-header {
   padding: 0 0 var(--sp-3);
   border-bottom: none;
+  /* Only "take a sample now" remains, so the row is just that control. */
+  justify-content: flex-end;
 }
 
 .metrics.is-embedded .metrics-body {
@@ -158,11 +108,46 @@
   padding: 0;
 }
 
+/* FOUR columns, fixed, not auto-fit. The four headline tiles (CPU, Memory,
+   GPU, VRAM) are one set and belong on one line: auto-fit in the Settings
+   column resolved to three, which left VRAM alone on a second row looking
+   like an afterthought rather than the fourth member of a set. minmax(0, 1fr)
+   rather than plain 1fr is what actually lets them shrink, since a grid
+   track will not go below its content width without it. */
 .metrics.is-embedded .metrics-grid {
   max-width: none;
-  /* Narrower minimum than the standalone page: this grid now lives in the
-     Settings column, where 232px tiles would drop to a single column. */
-  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Two different gaps, deliberately. The COLUMN gap is tight, because the
+     four tiles are one set and a wide gutter would read as four separate
+     things. The ROW gap is not: it separates whole cards stacked down the
+     page (Inference, the tile row, Per-core load), and at the 8px
+     that a single shorthand gap was giving them they ran together into one.
+     A single value cannot serve both. */
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-4);
+}
+
+/* At a quarter of the column the tiles have to lose some bulk, or the number
+   inside them wraps. Padding comes in one step and the figure drops from
+   --fs-3xl to --fs-2xl; nothing else about them changes. */
+.metrics.is-embedded .metric-tile {
+  padding: var(--sp-3);
+  gap: var(--sp-2);
+}
+
+.metrics.is-embedded .metric-tile__value {
+  font-size: var(--fs-2xl);
+}
+
+.metrics.is-embedded .metric-tile__unit {
+  font-size: var(--fs-sm);
+}
+
+/* The GPU name is the longest string on the row and the one most likely to be
+   cut. min-width: 0 lets the ellipsis engage instead of the text forcing its
+   track wider than its share. */
+.metrics.is-embedded .metric-tile__detail {
+  min-width: 0;
 }
 
 /* ── Stat tile ──────────────────────────────────────────────────────────────
@@ -306,10 +291,15 @@
 }
 
 /* Key/value rows for hardware facts. */
+/* Four facts, so four columns (or two by two when narrow) — auto-fit at
+   160px gave three-and-an-orphan at common widths. */
 .metric-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--sp-2) var(--sp-5);
+}
+@media (max-width: 720px) {
+  .metric-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .metric-fact {
@@ -323,7 +313,7 @@
   font-size: var(--fs-2xs);
   letter-spacing: var(--ls-caps);
   text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .metric-fact__val {
@@ -335,38 +325,64 @@
   white-space: nowrap;
 }
 
-/* ── Per-core heatmap ─────────────────────────────────────────────────────
-   A grid of cells whose FILL OPACITY tracks load, on a single hue, rather than
-   the old three-colour scheme (blue → amber → red) which read as three
-   unrelated categories instead of one continuous scale. Colour is reserved for
-   crossing a threshold. */
-.core-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16px, 1fr));
-  gap: 3px;
+/* ── Per-core load ────────────────────────────────────────────────────────
+   One 14px square per core, in a single centred row at the bottom of the
+   screen. The square's SHADE is the reading (opacity of the ink colour, from
+   a faint outline at idle to solid at 100%), so twelve cores read as one calm
+   strip rather than twelve gauges. Opacity is compositor-only, so a sample
+   every few seconds costs no layout. Colour appears only past a threshold. */
+.metrics-body {
+  display: flex;
+  flex-direction: column;
+}
+.metrics.is-embedded {
+  /* Tall enough that the squares can sit at the bottom of the window. */
+  min-height: calc(100vh - var(--window-band-h) - 190px);
+}
+.metrics.is-embedded .metrics-body {
+  flex: 1;
 }
 
-.core-cell {
+.core-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-8);
+}
+
+.core-squares {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.core-square {
   position: relative;
-  height: 26px;
-  border-radius: var(--r-xs);
-  background: var(--bg-inset);
-  overflow: hidden;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
-
-.core-cell__fill {
+.core-square::after {
+  content: '';
   position: absolute;
-  inset: auto 0 0 0;
-  height: calc(var(--load, 0) * 1%);
+  inset: 0;
+  border-radius: inherit;
   background: var(--accent);
-  transition: height var(--dur-3) var(--ease-out),
+  opacity: clamp(0.06, calc(var(--load, 0) / 100), 1);
+  transition: opacity var(--dur-3) var(--ease-out),
     background-color var(--dur-2) var(--ease-out);
 }
-.core-cell.is-hot .core-cell__fill {
-  background: var(--warning);
-}
-.core-cell.is-max .core-cell__fill {
-  background: var(--danger);
+.core-square.is-hot::after { background: var(--warning); }
+.core-square.is-max::after { background: var(--danger); }
+
+.core-section__caption {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Empty / loading ────────────────────────────────────────────────────── */

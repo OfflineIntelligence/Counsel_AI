@@ -1,0 +1,53 @@
+/* ── The file icon ──────────────────────────────────────────────────────────
+   A white page with a folded corner and a soft shadow, the format's real
+   structure drawn on it, and a coloured type badge (FileBrandIcon.tsx).
+   Flat, like the company logos: no shadow, no gradient. The page is white
+   in both themes; dark mode only strengthens the edge. */
+
+.file-glyph {
+  --fg-page: #ffffff;
+  --fg-page-edge: rgba(0, 0, 0, 0.16);
+  --fg-page-ink: #1d1d1f;
+  --fg-gutter: #8e8e93;
+  --fg-fold-a: #f4f4f6;
+  --fg-fold-b: #d6d6dc;
+  --fg-shadow: rgba(0, 0, 0, 0.1);
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+[data-theme='dark'] .file-glyph {
+  --fg-page: #f5f5f7;
+  --fg-page-edge: rgba(0, 0, 0, 0.55);
+  --fg-fold-a: #e4e4e8;
+  --fg-fold-b: #c2c2c8;
+  --fg-shadow: rgba(0, 0, 0, 0.45);
+}
+
+.file-glyph__page { fill: var(--fg-page); }
+/* The outline, drawn last so it runs over the band too: one device pixel at
+   every size, like the logos' crisp edges. */
+.file-glyph__edge {
+  fill: none;
+  stroke: var(--fg-page-edge);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: geometricPrecision;
+}
+.file-glyph__fold {
+  stroke: var(--fg-page-edge);
+  stroke-width: 0.5;
+  stroke-linejoin: round;
+}
+.file-glyph__mark {
+  fill: #ffffff;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.file-glyph__hash {
+  font-family: var(--font-sans);
+  font-weight: 700;
+}

@@ -20,6 +20,7 @@ import { getApiBaseSync } from '../../api/backendUrl'
 import { createFromVault, formatBytes, type DraftSummary } from '../../api/drafts'
 import { fetchWithNetworkRetry } from '../../api/fetchWithTimeout'
 import { extensionOf, isEditableFormat, MAX_EDITABLE_BYTES } from '../../editableFormats'
+import { useErrorNotification } from '../../contexts/NotificationContext'
 
 /** The subset of `DocumentRecord` this picker needs. */
 interface VaultDocument {
@@ -39,8 +40,16 @@ export default function VaultPicker({ onOpened, onCancel }: Props) {
   const [documents, setDocuments] = useState<VaultDocument[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
+  useErrorNotification(error, "Couldn't load Vault", () => setError(null))
   const [busyId, setBusyId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Escape cancels, as the backdrop click does: the keyboard way out.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
 
   useEffect(() => {
     let cancelled = false
@@ -94,6 +103,7 @@ export default function VaultPicker({ onOpened, onCancel }: Props) {
       <div
         className="ws-modal"
         role="dialog"
+        aria-modal="true"
         aria-label="Open a document from the Vault"
         onClick={e => e.stopPropagation()}
       >
@@ -117,7 +127,6 @@ export default function VaultPicker({ onOpened, onCancel }: Props) {
           onChange={e => setQuery(e.target.value)}
         />
 
-        {error && <div className="ws-panel-error">{error}</div>}
 
         <ul className="ws-vault-list">
           {visible.map(document => (
@@ -147,7 +156,7 @@ export default function VaultPicker({ onOpened, onCancel }: Props) {
         {!loading && visible.length === 0 && (
           <p className="ws-panel-empty">
             {documents.length === 0
-              ? 'The Vault is empty.'
+              ? 'No files or folders inside Vault'
               : query
                 ? 'Nothing in the Vault matches that.'
                 : 'Nothing in the Vault can be edited yet. Word, Excel, PowerPoint, PDF and text files can.'}

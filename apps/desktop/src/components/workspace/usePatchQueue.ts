@@ -20,6 +20,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   applyPatches,
+  getUndoState,
+  stepHistory as stepHistoryApi,
+  MERGEABLE,
   patchKey,
   StaleVersionError,
   type DraftPatch,
@@ -81,7 +84,18 @@ export function collapse(patches: DraftPatch[]): DraftPatch[] {
     }
     const existing = seenAt.get(key)
     if (existing !== undefined) {
-      out[existing] = patch
+      const prior = out[existing]
+      if (MERGEABLE.has(patch.op)) {
+        // Bold then italic on the same run is both, not just italic. Indent
+        // steps accumulate rather than the last one winning.
+        const merged = { ...prior, ...patch } as DraftPatch & { indent?: number }
+        const priorIndent = (prior as { indent?: number }).indent
+        const nextIndent = (patch as { indent?: number }).indent
+        if (priorIndent !== undefined && nextIndent !== undefined) merged.indent = priorIndent + nextIndent
+        out[existing] = merged
+      } else {
+        out[existing] = patch
+      }
     } else {
       seenAt.set(key, out.length)
       out.push(patch)
@@ -92,6 +106,22 @@ export function collapse(patches: DraftPatch[]): DraftPatch[] {
 
 export function usePatchQueue({ draftId, model, onModel }: Options) {
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
+  /** Steps the server can undo and redo for this draft. */
+  const [depth, setDepth] = useState({ undo: 0, redo: 0 })
+
+  // The stacks live on disk, so a reopened draft can still undo. Re-read when
+  // the version moves for a reason this hook did not see (a restore).
+  const modelVersion = model?.version
+  useEffect(() => {
+    if (!draftId) return
+    let live = true
+    getUndoState(draftId)
+      .then(d => live && setDepth({ undo: d.undo_depth, redo: d.redo_depth }))
+      .catch(() => live && setDepth({ undo: 0, redo: 0 }))
+    return () => {
+      live = false
+    }
+  }, [draftId, modelVersion])
 
   const queue = useRef<DraftPatch[]>([])
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -139,6 +169,7 @@ export function usePatchQueue({ draftId, model, onModel }: Options) {
         })
         version.current = result.version
         onModel(result.model)
+        if (result.undo_depth !== undefined) setDepth({ undo: result.undo_depth, redo: result.redo_depth ?? 0 })
         setStatus({ kind: 'saved', at: Date.now() })
       } catch (error) {
         if (error instanceof StaleVersionError) {
@@ -195,6 +226,70 @@ export function usePatchQueue({ draftId, model, onModel }: Options) {
       await send(true, label)
     },
     [send],
+  )
+
+  /**
+   * Send edits that move addresses — Enter, inserting a table, adding a slide —
+   * and resolve once the refreshed model has been adopted.
+   *
+   * Pending typing is sent first, on its own, because it was addressed against
+   * the document as it is NOW; letting it ride in the same batch as a split
+   * would land it on whatever paragraph the split moved into that slot. Unlike
+   * `flush` this does not cut a named version: pressing Enter is not a save.
+   */
+  const commit = useCallback(
+    async (...patches: DraftPatch[]) => {
+      if (timer.current) {
+        clearTimeout(timer.current)
+        timer.current = null
+      }
+      const settle = async () => {
+        for (let guard = 0; guard < 400; guard++) {
+          if (!inFlight.current && queue.current.length === 0) return
+          if (inFlight.current) {
+            await new Promise(r => setTimeout(r, 25))
+            continue
+          }
+          await send(false)
+          // A failed send puts its batch back; retrying in a tight loop would
+          // only repeat the error. The status line already reports it.
+          if (!inFlight.current && queue.current.length > 0) return
+        }
+      }
+      await settle()
+      if (patches.length === 0) return
+      queue.current.push(...patches)
+      persist()
+      await settle()
+    },
+    [persist, send],
+  )
+
+  /**
+   * Undo or redo one saved edit.
+   *
+   * Pending typing is saved first, so Undo takes back what the user just typed
+   * rather than the edit before it.
+   */
+  const stepHistory = useCallback(
+    async (direction: 'undo' | 'redo') => {
+      await commit()
+      if (inFlight.current) return
+      inFlight.current = true
+      setStatus({ kind: 'saving' })
+      try {
+        const result = await stepHistoryApi(draftId, direction, version.current)
+        version.current = result.version
+        onModel(result.model)
+        setDepth({ undo: result.undo_depth ?? 0, redo: result.redo_depth ?? 0 })
+        setStatus({ kind: 'saved', at: Date.now() })
+      } catch (error) {
+        setStatus({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      } finally {
+        inFlight.current = false
+      }
+    },
+    [commit, draftId, onModel],
   )
 
   /** Whether anything is waiting to be sent — for the unsaved dot and close guard. */
@@ -267,5 +362,20 @@ export function usePatchQueue({ draftId, model, onModel }: Options) {
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [])
 
-  return { status, push, flush, hasPending, discard }
+  const undo = useCallback(() => stepHistory('undo'), [stepHistory])
+  const redo = useCallback(() => stepHistory('redo'), [stepHistory])
+
+  return {
+    status,
+    push,
+    flush,
+    commit,
+    hasPending,
+    discard,
+    undo,
+    redo,
+    // Unsent typing is undoable too: Undo saves it and then takes it back.
+    canUndo: depth.undo > 0 || status.kind === 'pending',
+    canRedo: depth.redo > 0,
+  }
 }

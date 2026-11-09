@@ -1,172 +1,361 @@
 /* ───────────────────────────────────────────────────────────────────────────
-   SETTINGS — grouped-list layout
+   SETTINGS — sidebar and content, in the macOS System Settings register
    ───────────────────────────────────────────────────────────────────────────
-   Modelled on the macOS/iOS System Settings pattern, because that pattern
-   solves the specific problem this page had: twelve unrelated controls in one
-   flat column, each styled inline, with no shared rhythm and every row a
-   different height.
-
-   The rules that produce the look, and why each one matters:
-
-   1. ONE COLUMN, ONE WIDTH. Everything sits in a single centred measure. The
-      eye tracks a single left edge from the top of the page to the bottom;
-      nothing is centred against a different axis.
-   2. GROUPS, NOT HEADINGS. Related rows share a bordered card and are divided
-      by hairlines. The card — not a bold heading — is what says "these belong
-      together", so the section label above it can be quiet.
-   3. ONE ROW SHAPE. Every row is label + description on the left, exactly one
-      control on the right, vertically centred, with the same minimum height
-      and the same horizontal padding. Symmetry here is the whole effect: when
-      every control's right edge aligns, the page reads as designed rather
-      than assembled.
-   4. THE CONTROL COLUMN NEVER MOVES. Controls are right-aligned and share a
-      minimum width, so a switch, a menu and a button all terminate on the
-      same line.
-   5. TYPE DOES THE HIERARCHY, NOT WEIGHT. Row titles sit at body size in
-      medium; descriptions drop one step and go muted. No bold shouting.
-
-   Everything below is token-driven, so both themes and the type scale stay
-   authoritative. */
-
-/* ── Page shell ─────────────────────────────────────────────────────────── */
+   1. A FIXED FRAME. Title and section list sit in a tinted column that never
+      scrolls; only the content column does.
+   2. ONE READING COLUMN. Content is centred at 620px — a comfortable line,
+      not a table stretched across the window.
+   3. FLAT LISTS. A quiet caption over rows divided by hairlines. No cards:
+      the type and the spacing carry the grouping.
+   4. ONE ROW SHAPE. Title and description on the left, one control on the
+      right. Rows that go somewhere are whole buttons with a chevron.
+   5. MONOCHROME. Ink on paper; shades of ink instead of colours, so both
+      themes stay authoritative through the tokens.
+   ─────────────────────────────────────────────────────────────────────────── */
 .settings-page {
+  flex: 1;
   display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100%;
+  min-height: 0;
+  height: 100%;
   background: var(--bg-canvas);
 }
 
-.settings-page__body {
+.settings-shell {
   flex: 1;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  min-height: 0;
+  width: 100%;
+}
+
+/* ── Section list ───────────────────────────────────────────────────────── */
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-5) var(--sp-3) var(--sp-6);
+  min-height: 0;
   overflow-y: auto;
-  padding: var(--sp-6) var(--sp-6) var(--sp-16);
+  background: var(--bg-surface-alt);
+  border-right: 1px solid var(--border-subtle);
 }
 
-/* The single measure. 760px keeps a two-line description comfortable while
-   still letting the metrics grid show three tiles across. */
-.settings-col {
-  max-width: 760px;
-  margin: 0 auto;
+.settings-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  height: 28px;
+  margin: 0 0 var(--sp-5);
+  padding: 0 var(--sp-2) 0 6px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.settings-back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-back:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.settings-nav__title {
+  margin: 0 0 var(--sp-3) var(--sp-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+
+.settings-nav__list {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-8);
+  gap: 1px;
 }
 
-/* ── Section ────────────────────────────────────────────────────────────── */
-.settings-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-/* Quiet, uppercase, letterspaced — the label defers to the card beneath it. */
-.settings-block__label {
+.settings-nav__item {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding-inline: var(--sp-1);
-  font-size: var(--fs-2xs);
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+/* The rounded-square glyph Apple puts beside each pane name. Monochrome: an
+   ink tile with a paper glyph, inverted for the selected pane's row. */
+.settings-nav__glyph {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-md);
+  background: var(--solid);
+  color: var(--text-on-solid);
+}
+
+.settings-nav__item:hover {
+  background: var(--bg-hover);
+}
+
+.settings-nav__item.is-on {
+  background: var(--bg-active);
+  font-weight: var(--fw-medium);
+}
+
+.settings-nav__item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* ── Content column ─────────────────────────────────────────────────────── */
+.settings-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-10) var(--sp-8) var(--sp-12);
+}
+
+.settings-inner {
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.settings-head {
+  margin-bottom: var(--sp-8);
+}
+
+.settings-head__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-tighter);
+  line-height: var(--lh-tight);
+  color: var(--text-heading);
+}
+
+.settings-head__blurb {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+
+.settings-section {
+  margin-bottom: var(--sp-10);
+}
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+
+/* The quiet caption over a list, as in System Settings. */
+.settings-section__title {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--text-faint);
+  letter-spacing: var(--ls-normal);
+  color: var(--text-muted);
+}
+* + .settings-section__title {
+  margin-top: var(--sp-8);
 }
 
-.settings-block__label > svg {
-  opacity: 0.75;
-}
-
-/* ── Group card ─────────────────────────────────────────────────────────── */
-.settings-group {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xl);
-  overflow: hidden;
-}
-
-/* Hairlines BETWEEN rows only — never a trailing line against the card edge,
-   which is the detail that separates a designed group from a stack of divs. */
-.settings-row + .settings-row {
-  border-top: 1px solid var(--border-subtle);
-}
-
-/* ── Row ────────────────────────────────────────────────────────────────── */
+/* ── Rows ───────────────────────────────────────────────────────────────── */
 .settings-row {
   display: flex;
   align-items: center;
-  gap: var(--sp-5);
-  min-height: 56px;
-  padding: var(--sp-3) var(--sp-5);
+  justify-content: space-between;
+  gap: var(--sp-6);
+  width: 100%;
+  min-height: 52px;
+  padding: var(--sp-3) 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+}
+.settings-section > .settings-row:last-child,
+.settings-section > .settings-faq:last-child {
+  border-bottom: 1px solid var(--border);
 }
 
-/* Rows whose control is a full-width form (the feedback composer) stack
-   instead, but keep the same padding so the left edge never shifts. */
-.settings-row--stack {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-4);
+/* A row that navigates: the whole row is the target. The hover tint bleeds
+   past the text column so it reads as a list cell, not a highlighted line. */
+.settings-row--nav {
+  position: relative;
+  cursor: pointer;
+}
+.settings-row--nav::before {
+  content: '';
+  position: absolute;
+  inset: 0 calc(var(--sp-3) * -1);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition: background-color var(--dur-1) var(--ease-out);
+  z-index: 0;
+}
+.settings-row--nav > * {
+  position: relative;
+  z-index: 1;
+}
+.settings-row--nav:hover::before {
+  background: var(--bg-hover);
+}
+.settings-row--nav:active::before {
+  background: var(--bg-active);
+}
+.settings-row--nav:focus-visible {
+  outline: none;
+}
+.settings-row--nav:focus-visible::before {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+.settings-row__chevron {
+  color: var(--text-faint);
+  transition: transform var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.settings-row--nav:hover .settings-row__chevron {
+  color: var(--text-secondary);
+  transform: translateX(2px);
+}
+
+/* A row that is just one action, like Sign out. */
+.settings-row--action {
+  justify-content: flex-start;
+  min-height: 48px;
 }
 
 .settings-row__text {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-row__text--grow {
+  flex: 1;
 }
 
 .settings-row__title {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
-  line-height: var(--lh-snug);
   color: var(--text-primary);
 }
 
 .settings-row__desc {
-  font-size: var(--fs-sm);
-  line-height: var(--lh-normal);
-  color: var(--text-muted);
-}
-
-/* The control column. `justify-content: flex-end` plus a shared minimum is
-   what keeps a switch, a menu and a button terminating on one line. */
-.settings-row__control {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  min-width: 132px;
-}
-
-/* Status line beneath a description — usage figures, eviction notes, errors. */
-.settings-note {
-  margin-top: var(--sp-1);
+  display: inline;
+  margin: 0;
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
 }
 
+.settings-row__control {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.settings-row__icon {
+  color: var(--text-secondary);
+}
+
+.settings-value {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Explanatory text under a list. */
+.settings-footnote {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+.settings-footnote--top {
+  margin: 0;
+}
+
+/* Status line beneath a description — eviction notes, errors. */
+.settings-note {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
 .settings-note--danger {
   color: var(--danger-fg);
+  font-weight: var(--fw-medium);
+}
+
+/* A dot before a status sentence: hollow when off, filled when on. */
+.settings-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  vertical-align: 1px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid var(--text-muted);
+}
+.settings-status.is-on {
+  border-color: var(--text-primary);
+  background: var(--text-primary);
+}
+
+.settings-badge {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--solid);
+  color: var(--text-on-solid);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+}
+
+/* The System metrics draw their own cards; no row divider above them. */
+.settings-section--flush {
+  margin-top: calc(var(--sp-4) * -1);
 }
 
 /* ── Controls ───────────────────────────────────────────────────────────── */
-/* One button shape for the whole page, so no row invents its own. */
 .settings-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--sp-2);
-  height: 32px;
+  height: 30px;
   padding: 0 var(--sp-4);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+  box-shadow: var(--shadow-xs);
   color: var(--text-primary);
   font-family: inherit;
   font-size: var(--fs-sm);
@@ -174,31 +363,30 @@
   white-space: nowrap;
   cursor: pointer;
   transition: background-color var(--dur-1) var(--ease-out),
-    border-color var(--dur-1) var(--ease-out);
+    border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
-
 .settings-btn:hover {
   background: var(--bg-hover);
   border-color: var(--border-strong);
 }
-
+.settings-btn:active {
+  transform: scale(0.98);
+}
 .settings-btn:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
-
 .settings-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
 }
 
-/* Filled variant for the one primary action per group. */
 .settings-btn--primary {
   background: var(--solid);
   border-color: var(--solid);
   color: var(--text-on-solid);
 }
-
 .settings-btn--primary:hover {
   background: var(--solid-hover);
   border-color: var(--solid-hover);
@@ -208,211 +396,824 @@
   color: var(--danger-fg);
   border-color: var(--danger-border);
 }
-
 .settings-btn--danger:hover {
   background: var(--danger-quiet);
   border-color: var(--danger);
 }
 
-/* Native menu, restyled to the same 32px shell as the buttons. */
+/* A text button, for actions that should not shout. */
+.settings-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.settings-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.settings-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+.settings-link--danger {
+  color: var(--danger-fg);
+}
+
 .settings-select {
-  height: 32px;
-  padding: 0 var(--sp-3);
-  background: var(--bg-raised);
+  height: 30px;
+  padding: 0 var(--sp-8) 0 var(--sp-3);
+  appearance: none;
+  background: var(--bg-raised)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='none' stroke='%238f8f8f' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4l2.5-2.5L7.5 4M2.5 6l2.5 2.5L7.5 6'/%3E%3C/svg%3E")
+    no-repeat right 10px center;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+  box-shadow: var(--shadow-xs);
   color: var(--text-primary);
   font-family: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
 }
-
+.settings-select:hover {
+  border-color: var(--border-strong);
+}
 .settings-select:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
-
-/* Switch. Sized off the row height so it optically matches a 32px button. */
-.settings-switch {
-  position: relative;
-  width: 44px;
-  height: 26px;
-  flex-shrink: 0;
-  padding: 0;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  transition: background-color var(--dur-2) var(--ease-out),
-    border-color var(--dur-2) var(--ease-out);
+.settings-select:disabled {
+  opacity: 0.55;
+  cursor: progress;
 }
 
-.settings-switch[aria-checked='true'] {
-  background: var(--solid);
-  border-color: var(--solid);
+/* ── General: appearance picker ─────────────────────────────────────────── */
+/* Three miniature windows, as in macOS Appearance: the choice is shown, not
+   named. Each preview paints its own palette so it reads correctly no matter
+   which theme is active. */
+.settings-themes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
 }
 
-.settings-switch:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-.settings-switch__thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-pill);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--dur-2) var(--ease-out);
-}
-
-.settings-switch[aria-checked='true'] .settings-switch__thumb {
-  transform: translateX(18px);
-  background: var(--text-on-solid);
-}
-
-/* ── Status pill (API key configured / not set) ─────────────────────────── */
-.settings-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: 1px var(--sp-2);
-  border-radius: var(--r-pill);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-normal);
-  background: var(--bg-inset);
-  color: var(--text-muted);
-}
-
-.settings-pill__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--r-pill);
-  background: currentColor;
-}
-
-.settings-pill--ok {
-  background: var(--success-quiet);
-  color: var(--success-fg);
-}
-
-.settings-pill--off {
-  background: var(--warning-quiet);
-  color: var(--warning-fg);
-}
-
-/* ── Feedback form ──────────────────────────────────────────────────────── */
-.settings-field {
+.settings-theme {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--sp-2);
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
 }
 
-.settings-field__label {
+.settings-theme__preview {
+  --p-bg: #f2f2f2;
+  --p-side: #1a1a1a;
+  --p-win: #ffffff;
+  --p-ink: #d4d4d4;
+  --p-bubble: #e9e9e9;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  padding: 12% 10% 0;
+  border-radius: var(--r-lg);
+  background: var(--p-bg);
+  box-shadow: 0 0 0 1px var(--border);
+  overflow: hidden;
+  transition: box-shadow var(--dur-1) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.settings-theme__preview--dark {
+  --p-bg: #2a2a2a;
+  --p-win: #141414;
+  --p-ink: #3a3a3a;
+  --p-bubble: #262626;
+  --p-side: #000000;
+}
+/* Automatic is split down the middle: light on the left, dark on the right. */
+.settings-theme__preview--system {
+  background: linear-gradient(90deg, #f2f2f2 50%, #2a2a2a 50%);
+}
+.settings-theme__preview--system .settings-theme__win {
+  background: linear-gradient(90deg, #ffffff 50%, #141414 50%);
+}
+
+.settings-theme__win {
+  display: flex;
+  height: 100%;
+  border-radius: 6px 6px 0 0;
+  background: var(--p-win);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.settings-theme__side {
+  width: 26%;
+  background: var(--p-side);
+}
+.settings-theme__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12% 10%;
+}
+.settings-theme__line {
+  height: 5px;
+  width: 80%;
+  border-radius: var(--r-sm);
+  background: var(--p-ink);
+}
+.settings-theme__line--short {
+  width: 50%;
+}
+.settings-theme__bubble {
+  align-self: flex-end;
+  width: 45%;
+  height: 14px;
+  margin-top: auto;
+  border-radius: var(--r-sm);
+  background: var(--p-bubble);
+  box-shadow: inset 0 0 0 1px var(--p-ink);
+}
+.settings-theme__preview--system .settings-theme__line,
+.settings-theme__preview--system .settings-theme__bubble {
+  background: #8a8a8a;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.settings-theme__label {
   font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
   color: var(--text-secondary);
 }
 
-.settings-input,
-.settings-textarea {
-  width: 100%;
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--bg-field);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+.settings-theme:hover .settings-theme__preview {
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.settings-theme[aria-checked='true'] .settings-theme__preview {
+  box-shadow: 0 0 0 2px var(--canvas, var(--bg-canvas)), 0 0 0 4px var(--text-primary);
+}
+.settings-theme[aria-checked='true'] .settings-theme__label {
   color: var(--text-primary);
-  font-family: inherit;
-  font-size: var(--fs-md);
-  line-height: var(--lh-normal);
-  transition: border-color var(--dur-1) var(--ease-out),
-    background-color var(--dur-1) var(--ease-out);
+  font-weight: var(--fw-medium);
 }
-
-.settings-input:focus,
-.settings-textarea:focus {
+.settings-theme:active .settings-theme__preview {
+  transform: scale(0.98);
+}
+.settings-theme:focus-visible {
   outline: none;
-  background: var(--bg-field-focus);
-  border-color: var(--border-strong);
+}
+.settings-theme:focus-visible .settings-theme__preview {
+  box-shadow: 0 0 0 2px var(--bg-canvas), 0 0 0 4px var(--ring);
 }
 
-.settings-textarea {
-  min-height: 96px;
-  resize: vertical;
+/* ── Account ────────────────────────────────────────────────────────────── */
+.settings-profile {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-5) 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.settings-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-pill);
+  background: var(--solid);
+  color: var(--text-on-solid);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+.settings-avatar.is-empty {
+  background: var(--bg-inset);
+  color: var(--text-muted);
+}
+.settings-profile__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-profile__name {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-profile__sub {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.settings-input--invalid,
-.settings-textarea--invalid {
-  border-color: var(--danger);
-}
-
-/* Success state after sending feedback. */
-.settings-sent {
+/* ── Storage ────────────────────────────────────────────────────────────── */
+/* The usage summary, as in macOS Storage: one figure, one stacked bar, a
+   legend. Categories are shades of ink rather than colours. */
+.settings-usage {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0 var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+.settings-usage__head {
+  display: flex;
+  align-items: baseline;
   gap: var(--sp-2);
-  padding: var(--sp-6) 0;
-  text-align: center;
+}
+.settings-usage__figure {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
+}
+.settings-usage__of {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.settings-usage__head .settings-badge {
+  margin-left: auto;
+  align-self: center;
 }
 
-.settings-sent__icon {
+.settings-stack {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.settings-stack__seg {
+  min-width: 3px;
+  height: 100%;
+  transition: width var(--dur-3, 360ms) var(--ease-out);
+}
+
+.settings-shade-0 { background: var(--text-heading); }
+.settings-shade-1 { background: color-mix(in srgb, var(--text-heading) 80%, transparent); }
+.settings-shade-2 { background: color-mix(in srgb, var(--text-heading) 64%, transparent); }
+.settings-shade-3 { background: color-mix(in srgb, var(--text-heading) 50%, transparent); }
+.settings-shade-4 { background: color-mix(in srgb, var(--text-heading) 38%, transparent); }
+.settings-shade-5 { background: color-mix(in srgb, var(--text-heading) 28%, transparent); }
+.settings-shade-6 { background: color-mix(in srgb, var(--text-heading) 20%, transparent); }
+.settings-shade-7 { background: color-mix(in srgb, var(--text-heading) 13%, transparent); }
+
+.settings-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-legend li {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--r-pill);
-  background: var(--success-quiet);
-  color: var(--success-fg);
+  gap: 6px;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  min-width: 0;
 }
-
-.settings-sent__title {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
+.settings-legend__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+}
+.settings-legend__label {
   color: var(--text-primary);
 }
-
-.settings-sent__hint {
-  font-size: var(--fs-sm);
+.settings-legend__value {
+  margin-left: auto;
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-bar {
+  height: 6px;
+  margin: var(--sp-2) 0 2px;
+  border-radius: var(--r-pill);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.settings-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text-heading);
 }
 
 /* ── About ──────────────────────────────────────────────────────────────── */
 .settings-about {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: var(--sp-4) var(--sp-5);
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-6) 0 var(--sp-10);
+  text-align: center;
+}
+.settings-about__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: var(--sp-3);
+  border-radius: var(--r-xl);
+  background: linear-gradient(160deg, #2b2b2b, #050505);
+  color: #ffffff;
+  box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.settings-about__name {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-tighter);
+  color: var(--text-heading);
+}
+.settings-about__version {
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.settings-about__tag {
+  max-width: 36ch;
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.settings-legal {
+  margin: var(--sp-8) 0 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-faint);
+  text-align: center;
 }
 
-.settings-about__name {
+/* ── Forms (Help › Send feedback) ───────────────────────────────────────── */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.settings-form__pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+.settings-form__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-field__label {
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   color: var(--text-primary);
 }
 
+.settings-input,
+.settings-textarea {
+  width: 100%;
+  padding: 7px var(--sp-3);
+  background: var(--bg-field);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  transition: border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+}
+.settings-input::placeholder,
+.settings-textarea::placeholder {
+  color: var(--text-faint);
+}
+.settings-input:focus,
+.settings-textarea:focus {
+  outline: none;
+  background: var(--bg-surface);
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--accent-quiet);
+}
+.settings-textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+.settings-input--invalid,
+.settings-textarea--invalid {
+  border-color: var(--danger);
+}
+
+.settings-sent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8) 0;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+.settings-sent__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-pill);
+  background: var(--solid);
+  color: var(--text-on-solid);
+  animation: settings-pop var(--dur-anim) var(--spring-bouncy, var(--ease-out)) both;
+}
+.settings-sent__title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+.settings-sent__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+@keyframes settings-pop {
+  from { transform: scale(0.6); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* ── Help & Support ─────────────────────────────────────────────────────── */
+/* One column, the same lists as Settings. Reached from Settings and as its
+   own page from the sidebar. */
+.settings-shell--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.help-columns {
+  display: flex;
+  flex-direction: column;
+}
+.help-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.help-col + .help-col {
+  margin-top: var(--sp-10);
+}
+.help-col .settings-section:last-child {
+  margin-bottom: 0;
+}
+.help-page .settings-back {
+  margin-bottom: var(--sp-6);
+  margin-left: -6px;
+}
+
+/* A question is a row that opens. */
+.settings-faq {
+  border-top: 1px solid var(--border);
+}
+.settings-faq__q {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 48px;
+  padding: var(--sp-3) 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+}
+.settings-faq__q::-webkit-details-marker { display: none; }
+.settings-faq__q:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* Drawn chevron, so it matches the rest and rotates when the answer opens. */
+.settings-faq__q::after {
+  content: '';
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.settings-faq[open] .settings-faq__q::after {
+  transform: rotate(45deg);
+}
+.settings-faq__a {
+  margin: 0;
+  padding: 0 var(--sp-6) var(--sp-4) 0;
+  max-width: 62ch;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  animation: settings-reveal var(--dur-2) var(--ease-out);
+}
+@keyframes settings-reveal {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+.settings-kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+/* ── System (embedded metrics) ──────────────────────────────────────────── */
+/* Inside Settings the metric cards drop their lift so they sit flat with the
+   rest of the page; the standalone System view is unchanged. */
+.settings-page .metrics.is-embedded {
+  min-height: 0;
+}
+.settings-page .metrics.is-embedded .metric-card,
+.settings-page .metrics.is-embedded .metric-tile {
+  box-shadow: none;
+  border-color: var(--border);
+  border-radius: var(--r-lg);
+}
+.settings-page .metrics.is-embedded .core-section {
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-4);
+}
+
 /* ── Narrow windows ─────────────────────────────────────────────────────── */
-@media (max-width: 620px) {
-  .settings-page__body {
-    padding: var(--sp-5) var(--sp-4) var(--sp-12);
+@media (max-width: 820px) {
+  .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
-
-  /* Below this width the control no longer fits beside the text, so the row
-     stacks — deliberately keeping the same padding and left edge. */
-  .settings-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--sp-3);
+  .settings-nav {
+    padding: var(--sp-4) var(--sp-4) var(--sp-3);
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    overflow: visible;
   }
-
-  .settings-row__control {
-    justify-content: flex-start;
-    min-width: 0;
+  .settings-nav__title {
+    margin-bottom: var(--sp-2);
+  }
+  .settings-nav__list {
+    flex-direction: row;
+    gap: var(--sp-1);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .settings-nav__item {
+    width: auto;
+  }
+  .settings-content {
+    padding: var(--sp-6) var(--sp-5) var(--sp-10);
+  }
+  .settings-shell--single .settings-content {
+    padding-top: var(--sp-6);
   }
 }
+
+@media (max-width: 560px) {
+  .settings-row {
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+  }
+  .settings-form__pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-themes {
+    gap: var(--sp-2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-sent__icon,
+  .settings-faq__a {
+    animation: none;
+  }
+}
+
+/* ── Minimal pass ─────────────────────────────────────────────────────────
+   No dividing lines, no tiles on the index: the selected tab reads by ink
+   weight, the icons sit bare. Same rules in both themes (tokens only). */
+.settings-nav { border-right: none; }
+.settings-row,
+.settings-themes,
+.settings-profile,
+.settings-usage { border-top: none; }
+.settings-profile,
+.settings-section > .settings-faq:last-child { border-bottom: none; }
+
+.settings-nav__item,
+.settings-nav__item:hover,
+.settings-nav__item.is-on {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.settings-nav__item:hover,
+.settings-nav__item.is-on { color: var(--text-heading); }
+.settings-nav__item.is-on { font-weight: var(--fw-medium); }
+
+.settings-nav__glyph {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+}
+
+/* ── Top tabs, one scrolling page ─────────────────────────────────────────
+   The left index is gone: back + title + the sections as tabs sit in a bar
+   across the top; every section is on the page below, and a tab scrolls to
+   its section. The selected tab is filled with the button ink (black in
+   light, white in dark), the rest are plain text. */
+.settings-shell {
+  display: flex;
+  flex-direction: column;
+  grid-template-columns: none;
+}
+.settings-top {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-8) var(--sp-3);
+  box-sizing: content-box;
+}
+.settings-top__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.settings-top .settings-nav__title { margin: 0; }
+.settings-top .settings-back { margin-left: auto; order: 2; }
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.settings-tab {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.settings-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-tab.is-on,
+.settings-tab.is-on:hover {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+}
+.settings-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.settings-content {
+  flex: 1;
+  padding-top: var(--sp-4);
+  scroll-behavior: smooth;
+}
+/* Space between sections; the last one can scroll to the top. */
+.settings-block + .settings-block { margin-top: var(--sp-12); }
+.settings-inner { padding-bottom: 40vh; }
+
+/* ── Centred, minimal ─────────────────────────────────────────────────────
+   Everything on one centre line, like the Workspace and Models pages: the
+   title (same display type as those pages), the tabs under it, then the
+   sections in a 560px column. Section headings are quiet labels; rows are
+   one line of text with their control on the right. No icons, no lines. */
+.settings-top {
+  align-items: center;
+  max-width: 560px;
+  padding-top: var(--sp-10, 40px);
+}
+.settings-top__row {
+  position: relative;
+  justify-content: center;
+  width: 100%;
+}
+.settings-top .settings-back {
+  position: absolute;
+  left: 0;
+  margin: 0;
+}
+.settings-title { text-align: center; }
+.settings-tabs { justify-content: center; }
+
+.settings-inner { max-width: 560px; }
+.settings-head { margin-bottom: var(--sp-4); }
+.settings-head__title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+}
+.settings-block + .settings-block { margin-top: var(--sp-10, 40px); }
+.settings-section__title { margin-bottom: var(--sp-1); }
+.settings-row { padding: var(--sp-3) 0; }
+.settings-row__desc { font-size: var(--fs-xs); }
+.settings-row__icon,
+.settings-row__chevron { color: var(--text-muted); }
+
+.settings-about { padding: var(--sp-4) 0; text-align: center; }
+.settings-legal { justify-content: center; text-align: center; color: var(--text-muted); font-size: var(--fs-xs); }
+
+/* ── Appearance previews ──────────────────────────────────────────────────
+   Three near-square-cornered rectangles, spaced apart and centred. Each is a
+   tiny screen in that theme: a search bar, an agent bar and one button —
+   no logos. Light: white, a whitish-grey search bar, a white button.
+   Dark: charcoal, grey bars, a grey button. Automatic: half of each. */
+.settings-themes:not(#_) {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  padding-top: var(--sp-2);
+}
+.settings-theme:not(#_) { flex: 0 0 auto; width: 150px; }
+.settings-theme__preview:not(#_) {
+  display: flex;
+  width: 150px;
+  height: 96px;
+  padding: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.tp {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+}
+.tp--light { background: #ffffff; }
+.tp--dark { background: #181818; }
+.tp-search,
+.tp-agent { display: block; width: 100%; height: 10px; border-radius: 2px; }
+.tp-agent { width: 70%; height: 6px; }
+.tp-btn { display: block; width: 34px; height: 12px; border-radius: 2px; align-self: flex-end; }
+.tp--light .tp-search { background: #ececec; }
+.tp--light .tp-agent { background: #4e4260; opacity: 0.35; }
+.tp--light .tp-btn { background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
+.tp--dark .tp-search { background: #2a2a2a; }
+.tp--dark .tp-agent { background: #9d8cb8; opacity: 0.4; }
+.tp--dark .tp-btn { background: #3a3a3a; }
+/* Halves are narrower: tighter padding. */
+.settings-theme__preview--system .tp { padding: 0 8px; }
+.settings-theme__preview--system .tp-btn { width: 24px; }
+
+/* Selected: a ring in the text colour, with a gap. */
+.settings-theme[aria-checked='true'] .settings-theme__preview:not(#_) {
+  box-shadow: 0 0 0 2px var(--bg-canvas), 0 0 0 4px var(--text-primary);
+}
+.settings-theme__label:not(#_) { display: block; margin-top: 10px; text-align: center; }
+
+.settings-privacy { display: block; margin: var(--sp-3) 0 0; color: var(--text-secondary); }

@@ -1,4 +1,5 @@
 // Auth Context - Manages user authentication state
+import { syncAnswerSource } from '../api/cloud';
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { getApiBaseSync, getStoredToken, setStoredToken, clearStoredAuth, getCurrentUser, type AuthResponse } from '../api/auth';
 
@@ -90,6 +91,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const setToken = useCallback((token: string) => {
     setStoredToken(token);
+    // Routes that needed a session (cloud model choice) can now be sent.
+    void syncAnswerSource();
   }, []);
 
   useEffect(() => {

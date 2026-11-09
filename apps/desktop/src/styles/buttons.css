@@ -1,0 +1,366 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTONS — one capsule, one motion, everywhere
+   ═══════════════════════════════════════════════════════════════════════════
+   Imported last (index.css), so every button family in the app resolves to the
+   same three looks, in both themes:
+
+     primary    light: black, white text      dark: white, black text
+     secondary  light: soft grey, dark text   dark: dark grey, white text
+     (ghost buttons keep their own quiet style)
+
+   Minimal, in the Apple register: flat fills, no gradients, no shadows.
+   Hover moves the fill one step; press gives under the finger (scale .96,
+   springing back); focus draws a ring. Every button is a capsule.
+
+   Specificity: these rules must win over page-specific button rules written
+   earlier, so each selector carries `:not(#_)` (an id's weight, matching no
+   element) instead of `!important`.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Light mode: white, monochrome buttons with black text. */
+  --cap-primary-bg: #ffffff;
+  --cap-primary-bg-hover: #f2f2f4;
+  --cap-primary-fg: #000000;
+  --cap-secondary-bg: #ffffff;
+  --cap-secondary-bg-hover: #f2f2f4;
+  --cap-secondary-fg: #000000;
+  --cap-lit: transparent;
+  --cap-edge: rgba(0, 0, 0, 0.14);
+  --cap-shadow: none;
+}
+[data-theme='dark'] {
+  /* Dark mode: black and grey buttons with white text. */
+  --cap-primary-bg: #2c2c2e;
+  --cap-primary-bg-hover: #3a3a3c;
+  --cap-primary-fg: #ffffff;
+  --cap-secondary-bg: #1c1c1e;
+  --cap-secondary-bg-hover: #2c2c2e;
+  --cap-secondary-fg: #f5f5f7;
+  --cap-lit: transparent;
+  --cap-edge: rgba(255, 255, 255, 0.14);
+  --cap-shadow: none;
+}
+
+/* ── Shared shape and motion ───────────────────────────────────────────── */
+:is(
+  .ui-btn--primary, .ui-btn--solid, .ui-btn--secondary,
+  .rb-save, .ws-pill, .ws-back,
+  .models-dl__btn, .model-browse-btn, .download-bubble-close,
+  .island__action
+):not(#_) {
+  border-radius: var(--r-pill);
+  border: 0;
+  font-family: var(--font-sans);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+:is(
+  .ui-btn--primary, .ui-btn--solid, .ui-btn--secondary,
+  .rb-save, .ws-pill, .ws-back,
+  .models-dl__btn, .model-browse-btn, .download-bubble-close,
+  .island__action
+):not(#_):active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 60ms;
+}
+:is(
+  .ui-btn--primary, .ui-btn--solid, .ui-btn--secondary,
+  .rb-save, .ws-pill, .ws-back,
+  .models-dl__btn, .model-browse-btn, .download-bubble-close,
+  .island__action
+):not(#_):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Back: a compact capsule, the same everywhere it appears. */
+.ws-back:not(#_) {
+  height: 30px;
+  padding: 0 14px 0 10px;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+
+/* ── Primary ───────────────────────────────────────────────────────────── */
+:is(.ui-btn--primary, .ui-btn--solid, .rb-save, .ws-tool-primary):not(#_) {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+}
+:is(.ui-btn--primary, .ui-btn--solid, .rb-save, .ws-tool-primary):not(#_):hover:not(:disabled) {
+  background: var(--cap-primary-bg-hover);
+}
+
+/* ── Secondary ─────────────────────────────────────────────────────────── */
+:is(
+  .ui-btn--secondary, .ws-pill, .ws-back,
+  .models-dl__btn, .model-browse-btn, .download-bubble-close
+):not(#_) {
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+}
+:is(
+  .ui-btn--secondary, .ws-pill, .ws-back,
+  .models-dl__btn, .model-browse-btn, .download-bubble-close
+):not(#_):hover:not(:disabled) {
+  background: var(--cap-secondary-bg-hover);
+  color: var(--cap-secondary-fg);
+}
+:is(.ui-btn--primary, .ui-btn--solid, .ui-btn--secondary, .rb-save, .ws-pill, .ws-back):not(#_):disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Icons inside never shift colour on their own. */
+:is(.ui-btn--primary, .ui-btn--solid, .ui-btn--secondary, .rb-save, .ws-pill, .ws-back):not(#_) svg {
+  color: inherit;
+}
+
+/* ── Inside notifications: the same monochrome buttons, smaller ─────────── */
+.island__action:not(#_),
+.island__action.island__action--primary:not(#_) {
+  height: 22px;
+  padding: 0 12px;
+  font-size: var(--fs-xs);
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+  opacity: 1;
+}
+.island__action:not(#_):hover,
+.island__action.island__action--primary:not(#_):hover { background: var(--cap-secondary-bg-hover); opacity: 1; }
+
+/* ── One-off button families, on the same system ─────────────────────────
+   Pages grew their own button classes over time. They keep their size and
+   placement; their look comes from here, so every text button in the app is
+   one of the two capsules above and every icon button is the one below. */
+:is(
+  .settings-btn, .models-modal-btn, .models-all-btn,
+  .models-token-btn, .retry-button, .ws-upload-btn, .online-button
+):not(#_) {
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--cap-secondary-bg);
+  color: var(--cap-secondary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+  font-family: var(--font-sans);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+:is(
+  .settings-btn, .models-modal-btn, .models-all-btn,
+  .models-token-btn, .retry-button, .ws-upload-btn, .online-button
+):not(#_):hover:not(:disabled) { background: var(--cap-secondary-bg-hover); }
+:is(.settings-btn--primary, .models-modal-btn--primary):not(#_) {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+}
+:is(.settings-btn--primary, .models-modal-btn--primary):not(#_):hover:not(:disabled) { background: var(--cap-primary-bg-hover); }
+:is(
+  .settings-btn, .models-modal-btn, .models-all-btn,
+  .models-token-btn, .retry-button, .ws-upload-btn, .online-button
+):not(#_):active:not(:disabled) { transform: scale(0.96); transition-duration: 60ms; }
+
+/* Icon buttons: no box at rest, a soft fill under the pointer, the same
+   corner and press everywhere. */
+:is(
+  .ui-iconbtn, .ws-icon-btn, .models-icon-btn, .models-row-dlbtn, .sidebar-icon-btn-xs,
+  .input-icon-btn, .search-modal-close-button, .search-clear-button,
+  .activity-close-btn, .ws-view-btn
+):not(#_) {
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+:is(
+  .ui-iconbtn, .ws-icon-btn, .models-icon-btn, .models-row-dlbtn, .sidebar-icon-btn-xs,
+  .input-icon-btn, .search-modal-close-button, .search-clear-button,
+  .activity-close-btn, .ws-view-btn
+):not(#_):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-primary);
+}
+:is(
+  .ui-iconbtn, .ws-icon-btn, .models-icon-btn, .models-row-dlbtn, .sidebar-icon-btn-xs,
+  .input-icon-btn, .search-modal-close-button, .search-clear-button,
+  .activity-close-btn, .ws-view-btn
+):not(#_):active:not(:disabled) { transform: scale(0.92); transition-duration: 60ms; }
+:is(.ui-iconbtn--danger, .sidebar-icon-btn-xs--danger, .ws-icon-danger):not(#_):hover:not(:disabled) { color: var(--danger-fg); }
+:is(.ws-view-btn.is-on, .input-icon-btn.has-items, .input-icon-btn.attach-btn-active):not(#_) {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  color: var(--text-primary);
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.ui-iconbtn, .ws-icon-btn, .models-icon-btn, .settings-btn, .models-modal-btn):not(#_) { transition: none; }
+}
+
+/* ── One rule for every button (final) ────────────────────────────────────
+   Light: white capsules with dark text and a soft lift — the look of the
+   Workspace filter capsules. Dark: grey buttons with white text.
+   Primary and secondary are the same, so every button reads alike;
+   segmented controls fill only the selected option with this style. */
+:root,
+[data-theme='light'] {
+  --cap-primary-bg: #ffffff;
+  --cap-primary-bg-hover: #f4f4f4;
+  --cap-primary-fg: #0d0d0d;
+  --cap-secondary-bg: #ffffff;
+  --cap-secondary-bg-hover: #f4f4f4;
+  --cap-secondary-fg: #0d0d0d;
+  --cap-edge: transparent;
+  --cap-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+[data-theme='dark'] {
+  --cap-primary-bg: #2f2f2f;
+  --cap-primary-bg-hover: #3a3a3a;
+  --cap-primary-fg: #ffffff;
+  --cap-secondary-bg: #2f2f2f;
+  --cap-secondary-bg-hover: #3a3a3a;
+  --cap-secondary-fg: #ffffff;
+  --cap-edge: transparent;
+  --cap-shadow: none;
+}
+
+/* The composer's Send button follows the same rule. */
+.input-send-btn:not(#_) {
+  background-color: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+}
+.input-send-btn:not(#_):hover:not(:disabled) { background-color: var(--cap-primary-bg-hover); }
+.input-send-btn:not(#_):active:not(:disabled) { background-color: var(--cap-primary-bg-hover); }
+
+/* Remaining filled buttons that drew straight from --accent. */
+:is(.login-prompt-btn.primary, .download-btn, .source-pane__btn--primary,
+    .models-modal-btn--primary, .models-dl__btn--primary, .settings-btn--primary):not(#_) {
+  background: var(--cap-primary-bg);
+  border-color: transparent;
+  color: var(--cap-primary-fg);
+  box-shadow: inset 0 0 0 1px var(--cap-edge), var(--cap-shadow);
+}
+:is(.login-prompt-btn.primary, .download-btn, .source-pane__btn--primary,
+    .models-modal-btn--primary, .models-dl__btn--primary, .settings-btn--primary):not(#_):hover:not(:disabled) {
+  background: var(--cap-primary-bg-hover);
+}
+
+/* ── Bare icons, everywhere ───────────────────────────────────────────────
+   No tile, disc or plate behind any icon or logo, in either theme: the
+   glyph sits on whatever surface holds it. Buttons keep their own fills. */
+:is(
+  [class*='__glyph'], [class*='__icon'], [class*='-glyph'], [class*='-icon'],
+  [class*='__logo'], [class*='-logo'], .rail-icon, .rb-glyph
+):not(button):not([class*='btn']):not(#_) {
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  border-color: transparent;
+}
+
+/* Segmented controls: a quiet outlined track; the selected option is filled
+   with the button ink, the others are bare text/icons. */
+:is(.ws-view-switch, .answer-source__seg, .cloud-panel__tabs):not(#_) {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+:is(.ws-view-btn, .answer-source__opt, .cloud-panel__tabs button):not(#_) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+}
+:is(.ws-view-btn, .answer-source__opt, .cloud-panel__tabs button):not(#_):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+:is(.ws-view-btn.is-on, .answer-source__opt.is-on, .cloud-panel__tabs button.is-on):not(#_) {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+}
+
+/* ── No border lines, anywhere ────────────────────────────────────────────
+   Surfaces are told apart by fill alone. Every line token goes clear, and
+   any literal border is cleared too. Spinners keep theirs (their ring IS a
+   border). Focus rings are outlines and stay, for keyboard users. */
+:root,
+[data-theme='light'],
+[data-theme='dark'] {
+  --border: transparent;
+  --border-strong: transparent;
+  --border-subtle: transparent;
+  --border-primary: transparent;
+  --accent-border: transparent;
+  --danger-border: transparent;
+  --glass-border: transparent;
+  --rail-border: transparent;
+  --cap-edge: transparent;
+}
+.chat-window:not(#_),
+[data-theme='dark'] .chat-window:not(#_) { --chat-composer-border: transparent; }
+
+/* Kept: spinners (their ring is a border), and marks DRAWN with a border
+   that carry meaning rather than outline a box — the Settings status
+   circle and FAQ chevron, the editor's line-shape icon, the selected
+   view-tab underline, and the diff change bars. */
+:where(*):not(.spinner):not(.download-spinner):not(.rotating):not(.login-ring):not([class*='spinner']):not(.settings-status):not(.rb-shape-line):not(.ws-view-tab.is-on):not(.ws-diff-ins):not(.ws-diff-del):not(.ws-diff-touched),
+:where(*):not(.settings-faq__q)::before,
+:where(*):not(.settings-faq__q)::after {
+  border-color: transparent !important;
+}
+hr { display: none; }
+
+/* Segmented controls read as ONE capsule: a soft filled track (no border),
+   the selected option filled with the button ink inside it. */
+:is(.ws-view-switch, .answer-source__seg, .cloud-panel__tabs):not(#_) {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: var(--bg-field);
+  box-shadow: none;
+}
+:is(.ws-view-btn, .answer-source__opt, .cloud-panel__tabs button):not(#_) {
+  border-radius: var(--r-pill);
+}
+
+/* Filters everywhere (Sort, Status, Date, Company…) take the button style. */
+.ws-filter:not(#_),
+.ws-landing .ws-filter:not(#_) {
+  border-color: transparent;
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: var(--cap-shadow);
+}
+.ws-filter:not(#_):hover,
+.ws-landing .ws-filter:not(#_):hover { background: var(--cap-primary-bg-hover); }
+
+/* Selected option in a segmented control / Settings tab: the button capsule. */
+:is(.ws-view-btn.is-on, .answer-source__opt.is-on, .cloud-panel__tabs button.is-on, .settings-tab.is-on):not(#_) {
+  box-shadow: var(--cap-shadow);
+}
+
+/* LARA's send button follows the same rule. */
+.ai-panel .dr-send:not(#_) {
+  background: var(--cap-primary-bg);
+  color: var(--cap-primary-fg);
+  box-shadow: var(--cap-shadow);
+}
+
+/* Dark mode: where a grey button sits on an already-grey surface (the
+   notification bar, a switch's track), it steps one shade lighter so it
+   still reads as a button. */
+[data-theme='dark'] .island[data-mode='notification'] .island__action:not(#_),
+[data-theme='dark'] :is(.ws-view-btn.is-on, .answer-source__opt.is-on, .cloud-panel__tabs button.is-on, .settings-tab.is-on):not(#_) {
+  background: #3d3d3d;
+  color: #ffffff;
+}
+[data-theme='dark'] .island[data-mode='notification'] .island__action:not(#_):hover { background: #474747; }

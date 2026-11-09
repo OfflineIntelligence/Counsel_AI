@@ -1,14 +1,29 @@
 // Models Panel Component
 
-import React, { useState, useEffect } from 'react';
-import { Search, Download, Trash2, HardDrive, Cpu, Database, ArrowLeft, RefreshCw, Pause, Play, Square, ChevronDown } from 'lucide-react';
-import { useNotificationHelpers } from '../contexts/NotificationContext';
+import React, { useState, useEffect, useRef } from 'react';
+import EmbeddingModelsSection from './rag/EmbeddingModelsSection';
+import { Search, Download, Star, Trash2, RefreshCw, Pause, Play, Square, ChevronDown, KeyRound, Type, Image as ImageIcon, X, Check } from 'lucide-react';
+import { useNotificationHelpers, useErrorNotification } from '../contexts/NotificationContext';
 import './ModelsPanel.css';
+import LabLogo from './LabLogo';
+import './workspace/workspace.css';
+import { FilterSelect, ItemMenu, type MenuEntry } from './workspace/FileBrowser';
 import { useAuth } from '../contexts/AuthContext';
 import { open } from '@tauri-apps/plugin-shell';
 import { getApiBaseSync } from '../api/backendUrl';
+import { refreshDownloads, useDownloads } from '../api/modelSync';
 import { saveApiKey as persistApiKey, getApiKey } from '../api/apiKeys';
-import { getHfToken as getStoredHfToken, setHfToken as storeHfToken, clearHfToken as clearStoredHfToken } from '../api/hfToken';
+import {
+  MODELS_CHANGED_EVENT,
+  buildSourcePayload,
+  announceModelsChanged,
+  sanitizeModelId,
+  getInterruptedDownloads,
+  resumeInterruptedDownload,
+  discardInterruptedDownload,
+  type InterruptedDownload,
+} from '../api/models';
+import { getHfToken as getStoredHfToken, setHfToken as storeHfToken, clearHfToken as clearStoredHfToken, HF_TOKEN_EVENT, HF_TOKEN_KEY } from '../api/hfToken';
 
 // Helper function to check if backend is ready
 async function checkBackendReadiness(): Promise<boolean> {
@@ -21,560 +36,24 @@ async function checkBackendReadiness(): Promise<boolean> {
   }
 }
 
-// Helper function to show the HuggingFace API Key modal with two-step flow
-export function showHuggingFaceApiKeyModal(
-  onHfTokenChange?: (token: string) => void,
-  setApiKey?: (provider: 'huggingface', key: string) => void,
-  onComplete?: () => void
-) {
-  // Create initial modal HTML
-  const createInitialModalHTML = () => `
-    <div id="huggingface-modal-model" style="
-        position: fixed; 
-        top: 0; 
-        left: 0; 
-        width: 100%; 
-        height: 100%; 
-        background: rgba(0,0,0,0.5); 
-        display: flex; 
-        justify-content: center; 
-        align-items: center; 
-        z-index: 10000;
-        font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-    ">
-        <div id="huggingface-modal-content" style="
-            background: white; 
-            padding: 20px; 
-            border-radius: 12px; 
-            width: 560px; 
-            max-width: 90vw; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            color: black;
-            position: relative;
-        " data-theme="light">
-            <button id="close-hf-modal" style="
-                position: absolute;
-                top: 8px;
-                right: 8px;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
-                background: #E5E7EB;
-                color: #374151;
-                border: none;
-                cursor: pointer;
-                font-size: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-            ">×</button>
-            <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center;">HuggingFace Token Needed</h3>
-            <p style="color: black; text-align: center;">Access gated models by adding your HuggingFace token.</p>
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: center;">
-                <button id="get-hf-token-btn-model" class="capsule-btn-gray" style="
-                    width: 40%; 
-                    padding: 10px 16px; 
-                    background: rgb(233,233,233); 
-                    color: black; 
-                    border: none; 
-                    border-radius: 9999px; 
-                    cursor: pointer;
-                    font-weight: 500;
-                    transition: background-color 0.2s, color 0.2s;
-                ">Create API Key</button>
-                <button id="enter-hf-token-btn-model" class="capsule-btn-gray" style="
-                    width: 40%; 
-                    padding: 10px 16px; 
-                    background: rgb(233,233,233); 
-                    color: black; 
-                    border: none; 
-                    border-radius: 9999px; 
-                    cursor: pointer;
-                    font-weight: 500;
-                    transition: background-color 0.2s, color 0.2s;
-                ">Enter Existing Key</button>
-            </div>
-        </div>
-    </div>
-  `;
+// The HuggingFace-token and gated-model dialogs used to be built here, as
+// ~550 lines of `document.createElement` + `innerHTML` + inline styles with
+// `background: white; color: black` and an explicit `data-theme="light"`.
+// They now live in components/models/ModelDialogs.tsx and are rendered through
+// the app's own Dialog primitive, which gives them focus handling, Escape, the
+// exit animation and both themes.
+//
+// This module used to re-export these three so SettingsPanel could keep
+// importing showHuggingFaceApiKeyModal from here. It imports them from the bus
+// directly now: a module that exports both components and plain functions
+// defeats Fast Refresh for the whole file, and this is a 1,600-line panel to
+// reload.
+import {
+  showHuggingFaceApiKeyModal,
+  showGatedModelModal,
+  showOllamaModal,
+} from './models/modelDialogBus';
 
-  // Create API key input modal HTML
-  const createTokenInputHTML = () => `
-    <div id="huggingface-modal-model" style="
-        position: fixed; 
-        top: 0; 
-        left: 0; 
-        width: 100%; 
-        height: 100%; 
-        background: rgba(0,0,0,0.5); 
-        display: flex; 
-        justify-content: center; 
-        align-items: center; 
-        z-index: 10000;
-        font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-    ">
-        <div id="huggingface-modal-content" style="
-            background: white; 
-            padding: 20px; 
-            border-radius: 12px; 
-            width: 560px; 
-            max-width: 90vw; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            color: black;
-            position: relative;
-        " data-theme="light">
-            <button id="close-hf-modal" style="
-                position: absolute;
-                top: 8px;
-                right: 8px;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
-                background: #E5E7EB;
-                color: #374151;
-                border: none;
-                cursor: pointer;
-                font-size: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-            ">×</button>
-            <button id="back-btn-hf-model" style="
-                position: absolute;
-                top: 8px;
-                left: 8px;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
-                background: #E5E7EB;
-                color: #374151;
-                border: none;
-                cursor: pointer;
-                font-size: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-            ">←</button>
-            <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center;">Enter HuggingFace Token</h3>
-            <p style="color: black; text-align: center; font-size: 13px; margin-bottom: 15px;">Paste your HuggingFace token below. You can get one at <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: #2563eb; text-decoration: none;">huggingface.co/settings/tokens</a></p>
-            <div style="margin-top: 20px;">
-                <input 
-                    id="hf-token-input-model" 
-                    type="password" 
-                    placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
-                    style="
-                        width: 100%;
-                        padding: 12px 16px;
-                        border-radius: 8px;
-                        border: 1px solid #d1d5db;
-                        font-size: 14px;
-                        box-sizing: border-box;
-                        margin-bottom: 12px;
-                    "
-                />
-                <button id="save-hf-token-btn-model" class="capsule-btn-black" style="
-                    width: 100%; 
-                    padding: 10px 16px; 
-                    background: #000000; 
-                    color: white; 
-                    border: none; 
-                    border-radius: 9999px; 
-                    cursor: pointer;
-                    font-weight: 500;
-                    transition: background-color 0.2s;
-                ">Save Token</button>
-            </div>
-        </div>
-    </div>
-  `;
-
-  // Function to setup hover effects
-  const setupHoverEffects = (modalElement: HTMLElement) => {
-    const capsuleButtons = modalElement.querySelectorAll('.capsule-btn-gray, .capsule-btn-black');
-    
-    const handleMouseEnter = (e: Event) => {
-      const target = e.target as HTMLElement;
-      if (target.classList.contains('capsule-btn-gray')) {
-        target.style.backgroundColor = 'var(--accent-hover)';
-        target.style.color = 'var(--text-on-accent)';
-      }
-    };
-    
-    const handleMouseLeave = (e: Event) => {
-      const target = e.target as HTMLElement;
-      if (target.classList.contains('capsule-btn-gray')) {
-        target.style.backgroundColor = 'var(--bg-surface)';
-        target.style.color = 'var(--text-primary)';
-      }
-    };
-    
-    capsuleButtons.forEach(btn => {
-      btn.addEventListener('mouseenter', handleMouseEnter);
-      btn.addEventListener('mouseleave', handleMouseLeave);
-    });
-  };
-
-  // Function to show initial modal
-  const showInitialModal = () => {
-    // Remove any existing modal
-    const existingModal = document.getElementById('huggingface-modal-model');
-    if (existingModal && existingModal.parentNode) {
-      existingModal.parentNode.removeChild(existingModal);
-    }
-
-    // Add modal to DOM
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = createInitialModalHTML();
-    const modalElement = tempDiv.firstElementChild as HTMLElement;
-    document.body.appendChild(modalElement);
-
-    setupHoverEffects(modalElement);
-
-    // Handle Close button (X button)
-    const closeBtn = document.getElementById('close-hf-modal') as HTMLButtonElement;
-    closeBtn?.addEventListener('click', () => {
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-    });
-
-    // Handle "Create API Key" button - Open HuggingFace in browser
-    const getTokenBtn = document.getElementById('get-hf-token-btn-model') as HTMLButtonElement;
-    getTokenBtn?.addEventListener('click', async () => {
-      // Open HuggingFace token page in default browser
-      await open('https://huggingface.co/settings/tokens');
-      // Close modal
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-    });
-
-    // Handle "Enter Existing Key" button - Show input form
-    const enterTokenBtn = document.getElementById('enter-hf-token-btn-model') as HTMLButtonElement;
-    enterTokenBtn?.addEventListener('click', () => {
-      showTokenInputModal();
-    });
-
-    // Close modal on clicking outside
-    modalElement.addEventListener('click', (e) => {
-      if (e.target === modalElement) {
-        if (modalElement.parentNode) {
-          modalElement.parentNode.removeChild(modalElement);
-        }
-        document.removeEventListener('keydown', handleEscape);
-      }
-    });
-
-    // Handle Escape key
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (modalElement.parentNode) {
-          modalElement.parentNode.removeChild(modalElement);
-        }
-        document.removeEventListener('keydown', handleEscape);
-      }
-    };
-    
-    document.addEventListener('keydown', handleEscape);
-  };
-
-  // Function to show token input modal
-  const showTokenInputModal = () => {
-    // Remove existing modal
-    const existingModal = document.getElementById('huggingface-modal-model');
-    if (existingModal && existingModal.parentNode) {
-      existingModal.parentNode.removeChild(existingModal);
-    }
-
-    // Add modal to DOM
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = createTokenInputHTML();
-    const modalElement = tempDiv.firstElementChild as HTMLElement;
-    document.body.appendChild(modalElement);
-
-    // Focus the input field
-    setTimeout(() => {
-      const inputField = document.getElementById('hf-token-input-model') as HTMLInputElement;
-      inputField?.focus();
-    }, 100);
-
-    // Handle Close button (X button)
-    const closeBtn = document.getElementById('close-hf-modal') as HTMLButtonElement;
-    closeBtn?.addEventListener('click', () => {
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-    });
-
-    // Handle Back button - Return to initial modal
-    const backBtn = document.getElementById('back-btn-hf-model') as HTMLButtonElement;
-    backBtn?.addEventListener('click', () => {
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-      showInitialModal();
-    });
-
-    // Handle Save button - Save the token
-    const saveBtn = document.getElementById('save-hf-token-btn-model') as HTMLButtonElement;
-    const inputField = document.getElementById('hf-token-input-model') as HTMLInputElement;
-
-    const saveToken = () => {
-      const token = inputField?.value.trim();
-      if (token) {
-        // Save to browser storage (single canonical key)
-        storeHfToken(token);
-
-        // Persist to encrypted backend DB (fire-and-forget)
-        persistApiKey('huggingface', token).catch(console.error);
-
-        // Update AuthContext
-        if (setApiKey) {
-          setApiKey('huggingface', token);
-        }
-
-        // Update parent component state
-        if (onHfTokenChange) {
-          onHfTokenChange(token);
-        }
-
-        // Close modal
-        if (modalElement.parentNode) {
-          modalElement.parentNode.removeChild(modalElement);
-        }
-        document.removeEventListener('keydown', handleEscape);
-
-        // Call onComplete callback if provided
-        if (onComplete) {
-          onComplete();
-        }
-      } else {
-        // Show error or shake animation
-        if (inputField) {
-          inputField.style.borderColor = 'var(--danger)';
-          setTimeout(() => {
-            inputField.style.borderColor = 'var(--border)';
-          }, 1000);
-        }
-      }
-    };
-
-    saveBtn?.addEventListener('click', saveToken);
-    
-    // Handle Enter key in input field
-    inputField?.addEventListener('keypress', (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        saveToken();
-      }
-    });
-
-    // Close modal on clicking outside
-    modalElement.addEventListener('click', (e) => {
-      if (e.target === modalElement) {
-        if (modalElement.parentNode) {
-          modalElement.parentNode.removeChild(modalElement);
-        }
-        document.removeEventListener('keydown', handleEscape);
-      }
-    });
-
-    // Handle Escape key
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (modalElement.parentNode) {
-          modalElement.parentNode.removeChild(modalElement);
-        }
-        document.removeEventListener('keydown', handleEscape);
-      }
-    };
-    
-    document.addEventListener('keydown', handleEscape);
-  };
-
-  // Show the initial modal
-  showInitialModal();
-}
-
-// Helper function to show the Gated Model Access modal
-export function showGatedModelModal(
-  repoId: string,
-  onRetry?: () => void
-) {
-  // Create modal HTML
-  const modalHtml = `
-    <div id="gated-model-modal" style="
-        position: fixed; 
-        top: 0; 
-        left: 0; 
-        width: 100%; 
-        height: 100%; 
-        background: rgba(0,0,0,0.5); 
-        display: flex; 
-        justify-content: center; 
-        align-items: center; 
-        z-index: 10000;
-        font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-    ">
-        <div id="gated-modal-content" style="
-            background: white; 
-            padding: 24px; 
-            border-radius: 12px; 
-            width: 520px; 
-            max-width: 90vw; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            color: black;
-            position: relative;
-        " data-theme="light">
-            <button id="close-gated-modal" style="
-                position: absolute;
-                top: 8px;
-                right: 8px;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
-                background: #E5E7EB;
-                color: #374151;
-                border: none;
-                cursor: pointer;
-                font-size: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-            ">×</button>
-            <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center; font-size: 18px;">Model Access Required</h3>
-            <p style="color: #374151; text-align: center; font-size: 14px; line-height: 1.5; margin-bottom: 20px;">
-                This model requires explicit access approval from HuggingFace.
-            </p>
-            <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
-                <p style="color: #92400E; font-size: 13px; margin: 0;">
-                    <strong>Repository:</strong> ${repoId}<br/>
-                    You need to visit the model page and click "Request Access" to download this model.
-                </p>
-            </div>
-            <div style="display: flex; gap: 10px; justify-content: center;">
-                <button id="visit-hf-page-btn" class="capsule-btn-gray" style="
-                    flex: 1;
-                    padding: 12px 20px; 
-                    background: #2563EB; 
-                    color: white; 
-                    border: none; 
-                    border-radius: 9999px; 
-                    cursor: pointer;
-                    font-weight: 500;
-                    font-size: 14px;
-                    transition: background-color 0.2s, color 0.2s;
-                ">Visit Model Page</button>
-                <button id="retry-download-btn" class="capsule-btn-gray" style="
-                    flex: 1;
-                    padding: 12px 20px; 
-                    background: rgb(233,233,233); 
-                    color: black; 
-                    border: none; 
-                    border-radius: 9999px; 
-                    cursor: pointer;
-                    font-weight: 500;
-                    font-size: 14px;
-                    transition: background-color 0.2s, color 0.2s;
-                ">Retry Download</button>
-            </div>
-            <p style="color: #6B7280; text-align: center; font-size: 12px; margin-top: 16px; margin-bottom: 0;">
-                After requesting access on HuggingFace, click "Retry Download" to try again.
-            </p>
-        </div>
-    </div>
-  `;
-
-  // Add modal to DOM
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = modalHtml;
-  const modalElement = tempDiv.firstElementChild as HTMLElement;
-  document.body.appendChild(modalElement);
-
-  // Setup hover effects
-  const capsuleButtons = modalElement.querySelectorAll('.capsule-btn-gray');
-  
-  const handleMouseEnter = (e: Event) => {
-    const target = e.target as HTMLElement;
-    if (target.id === 'visit-hf-page-btn') {
-      target.style.backgroundColor = 'var(--accent-hover)';
-    } else if (target.id === 'retry-download-btn') {
-      target.style.backgroundColor = 'var(--accent-hover)';
-      target.style.color = 'var(--text-on-accent)';
-    }
-  };
-  
-  const handleMouseLeave = (e: Event) => {
-    const target = e.target as HTMLElement;
-    if (target.id === 'visit-hf-page-btn') {
-      target.style.backgroundColor = 'var(--accent)';
-    } else if (target.id === 'retry-download-btn') {
-      target.style.backgroundColor = 'var(--bg-surface)';
-      target.style.color = 'var(--text-primary)';
-    }
-  };
-  
-  capsuleButtons.forEach(btn => {
-    btn.addEventListener('mouseenter', handleMouseEnter);
-    btn.addEventListener('mouseleave', handleMouseLeave);
-  });
-
-  // Handle "Visit Model Page" button
-  const visitBtn = document.getElementById('visit-hf-page-btn') as HTMLButtonElement;
-  visitBtn?.addEventListener('click', async () => {
-    await open(`https://huggingface.co/${repoId}`);
-  });
-
-  // Handle "Retry Download" button
-  const retryBtn = document.getElementById('retry-download-btn') as HTMLButtonElement;
-  retryBtn?.addEventListener('click', () => {
-    if (modalElement.parentNode) {
-      modalElement.parentNode.removeChild(modalElement);
-    }
-    document.removeEventListener('keydown', handleEscape);
-    if (onRetry) {
-      onRetry();
-    }
-  });
-
-  // Handle Close button
-  const closeBtn = document.getElementById('close-gated-modal') as HTMLButtonElement;
-  closeBtn?.addEventListener('click', () => {
-    if (modalElement.parentNode) {
-      modalElement.parentNode.removeChild(modalElement);
-    }
-    document.removeEventListener('keydown', handleEscape);
-  });
-
-  // Close modal on clicking outside
-  modalElement.addEventListener('click', (e) => {
-    if (e.target === modalElement) {
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-    }
-  });
-
-  // Handle Escape key
-  const handleEscape = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      if (modalElement.parentNode) {
-        modalElement.parentNode.removeChild(modalElement);
-      }
-      document.removeEventListener('keydown', handleEscape);
-    }
-  };
-  
-  document.addEventListener('keydown', handleEscape);
-}
 
 // Types
 interface Model {
@@ -625,7 +104,7 @@ interface HardwareInfo {
   storage_available_bytes: number;
 }
 
-type SortOption = 'name' | 'size_asc' | 'size_desc' | 'compatibility' | 'source' | 'trending' | 'popularity';
+type SortOption = 'name' | 'size_asc' | 'size_desc' | 'compatibility' | 'newest' | 'oldest' | 'source' | 'trending' | 'popularity';
 
 
 
@@ -642,27 +121,318 @@ interface SelectedModel {
   source: 'local';
 }
 
+// ── Plain-language model details ────────────────────────────────────────────
+// The catalogue speaks in repository names and quantisation tags. A lawyer
+// needs three answers: which model, what it is good for, and whether this
+// computer can run it.
+
+/** Memory a model of this size needs while running, relative to its file size. */
+const RUNTIME_OVERHEAD = 1.25;
+
+/* A `hardwareCapacityGb(hw)` helper stood here, returning the largest model
+   file this computer could run. It had no callers left. Not folded into
+   fitOnThisComputer below, which looks like it duplicates the same arithmetic
+   but does not: this one divided the memory budget by RUNTIME_OVERHEAD, while
+   fitOnThisComputer multiplies the model's size by it, so substituting one for
+   the other would apply the overhead twice and move every verdict. */
+
+/** Whether this computer can run a model of this size, and how well.
+ *
+ *  `tone` has two values, not three. It was `'good' | 'slow' | 'no'`, but no
+ *  branch below ever returned `'no'` -- the two worst cases both report
+ *  "May be slow" / `'slow'` and differ only in `rank`, which is what orders
+ *  the list. So the `.models-fit-no` rule in ModelsPanel.css could never
+ *  match, and it was declared twice with two different colours precisely
+ *  because nobody could see which one was winning. */
+function fitOnThisComputer(
+  sizeBytes: number,
+  hw: HardwareInfo | null,
+  score?: number,
+): { label: string; tone: 'good' | 'slow'; rank: number } | null {
+  if (hw && sizeBytes > 0) {
+    const need = (sizeBytes / 1024 ** 3) * RUNTIME_OVERHEAD;
+    const vram = hw.gpu_available ? (hw.gpu_vram_gb ?? 0) : 0;
+    if (need <= vram || need <= hw.total_ram_gb * 0.6) return { label: 'Runs well', tone: 'good', rank: 0 };
+    if (need <= hw.total_ram_gb * 0.9) return { label: 'May be slow', tone: 'slow', rank: 1 };
+    return { label: 'May be slow', tone: 'slow', rank: 2 };
+  }
+  if (score != null) {
+    if (score >= 0.7) return { label: 'Runs well', tone: 'good', rank: 0 };
+    if (score >= 0.4) return { label: 'May be slow', tone: 'slow', rank: 1 };
+    return { label: 'May be slow', tone: 'slow', rank: 2 };
+  }
+  return null;
+}
+
+// Order matters: a distilled model names both its maker and its base
+// ("DeepSeek-R1-Distill-Qwen"), and the maker must win.
+const MAKERS: [RegExp, string][] = [
+  [/deepseek/i, 'DeepSeek'],
+  [/nemotron|nvidia/i, 'NVIDIA'],
+  [/gemma|google|madlad/i, 'Google'],
+  [/llama|meta/i, 'Meta'],
+  [/qwen|qwq|alibaba/i, 'Alibaba'],
+  [/mistral|mixtral|ministral|devstral|magistral/i, 'Mistral AI'],
+  [/\bphi|microsoft/i, 'Microsoft'],
+  [/granite|ibm/i, 'IBM'],
+  [/gpt-oss|openai/i, 'OpenAI'],
+  [/smol|huggingface/i, 'Hugging Face'],
+  [/command-r|aya|cohere/i, 'Cohere'],
+  [/grok|xai/i, 'xAI'],
+  [/kimi|moonshot/i, 'Moonshot AI'],
+  [/glm|chatglm|zhipu|z-ai|zai-org/i, 'Zhipu AI'],
+  [/minimax/i, 'MiniMax'],
+  [/step-?\d|stepfun/i, 'StepFun'],
+  [/seed-?oss|doubao|bytedance/i, 'ByteDance'],
+  [/claude|anthropic/i, 'Anthropic'],
+  [/hunyuan|tencent/i, 'Tencent'],
+  [/ernie|baidu/i, 'Baidu'],
+];
+
+/** Epoch ms of a catalogue entry's last update; 0 when it declares none. */
+function updatedAt(model: Model): number {
+  const t = model.last_updated ? Date.parse(model.last_updated) : NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function makerName(model: Model): string | null {
+  const text = `${model.provider ?? ''} ${model.author ?? ''} ${model.name} ${model.id}`;
+  for (const [pattern, name] of MAKERS) if (pattern.test(text)) return name;
+  const raw = model.provider || model.author;
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : null;
+}
+
+/** "gemma-4-12B-it-qat-q4_0" → "Gemma 4 · 12B". */
+function friendlyModelName(model: Model): string {
+  let base = model.name.split('/').pop() ?? model.name;
+  base = base
+    .replace(/\.gguf$/i, '')
+    .replace(/[-_.](gguf|it|instruct|chat|qat|unsloth|imatrix)(?=[-_.]|$)/gi, '')
+    .replace(/[-_.](i?q\d[\w]*|f16|f32|bf16|fp16|int[48])(?=[-_.]|$)/gi, '')
+    .replace(/[-_.]{2,}/g, '-')
+    .replace(/[-_.]+$/g, '');
+  const params = base.match(/(?:^|[-_.\s])(\d+(?:\.\d+)?[bm])(?:[-_.\s]|$)/i)?.[1];
+  const withoutParams = params ? base.replace(new RegExp(`[-_.]?${params.replace('.', '\\.')}`, 'i'), '') : base;
+  const words = withoutParams
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(w => (/^[a-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w));
+  const title = words.join(' ') || model.name;
+  return params ? `${title} · ${params.toUpperCase()}` : title;
+}
+
+/* A `goodFor(model)` helper stood here: sixteen branches of product copy
+   mapping a model name to a one-line "good for ..." description ("Careful
+   legal reasoning", "Long contracts, many languages"). Nothing called it --
+   the column it was written for is not in the table. Removed rather than left
+   as a silent fixture; the copy is worth having, but it belongs next to the
+   UI that shows it. */
+
+/** Input modalities as small boxed icons, like the Input column on models.dev. */
+function Modalities({ vision }: { vision: boolean }) {
+  return (
+    <span className="models-modality" aria-label={vision ? 'Text and images' : 'Text'}>
+      <span className="models-modality__icon" title="Text">
+        <Type size={13} strokeWidth={1.75} />
+      </span>
+      {vision && (
+        <span className="models-modality__icon" title="Images and scanned documents">
+          <ImageIcon size={13} strokeWidth={1.75} />
+        </span>
+      )}
+    </span>
+  );
+}
+/** Whether the access-token panel was open, kept while the app runs so both tabs and later visits agree. */
+let tokenPanelRemembered = false;
+
+/**
+ * Company filter: the same control as the Sort menu beside it (same button,
+ * same menu, same rows), with a checkbox on each company so several can be
+ * shown at once. The menu stays open while you tick, carries a search box
+ * because the catalogue has dozens of makers, and "All companies" clears the
+ * selection. Counts come from the whole catalogue so the menu never shrinks.
+ */
+const CompanySelect: React.FC<{
+  value: string[];
+  companies: { name: string; count: number }[];
+  onChange: (value: string[]) => void;
+}> = ({ value, companies, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const anchor = useRef<HTMLDivElement | null>(null);
+  const field = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    field.current?.focus();
+    const onPointer = (e: MouseEvent) => {
+      if (!anchor.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const shown = companies.filter(c => c.name.toLowerCase().includes(query.trim().toLowerCase()));
+  const toggle = (name: string) =>
+    onChange(value.includes(name) ? value.filter(v => v !== name) : [...value, name]);
+  const label = value.length === 0 ? 'All companies' : value.length === 1 ? value[0] : `${value.length} companies`;
+
+  return (
+    <div className="ws-filter-anchor" ref={anchor}>
+      <button
+        type="button"
+        className="ws-filter"
+        aria-label="Filter by company"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
+        {label}
+        <ChevronDown size={13} strokeWidth={2.25} />
+      </button>
+      {open && (
+        <div className="ws-filter-menu models-companies" role="listbox" aria-label="Company" aria-multiselectable="true">
+          <div className="models-companies__search">
+            <Search size={14} strokeWidth={2} />
+            <input
+              ref={field}
+              type="search"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search companies"
+              aria-label="Search companies"
+            />
+          </div>
+          <button
+            type="button"
+            role="option"
+            aria-selected={value.length === 0}
+            className={`ws-filter-option models-company${value.length === 0 ? ' is-on' : ''}`}
+            onClick={() => onChange([])}
+          >
+            <span className={`models-check${value.length === 0 ? ' is-on' : ''}`} aria-hidden="true">
+              {value.length === 0 && <Check size={11} strokeWidth={3} />}
+            </span>
+            <span className="models-company__name">All companies</span>
+          </button>
+          {shown.map(c => {
+            const on = value.includes(c.name);
+            return (
+              <button
+                key={c.name}
+                type="button"
+                role="option"
+                aria-selected={on}
+                className={`ws-filter-option models-company${on ? ' is-on' : ''}`}
+                onClick={() => toggle(c.name)}
+              >
+                <span className={`models-check${on ? ' is-on' : ''}`} aria-hidden="true">
+                  {on && <Check size={11} strokeWidth={3} />}
+                </span>
+                <LabLogo company={c.name} />
+                <span className="models-company__name">{c.name}</span>
+                <span className="models-companies__count">{c.count}</span>
+              </button>
+            );
+          })}
+          {shown.length === 0 && <p className="models-companies__empty">No company matches “{query}”.</p>}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ModelsPanel: React.FC<{
   isOpen: boolean;
   onClose: () => void;
   selectedModel?: SelectedModel | null;
   onSelectModel?: (model: SelectedModel | null) => void;
   focusHfTokenInput?: boolean;
-}> = ({ isOpen, onClose, selectedModel, onSelectModel, focusHfTokenInput }) => {
+}> = ({ isOpen, selectedModel, onSelectModel, focusHfTokenInput }) => {
   const [models, setModels] = useState<Model[]>([]);
   const [downloads, setDownloads] = useState<DownloadProgress[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Starred models, stored by the backend so they survive a catalogue refresh
+  // and a restart. Changed optimistically; a failed save puts the list back.
+  const [starred, setStarred] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let live = true;
+    fetch(`${getApiBaseSync()}/models/marks`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(marks => {
+        if (live && marks?.starred) setStarred(new Set<string>(marks.starred));
+      })
+      .catch(() => {
+        /* Backend not ready: nothing starred yet is the right empty state. */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const toggleStar = async (modelId: string, name: string) => {
+    const next = !starred.has(modelId);
+    const previous = starred;
+    setStarred(s => {
+      const copy = new Set(s);
+      if (next) copy.add(modelId);
+      else copy.delete(modelId);
+      return copy;
+    });
+    try {
+      const r = await fetch(`${getApiBaseSync()}/models/marks/star`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId, starred: next }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const marks = await r.json();
+      setStarred(new Set<string>(marks.starred ?? []));
+    } catch (e) {
+      setStarred(previous);
+      showError(`Couldn't ${next ? 'star' : 'unstar'} ${name}`, e instanceof Error ? e.message : String(e));
+    }
+  };
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'installed' | 'available' | 'downloads'>('available');
+  useErrorNotification(fetchError, "Couldn't load models", () => setFetchError(null));
+  const [activeTab, setActiveTab] = useState<'installed' | 'available' | 'starred' | 'downloads'>('available');
   const [hardwareInfo, setHardwareInfo] = useState<HardwareInfo | null>(null);
   const [activeModelInfo, setActiveModelInfo] = useState<ActiveModelInfo | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('name');
-  const [showSortDropdown, setShowSortDropdown] = useState(false);
-  const [showHfTokenInput, setShowHfTokenInput] = useState(false);
+  /** The companies ticked in the filter; none ticked = every company. */
+  const [company, setCompany] = useState<string[]>([]);
+  const [showHfTokenInput, setShowHfTokenInput] = useState(() => tokenPanelRemembered);
+  useEffect(() => {
+    tokenPanelRemembered = showHfTokenInput;
+  }, [showHfTokenInput]);
   const { showSuccess, showError, showDownload } = useNotificationHelpers();
   const { user, setApiKey } = useAuth();
   
+  // One token, everywhere: any save or clear (this panel, the install prompt,
+  // Settings, another window) updates the field and the status dot at once.
+  useEffect(() => {
+    const sync = () => setHfToken(getStoredHfToken());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === HF_TOKEN_KEY) sync();
+    };
+    window.addEventListener(HF_TOKEN_EVENT, sync);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(HF_TOKEN_EVENT, sync);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
   const [hfToken, setHfToken] = useState<string>(() => {
     // Get initial value from browser storage first
     const storedToken = getStoredHfToken();
@@ -671,6 +441,22 @@ const ModelsPanel: React.FC<{
     return user?.apiKeys?.huggingface || '';
   });
   
+  // The access-token bar stays open until a complete token is entered; only
+  // then can it be closed (and it reopens on its own if the token is cleared).
+  // "Entered" means a complete Hugging Face token (hf_ followed by its 30+
+  // letters and digits), not a partly typed one.
+  const hasToken = /^hf_[A-Za-z0-9]{30,}$/.test(hfToken.trim());
+  const tokenOpen = showHfTokenInput || !hasToken;
+  const toggleTokenPanel = () => {
+    if (!hasToken) return;
+    setShowHfTokenInput(v => !v);
+  };
+  // Without a token the bar is held open; keep that state once typing begins
+  // (the token saves as it is typed), so it closes only when the user asks.
+  useEffect(() => {
+    if (!hasToken) setShowHfTokenInput(true);
+  }, [hasToken]);
+
   // State for model removal confirmation
   const [showRemoveConfirmation, setShowRemoveConfirmation] = useState(false);
   const [modelToRemove, setModelToRemove] = useState<Model | null>(null);
@@ -706,7 +492,7 @@ const ModelsPanel: React.FC<{
       // Refresh again after a short delay to ensure backend is fully ready
       // This helps catch any models that might have been missed in initial load
       const refreshTimer = setTimeout(() => {
-        fetchModels();
+        fetchModels(true);
         fetchDownloads();
       }, 500);
       
@@ -741,22 +527,27 @@ const ModelsPanel: React.FC<{
     }
   }, [focusHfTokenInput, showHfTokenInput]);
 
+  // The shared watcher polls (fast while anything downloads); this page just
+  // mirrors it while open.
+  const sharedDownloads = useDownloads();
   useEffect(() => {
-    if (isOpen && downloads.some(d => d.status === 'Downloading' || d.status === 'Starting' || d.status === 'Queued')) {
-      const interval = setInterval(fetchDownloads, 1000); // Poll every 1 second for active downloads
-      return () => clearInterval(interval);
-    }
-    // If no active downloads, return empty cleanup function
-    return () => {};
-  }, [isOpen, downloads]);
+    if (isOpen) setDownloads(sharedDownloads as unknown as DownloadProgress[]);
+  }, [isOpen, sharedDownloads]);
 
+  const refreshedDownloads = useRef<Set<string>>(new Set());
   // Detect completed downloads and refresh model list
   useEffect(() => {
     const completedDownloads = downloads.filter(d => d.status === 'Completed');
 
-    if (completedDownloads.length > 0) {
+    // Refresh once per newly completed download, not on every poll while it lingers.
+    const fresh = completedDownloads.filter(d => !refreshedDownloads.current.has(d.download_id));
+    if (fresh.length > 0) {
+      fresh.forEach(d => refreshedDownloads.current.add(d.download_id));
       // Refresh the model list to pick up the new "Installed" status from backend
-      fetchModels();
+      fetchModels(true);
+    }
+
+    if (completedDownloads.length > 0) {
 
       // Clean up completed downloads after a short delay to show success state
       const timer = setTimeout(() => {
@@ -767,9 +558,11 @@ const ModelsPanel: React.FC<{
     }
   }, [downloads]);
 
-  const fetchModels = async () => {
+  // `silent` refreshes in the background: the list stays on screen instead of
+  // being swapped for the loading state, so nothing flickers mid-download.
+  const fetchModels = async (silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) setIsLoading(true);
       setFetchError(null);
       
       // Check backend readiness before making request
@@ -782,7 +575,8 @@ const ModelsPanel: React.FC<{
       const response = await fetch(`${getApiBaseSync()}/models`);
       if (response.ok) {
         const data = await response.json();
-        setModels(data);
+        // Keep the same array when nothing changed, so the list does not re-render.
+        setModels(prev => (JSON.stringify(prev) === JSON.stringify(data) ? prev : data));
         // Do nothing if backend returns empty list, keep the models as received
       } else {
         setFetchError(`Backend returned HTTP ${response.status}. Make sure the backend is running.`);
@@ -806,12 +600,7 @@ const ModelsPanel: React.FC<{
         return;
       }
       
-      const response = await fetch(`${getApiBaseSync()}/models/downloads`);
-      if (response.ok) {
-        setDownloads(await response.json());
-      } else {
-        console.warn('Downloads endpoint returned non-200 status:', response.status);
-      }
+      setDownloads((await refreshDownloads()) as unknown as DownloadProgress[]);
     } catch (error) {
       console.error('Failed to fetch downloads:', error);
       // Don't show an error for downloads as it's not critical to main functionality
@@ -863,7 +652,7 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
@@ -884,28 +673,11 @@ const ModelsPanel: React.FC<{
     }
   };
 
-  const buildSourcePayload = (model: Model) => {
-    const source = model.download_source || 'huggingface';
-    if (source === 'ollama') {
-      const modelName = model.id.startsWith('ollama:') ? model.id.slice(7) : model.id;
-      return { type: 'Ollama', model_name: modelName };
-    } else {
-      // Use filename from model info if available, otherwise construct a guess
-      const filename = model.filename || (() => {
-        const parts = model.id.split('/');
-        return parts.length > 1
-          ? `${parts[parts.length - 1].toLowerCase().replace(/-gguf$/i, '')}.Q4_K_M.gguf`
-          : `${model.id}.gguf`;
-      })();
-      return { type: 'HuggingFace', repo_id: model.id, filename };
-    }
-  };
-
   const handleInstallModel = async (model: Model) => {
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
@@ -926,7 +698,7 @@ const ModelsPanel: React.FC<{
         })
       });
       if (response.ok) {
-        showDownload('Download Started', `Downloading ${model.name}`);
+        showDownload('Download started', `${model.name} is downloading.`);
         // Immediately fetch downloads to get the new entry
         await fetchDownloads();
         // Switch to downloads tab to show progress
@@ -947,499 +719,21 @@ const ModelsPanel: React.FC<{
               handleInstallModel(model);
             });
           } else {
-            // Create a custom modal for HuggingFace token
-          const modalHtml = `
-            <div id="huggingface-modal-model" style="
-                position: fixed; 
-                top: 0; 
-                left: 0; 
-                width: 100%; 
-                height: 100%; 
-                background: rgba(0,0,0,0.5); 
-                display: flex; 
-                justify-content: center; 
-                align-items: center; 
-                z-index: 10000;
-                font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-            ">
-                <div style="
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 12px; 
-                    width: 560px; 
-                    max-width: 90vw; 
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-                    color: black;
-                    position: relative;
-                " data-theme="light">
-                    <button id="close-hf-modal" style="
-                        position: absolute;
-                        top: 8px;
-                        right: 8px;
-                        width: 30px;
-                        height: 30px;
-                        border-radius: 50%;
-                        background: #E5E7EB;
-                        color: #374151;
-                        border: none;
-                        cursor: pointer;
-                        font-size: 16px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-weight: bold;
-                    ">×</button>
-                    <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center;">HuggingFace Token Needed</h3>
-                    <p style="color: black; text-align: center;">Access gated models by adding your HuggingFace token.</p>
-                    <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: center;">
-                        <button id="get-hf-token-btn-model" class="capsule-btn-gray" style="
-                            width: 40%; 
-                            padding: 10px 16px; 
-                            background: rgb(233,233,233); 
-                            color: black; 
-                            border: none; 
-                            border-radius: 9999px; 
-                            cursor: pointer;
-                            font-weight: 500;
-                            transition: background-color 0.2s, color 0.2s;
-                        ">Create API Key</button>
-                        <button id="enter-hf-token-btn-model" class="capsule-btn-gray" style="
-                            width: 40%; 
-                            padding: 10px 16px; 
-                            background: rgb(233,233,233); 
-                            color: black; 
-                            border: none; 
-                            border-radius: 9999px; 
-                            cursor: pointer;
-                            font-weight: 500;
-                            transition: background-color 0.2s, color 0.2s;
-                        ">Enter Existing Key</button>
-                    </div>
-                </div>
-            </div>
-          `;
-          
-          // Add modal to DOM
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = modalHtml;
-          const modalElement = tempDiv.firstElementChild as HTMLElement;
-          document.body.appendChild(modalElement);
-          
-          // When removing modal, also clean up event listeners
-          const removeModalHF = () => {
-              cleanupModalHF();
-              document.body.removeChild(modalElement);
-          };
-          
-          // Clean up event listeners when modal is closed
-          const cleanupModalHF = () => {
-              document.removeEventListener('keydown', handleEscape);
-          };
-          
-          // Close modal on pressing Escape key
-          const handleEscape = (e: KeyboardEvent) => {
-              if (e.key === 'Escape') {
-                  removeModalHF();
-              }
-          };
-          
-          document.addEventListener('keydown', handleEscape);
-          
-          // Get buttons from the modal
-          const getHfTokenBtn = document.getElementById('get-hf-token-btn-model') as HTMLButtonElement;
-          const enterHfTokenBtn = document.getElementById('enter-hf-token-btn-model') as HTMLButtonElement;
-          const closeHfModalBtn = document.getElementById('close-hf-modal') as HTMLButtonElement;
-          
-          // Handle "Get Token" button
-          const handleGetHfToken = async () => {
-              // Open HuggingFace token page in default browser
-              await open('https://huggingface.co/settings/tokens');
-              // Remove modal
-              removeModalHF();
-          };
-          
-          // Handle Close button (X button)
-          closeHfModalBtn?.addEventListener('click', () => {
-              document.body.removeChild(modalElement);
-          });
-          
-          // Handle "Enter Token" button
-          const handleEnterHfToken = () => {
-              // Close any existing modals first
-              const existingModals = document.querySelectorAll('[id$="-modal"]');
-              existingModals.forEach(modal => {
-                  // Check if it's an element before removing to avoid errors
-                  if (modal.parentNode) {
-                      modal.parentNode.removeChild(modal);
-                  }
-              });
-              
-              // Create a modal with input field instead of using prompt
-              const tokenModalHtml = `
-                <div id="hf-token-input-modal" style="
-                  position: fixed; 
-                  top: 0; 
-                  left: 0; 
-                  width: 100%; 
-                  height: 100%; 
-                  background: rgba(0,0,0,0.5); 
-                  display: flex; 
-                  justify-content: center; 
-                  align-items: center; 
-                  z-index: 10002;
-                  font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-                ">
-                  <div style="
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 12px; 
-                    width: 400px; 
-                    max-width: 90vw; 
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-                    color: black;
-                    text-align: center;
-                    position: relative;
-                  ">
-                    <button id="close-hf-token-modal" style="
-                      position: absolute;
-                      top: 8px;
-                      right: 8px;
-                      width: 30px;
-                      height: 30px;
-                      border-radius: 50%;
-                      background: #E5E7EB;
-                      color: #374151;
-                      border: none;
-                      cursor: pointer;
-                      font-size: 16px;
-                      display: flex;
-                      align-items: center;
-                      justify-content: center;
-                      font-weight: bold;
-                    ">×</button>
-                    <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center; font-size: 16px; font-weight: 600;">Enter HuggingFace Token</h3>
-                    <input 
-                      type="password" 
-                      id="hf-token-input" 
-                      placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      style="
-                        width: 100%;
-                        padding: 10px;
-                        margin: 10px 0;
-                        border: 1px solid #ccc;
-                        border-radius: 8px;
-                        font-size: 14px;
-                        outline: none;
-                      "
-                    />
-                    <div style="display: flex; gap: 8px; margin-top: 15px; justify-content: center;">
-                      <button id="save-hf-token-btn" class="capsule-btn-gray" style="
-                        flex: 1;
-                        padding: 8px 16px;
-                        background: #1e40af;
-                        color: white;
-                        border: none;
-                        border-radius: 9999px;
-                        cursor: pointer;
-                        font-weight: 500;
-                        font-size: 14px;
-                        transition: background-color 0.2s, color 0.2s;
-                      ">Save Token</button>
-                      <button id="cancel-hf-token-btn" class="capsule-btn-gray" style="
-                        flex: 1;
-                        padding: 8px 16px;
-                        background: #E5E7EB;
-                        color: #1e40af;
-                        border: none;
-                        border-radius: 9999px;
-                        cursor: pointer;
-                        font-weight: 500;
-                        font-size: 14px;
-                        transition: background-color 0.2s, color 0.2s;
-                      ">Cancel</button>
-                    </div>
-                  </div>
-                </div>
-              `;
-              
-              // Add modal to DOM
-              const tempDiv = document.createElement('div');
-              tempDiv.innerHTML = tokenModalHtml;
-              const tokenModalElement = tempDiv.firstElementChild as HTMLElement;
-              document.body.appendChild(tokenModalElement);
-              
-              const inputElement = document.getElementById('hf-token-input') as HTMLInputElement;
-              const saveBtn = document.getElementById('save-hf-token-btn') as HTMLButtonElement;
-              const cancelBtn = document.getElementById('cancel-hf-token-btn') as HTMLButtonElement;
-              const closeBtn = document.getElementById('close-hf-token-modal') as HTMLButtonElement;
-              
-              // Add hover event listeners for capsule buttons
-              const capsuleButtons = tokenModalElement.querySelectorAll('.capsule-btn-gray');
-              
-              const handleMouseEnter = (e: { target: any }) => {
-                  (e.target as HTMLElement).style.backgroundColor = 'var(--accent-hover)';
-                  (e.target as HTMLElement).style.color = 'var(--text-on-accent)';
-              };
-              
-              const handleMouseLeave = (e: { target: any }) => {
-                  const target = e.target as HTMLElement;
-                  if (target.id === 'save-hf-token-btn') {
-                      target.style.backgroundColor = 'var(--accent)';
-                  } else if (target.id === 'cancel-hf-token-btn') {
-                      target.style.backgroundColor = 'var(--bg-hover)';
-                      target.style.color = 'var(--text-primary)';
-                  }
-              };
-              
-              capsuleButtons.forEach(btn => {
-                  btn.addEventListener('mouseenter', handleMouseEnter);
-                  btn.addEventListener('mouseleave', handleMouseLeave);
-              });
-              
-              // Handle Save button
-              saveBtn?.addEventListener('click', () => {
-                  const newToken = inputElement?.value;
-                  if (newToken && newToken.trim()) {
-                      // Store the token (single canonical browser-storage key)
-                      storeHfToken(newToken.trim());
-                      alert('HuggingFace token saved successfully! Please restart the app for changes to take effect.');
-                      // Remove modal
-                      document.body.removeChild(tokenModalElement);
-                      // Remove the original modal
-                      removeModalHF();
-                  }
-              });
-              
-              // Handle Cancel button
-              cancelBtn?.addEventListener('click', () => {
-                  document.body.removeChild(tokenModalElement);
-              });
-              
-              // Handle Close button (X button)
-              closeBtn?.addEventListener('click', () => {
-                  document.body.removeChild(tokenModalElement);
-              });
-              
-              // Close modal on clicking outside
-              tokenModalElement.addEventListener('click', (e) => {
-                  if (e.target === tokenModalElement) {
-                      document.body.removeChild(tokenModalElement);
-                  }
-              });
-              
-              // Close modal on pressing Escape key
-              const handleEscape = (e: KeyboardEvent) => {
-                  if (e.key === 'Escape') {
-                      document.body.removeChild(tokenModalElement);
-                  }
-              };
-              
-              document.addEventListener('keydown', handleEscape);
-              
-              // Focus the input field
-              setTimeout(() => {
-                  inputElement?.focus();
-              }, 100);
-          };
-          
-          // Attach event listener
-          getHfTokenBtn?.addEventListener('click', handleGetHfToken);
-          
-          // Attach event listener
-          enterHfTokenBtn?.addEventListener('click', handleEnterHfToken);
-          
-          // Add hover event listeners for capsule buttons
-          const capsuleButtons = modalElement.querySelectorAll('.capsule-btn-gray');
-          
-          const handleMouseEnter = (e: { target: any }) => {
-              (e.target as HTMLElement).style.backgroundColor = 'var(--accent-hover)';
-              (e.target as HTMLElement).style.color = 'var(--text-on-accent)';
-          };
-          
-          const handleMouseLeave = (e: { target: any }) => {
-              (e.target as HTMLElement).style.backgroundColor = 'var(--bg-surface)';
-              (e.target as HTMLElement).style.color = 'var(--text-primary)';
-          };
-          
-          capsuleButtons.forEach(btn => {
-              btn.addEventListener('mouseenter', handleMouseEnter);
-              btn.addEventListener('mouseleave', handleMouseLeave);
-          });
-          
-          // Close modal on clicking outside
-          modalElement.addEventListener('click', (e) => {
-              if (e.target === modalElement) {
-                  removeModalHF();
-              }
-          });
+            // No REPO_ID in the error, so the model is not gated -- there is
+            // simply no token. Same dialog Settings uses, and the retry is
+            // wired to its completion so the download resumes once the token
+            // is in. Three hundred lines of hand-built DOM used to live here.
+            showHuggingFaceApiKeyModal(undefined, setApiKey, () => handleInstallModel(model));
           }
         } else if (errorText.includes('401 Unauthorized') && model.download_source === 'ollama') {
-          // Create a custom modal for Ollama
-          const modalHtml = `
-            <div id="ollama-modal-model" style="
-                position: fixed; 
-                top: 0; 
-                left: 0; 
-                width: 100%; 
-                height: 100%; 
-                background: rgba(0,0,0,0.5); 
-                display: flex; 
-                justify-content: center; 
-                align-items: center; 
-                z-index: 10000;
-                font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-            ">
-                <div style="
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 12px; 
-                    width: 560px; 
-                    max-width: 90vw; 
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-                    color: black;
-                    position: relative;
-                " data-theme="light">
-                    <button id="close-ollama-modal" style="
-                        position: absolute;
-                        top: 8px;
-                        right: 8px;
-                        width: 30px;
-                        height: 30px;
-                        border-radius: 50%;
-                        background: #E5E7EB;
-                        color: #374151;
-                        border: none;
-                        cursor: pointer;
-                        font-size: 16px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-weight: bold;
-                    ">×</button>
-                    <h3 style="color: black; margin-top: 0; margin-bottom: 15px; text-align: center;">Ollama Server Required</h3>
-                    <p style="color: black; text-align: center;">Connect to your Ollama server to access models.</p>
-                    <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: center;">
-                        <button id="setup-ollama-btn-model" class="capsule-btn-gray" style="
-                            width: 40%; 
-                            padding: 10px 16px; 
-                            background: rgb(233,233,233); 
-                            color: black; 
-                            border: none; 
-                            border-radius: 9999px; 
-                            cursor: pointer;
-                            font-weight: 500;
-                            transition: background-color 0.2s, color 0.2s;
-                        ">Setup Guide</button>
-                        <button id="connect-ollama-btn-model" class="capsule-btn-gray" style="
-                            width: 40%; 
-                            padding: 10px 16px; 
-                            background: rgb(233,233,233); 
-                            color: black; 
-                            border: none; 
-                            border-radius: 9999px; 
-                            cursor: pointer;
-                            font-weight: 500;
-                            transition: background-color 0.2s, color 0.2s;
-                        ">Connect</button>
-                    </div>
-                </div>
-            </div>
-          `;
-          
-          // Add modal to DOM
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = modalHtml;
-          const modalElement = tempDiv.firstElementChild as HTMLElement;
-          document.body.appendChild(modalElement);
-          
-          // When removing modal, also clean up event listeners
-          const removeModalOllama = () => {
-              cleanupModalOllama();
-              document.body.removeChild(modalElement);
-          };
-          
-          // Clean up event listeners when modal is closed
-          const cleanupModalOllama = () => {
-              document.removeEventListener('keydown', handleEscape);
-          };
-          
-          // Close modal on pressing Escape key
-          const handleEscape = (e: KeyboardEvent) => {
-              if (e.key === 'Escape') {
-                  removeModalOllama();
-              }
-          };
-          
-          document.addEventListener('keydown', handleEscape);
-          
-          // Get buttons from the modal
-          const setupOllamaBtn = document.getElementById('setup-ollama-btn-model') as HTMLButtonElement;
-          const connectOllamaBtn = document.getElementById('connect-ollama-btn-model') as HTMLButtonElement;
-          const closeOllamaModalBtn = document.getElementById('close-ollama-modal') as HTMLButtonElement;
-          
-          // Handle "Setup Guide" button
-          const handleSetupOllama = async () => {
-              // Open Ollama setup page in default browser
-              await open('https://ollama.com/download');
-              // Remove modal
-              removeModalOllama();
-          };
-          
-          // Handle Close button (X button)
-          closeOllamaModalBtn?.addEventListener('click', () => {
-              document.body.removeChild(modalElement);
-          });
-          
-          // Handle "Connect" button
-          const handleConnectOllama = () => {
-              // Prompt for the Ollama server URL
-              const ollamaUrl = prompt('Please enter your Ollama server URL (e.g., http://localhost:11434):', 'http://localhost:11434');
-              if (ollamaUrl && ollamaUrl.trim()) {
-                  // Store the Ollama URL in localStorage
-                  localStorage.setItem('offline-intelligence-ollama-url', ollamaUrl.trim());
-                  alert('Ollama server URL saved successfully! Please restart the app for changes to take effect.');
-                  // Remove modal
-                  removeModalOllama();
-              }
-          };
-          
-          // Attach event listener
-          setupOllamaBtn?.addEventListener('click', handleSetupOllama);
-          
-          // Attach event listener
-          connectOllamaBtn?.addEventListener('click', handleConnectOllama);
-          
-          // Add hover event listeners for capsule buttons
-          const capsuleButtons = modalElement.querySelectorAll('.capsule-btn-gray');
-          
-          const handleMouseEnter = (e: { target: any }) => {
-              (e.target as HTMLElement).style.backgroundColor = 'var(--accent-hover)';
-              (e.target as HTMLElement).style.color = 'var(--text-on-accent)';
-          };
-          
-          const handleMouseLeave = (e: { target: any }) => {
-              (e.target as HTMLElement).style.backgroundColor = 'var(--bg-surface)';
-              (e.target as HTMLElement).style.color = 'var(--text-primary)';
-          };
-          
-          capsuleButtons.forEach(btn => {
-              btn.addEventListener('mouseenter', handleMouseEnter);
-              btn.addEventListener('mouseleave', handleMouseLeave);
-          });
-          
-          // Close modal on clicking outside
-          modalElement.addEventListener('click', (e) => {
-              if (e.target === modalElement) {
-                  removeModalOllama();
-              }
-          });
+          showOllamaModal();
         } else {
-          showError('Installation Failed', `Failed to start download for ${model.name}`);
+          showError("Couldn't start download", `${model.name} didn't start downloading. Try again.`);
         }
       }
     } catch (error) {
       console.error('Failed to install model:', error);
-      showError('Installation Error', `Failed to install ${model.name}`);
+      showError("Couldn't start download", `${model.name} didn't start downloading. Try again.`);
     }
   };
 
@@ -1458,20 +752,20 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
       const response = await fetch(`${getApiBaseSync()}/models/remove?model_id=${modelToRemove.id}`, { method: 'DELETE' });
       if (response.ok) {
-        showSuccess('Model Removed', 'Model successfully removed');
-        fetchModels();
+        showSuccess('Model removed', 'It no longer takes up space on this computer.');
+        fetchModels(true);
       } else {
-        showError('Removal Failed', 'Failed to remove model');
+        showError("Couldn't remove model", 'Try again. If it keeps happening, restart Counsel.');
       }
     } catch (error) {
       console.error('Failed to remove model:', error);
-      showError('Removal Error', 'Failed to remove model');
+      showError("Couldn't remove model", 'Try again. If it keeps happening, restart Counsel.');
     } finally {
       // Close the confirmation modal
       setShowRemoveConfirmation(false);
@@ -1488,7 +782,7 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
@@ -1499,7 +793,8 @@ const ModelsPanel: React.FC<{
       });
 
       if (response.ok) {
-        showSuccess('Model Switched', `Successfully switched to ${modelName}`);
+        showSuccess('Model switched', `${modelName} is ready.`);
+        announceModelsChanged();
         // Optionally update the selected model in the UI
         onSelectModel?.({ id: modelId, name: modelName, source: 'local' });
       } else {
@@ -1510,18 +805,18 @@ const ModelsPanel: React.FC<{
         const engineErrors = ['engine_not_installed', 'engine_corrupted', 'engine_manager_unavailable'];
         if (engineErrors.includes(errorData.error)) {
           showError(
-            'Inference Engine Problem',
+            'Engine unavailable',
             errorData.detail || 'The inference engine is not available on this machine.'
           );
           // Ask the engine setup gate to re-check /healthz and take over.
           window.dispatchEvent(new CustomEvent('oca-recheck-engine'));
         } else {
-          showError('Switch Failed', errorData.detail || errorData.error || `Failed to switch to ${modelName}`);
+          showError("Couldn't switch model", errorData.detail || errorData.error || `${modelName} couldn't be loaded.`);
         }
       }
     } catch (error) {
       console.error('Failed to switch model:', error);
-      showError('Switch Error', `Failed to switch to ${modelName}`);
+      showError("Couldn't switch model", `${modelName} couldn't be loaded.`);
     }
   };
 
@@ -1529,11 +824,12 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
       await fetch(`${getApiBaseSync()}/models/downloads/pause?download_id=${downloadId}`, { method: 'POST' });
+      announceModelsChanged();
       fetchDownloads();
     } catch (e) { console.error('Pause failed:', e); }
   };
@@ -1542,11 +838,12 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
       await fetch(`${getApiBaseSync()}/models/downloads/resume?download_id=${downloadId}`, { method: 'POST' });
+      announceModelsChanged();
       fetchDownloads();
     } catch (e) { console.error('Resume failed:', e); }
   };
@@ -1555,11 +852,12 @@ const ModelsPanel: React.FC<{
     try {
       // Check backend readiness before making request
       if (!(await checkBackendReadiness())) {
-        showError('Backend Not Ready', `Please ensure the offline-intelligence service is started on ${getApiBaseSync()}.`);
+        showError("Counsel isn't ready yet", 'Its local service is still starting. Try again in a moment.');
         return;
       }
       
       await fetch(`${getApiBaseSync()}/models/downloads/cancel?download_id=${downloadId}`, { method: 'POST' });
+      announceModelsChanged();
       fetchDownloads();
     } catch (e) { console.error('Cancel failed:', e); }
   };
@@ -1575,11 +873,62 @@ const ModelsPanel: React.FC<{
   const isInstalled = (model: Model) => model.status === 'Installed';
 
 
-  const isAvailable = (model: Model) => model.status === 'Available' || (typeof model.status === 'object');
 
   // Find download progress for a model
-  const getDownloadForModel = (modelId: string) =>
-    downloads.find(d => d.model_id === modelId && (d.status === 'Downloading' || d.status === 'Starting' || d.status === 'Paused' || d.status === 'Queued'));
+  // Downloads are tracked under the backend's sanitized id ("author_repo")
+  // while the catalog lists the raw one ("author/repo"); comparing only the
+  // raw id meant no catalog row ever found its download, so rows never showed
+  // progress. The name is the fallback for ids the backend hashes.
+  // Each download belongs to exactly ONE model: the one whose id it names, or
+  // failing that the first with its name. The catalogue can list two builds
+  // under one name, and matching by name alone showed one download twice.
+  const idMatches = (d: DownloadProgress, modelId: string) =>
+    d.model_id === modelId || d.model_id === sanitizeModelId(modelId);
+  const ownerOf = (d: DownloadProgress) =>
+    (models.find(m => idMatches(d, m.id)) ?? models.find(m => m.name === d.model_name))?.id;
+  const getDownloadForModel = (modelId: string, modelName?: string) =>
+    downloads.find(
+      d =>
+        (d.status === 'Downloading' || d.status === 'Starting' || d.status === 'Paused' || d.status === 'Queued') &&
+        (idMatches(d, modelId) || (!!modelName && d.model_name === modelName)) &&
+        (ownerOf(d) ?? modelId) === modelId,
+    );
+
+  // Installs left unfinished when the app last closed.
+  const [interrupted, setInterrupted] = useState<InterruptedDownload[]>([]);
+  const fetchInterrupted = async () => {
+    try {
+      setInterrupted(await getInterruptedDownloads());
+    } catch {
+      setInterrupted([]);
+    }
+  };
+  useEffect(() => {
+    if (!isOpen) return;
+    void fetchInterrupted();
+    const onChanged = () => {
+      void fetchInterrupted();
+      void fetchDownloads();
+    };
+    window.addEventListener(MODELS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MODELS_CHANGED_EVENT, onChanged);
+  }, [isOpen]);
+
+  const handleResumeInterrupted = async (d: InterruptedDownload) => {
+    const result = await resumeInterruptedDownload(d);
+    if (result.ok) {
+      showDownload('Download resumed', `${d.model_name} is downloading again.`);
+      await fetchDownloads();
+      await fetchInterrupted();
+    } else {
+      showError("Couldn't resume download", result.message);
+    }
+  };
+
+  const handleDiscardInterrupted = async (d: InterruptedDownload) => {
+    await discardInterruptedDownload(d.model_id);
+    await fetchInterrupted();
+  };
 
   // Priority companies order (first priority)
   const priorityCompanies = [
@@ -1602,11 +951,16 @@ const ModelsPanel: React.FC<{
 
   const sortModels = (list: Model[]) => {
     return [...list].sort((a, b) => {
-      // First sort by company priority
-      const priorityA = getCompanyPriority(a);
-      const priorityB = getCompanyPriority(b);
-      if (priorityA !== priorityB) {
-        return priorityA - priorityB;
+      // Company priority orders the default view. An explicit sort (size,
+      // newest, oldest, name) must not be overruled by it, or choosing
+      // "Largest first" would still group by company and look broken.
+      const explicit = sortBy === 'size_asc' || sortBy === 'size_desc' || sortBy === 'newest' || sortBy === 'oldest' || sortBy === 'name';
+      if (!explicit) {
+        const priorityA = getCompanyPriority(a);
+        const priorityB = getCompanyPriority(b);
+        if (priorityA !== priorityB) {
+          return priorityA - priorityB;
+        }
       }
       
       // Then apply selected sort
@@ -1614,8 +968,19 @@ const ModelsPanel: React.FC<{
         case 'name': return a.name.localeCompare(b.name);
         case 'size_asc': return a.size_bytes - b.size_bytes;
         case 'size_desc': return b.size_bytes - a.size_bytes;
+        // Catalogue entries without a date sort last either way, rather than
+        // being treated as 1970 and flooding the top of "Oldest".
+        case 'newest': return updatedAt(b) - updatedAt(a);
+        case 'oldest': {
+          const ua = updatedAt(a);
+          const ub = updatedAt(b);
+          if (!ua || !ub) return (ua ? 0 : 1) - (ub ? 0 : 1);
+          return ua - ub;
+        }
         case 'compatibility':
-          return (b.compatibility_score ?? 0) - (a.compatibility_score ?? 0);
+          return (fitOnThisComputer(a.size_bytes, hardwareInfo, a.compatibility_score)?.rank ?? 3) -
+            (fitOnThisComputer(b.size_bytes, hardwareInfo, b.compatibility_score)?.rank ?? 3) ||
+            b.size_bytes - a.size_bytes;
         case 'source':
           return (a.download_source || '').localeCompare(b.download_source || '');
         case 'trending':
@@ -1630,6 +995,7 @@ const ModelsPanel: React.FC<{
   };
 
   const filteredModels = sortModels(models.filter(model => {
+    if (company.length > 0 && !company.includes(makerName(model) ?? "")) return false;
     const searchLower = searchQuery.toLowerCase();
     const matchesSearch = searchQuery === '' ||
       model.name.toLowerCase().includes(searchLower) ||
@@ -1638,188 +1004,245 @@ const ModelsPanel: React.FC<{
       model.provider?.toLowerCase().includes(searchLower) ||
       model.author?.toLowerCase().includes(searchLower) ||
       model.tags.some(tag => tag.toLowerCase().includes(searchLower));
-    if (activeTab === 'installed') return matchesSearch && isInstalled(model);
-    if (activeTab === 'available') return matchesSearch && isAvailable(model);
     return matchesSearch;
   }));
+  const filteredModelsAll = filteredModels;
 
   if (!isOpen) return null;
 
   const activeDownloadCount = downloads.filter(d => d.status === 'Downloading' || d.status === 'Starting').length;
+  // Only downloads still in flight (or stopped part-way and needing a
+  // decision). A finished one leaves this tab at once: the completion effect
+  // above refreshes the catalogue, so it reappears under "On this computer".
+  // Filtered here rather than in state because each poll replaces the list
+  // with the backend's, which keeps completed entries for a while.
+  const shownDownloads = downloads.filter(d => d.status !== 'Cancelled' && d.status !== 'Completed');
+  const downloadsTabCount =
+    downloads.filter(d => ['Queued', 'Starting', 'Downloading', 'Paused'].includes(d.status)).length + interrupted.length;
+  const formatEta = (secs?: number) => {
+    if (!secs || !isFinite(secs)) return '';
+    if (secs < 60) return `${Math.round(secs)}s left`;
+    if (secs < 3600) return `${Math.round(secs / 60)} min left`;
+    return `${(secs / 3600).toFixed(1)} h left`;
+  };
 
-  const sortOptions: { value: SortOption; label: string }[] = [
-    { value: 'popularity', label: 'Trending' },
-    { value: 'name', label: 'Name (A-Z)' },
-    { value: 'size_desc', label: 'Largest Models' },
-    { value: 'size_asc', label: 'Smallest Models' },
-    { value: 'compatibility', label: 'Best Match' },
-    { value: 'source', label: 'Source' },
+  const sortOptions: [SortOption, string][] = [
+    ['compatibility', 'Best for this computer'],
+    ['name', 'Name'],
+    ['size_desc', 'Largest first'],
+    ['size_asc', 'Smallest first'],
+    ['newest', 'Newest'],
+    ['oldest', 'Oldest'],
   ];
 
+  // Companies come from the whole catalogue, not the filtered list, so the
+  // menu does not shrink as you filter by it.
+  const companies: { name: string; count: number }[] = (() => {
+    const counts = new Map<string, number>();
+    for (const m of models) {
+      const maker = makerName(m);
+      if (maker) counts.set(maker, (counts.get(maker) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  })();
+
+  const isActive = (model: Model) =>
+    selectedModel?.id === model.id ||
+    Boolean(
+      activeModelInfo?.model_path &&
+        (activeModelInfo.model_path.includes(model.id) ||
+          (model.filename && activeModelInfo.model_path.includes(model.filename)) ||
+          activeModelInfo.model_name.includes(model.name)),
+    );
+
+  const onThisComputer = (model: Model) => isInstalled(model) || Boolean(getDownloadForModel(model.id, model.name));
+  const listedAll = activeTab === 'installed'
+    ? filteredModelsAll.filter(onThisComputer)
+    : activeTab === 'starred'
+      ? filteredModelsAll.filter(m => starred.has(m.id))
+      : filteredModelsAll;
+  // One row per model, even if the catalogue repeats an id.
+  const unique = listedAll.filter((m, i, all) => all.findIndex(x => x.id === m.id) === i);
+  // On this computer, builds that read the same ("Gemma 3 · 4B" from both a
+  // -it and a -qat repo) are one model to the user: keep the row that matters
+  // most — in use, then installed, then downloading — and drop the rest.
+  const rank = (m: Model) => (isActive(m) ? 3 : isInstalled(m) ? 2 : getDownloadForModel(m.id, m.name) ? 1 : 0);
+  const listed = activeTab === 'installed'
+    ? unique.filter(m => !unique.some(o => o !== m && friendlyModelName(o) === friendlyModelName(m) &&
+        (rank(o) > rank(m) || (rank(o) === rank(m) && unique.indexOf(o) < unique.indexOf(m)))))
+    : unique;
+
+  const installWithTokenCheck = (model: Model) => {
+    if (model.download_source === 'huggingface' && !getStoredHfToken()) {
+      showHuggingFaceApiKeyModal(undefined, setApiKey, () => handleInstallModel(model));
+    } else {
+      void handleInstallModel(model);
+    }
+  };
+
+  /**
+   * The ⋮ menu for one model: what can be done with it in its current state,
+   * then marking it, then removal last and in the danger colour.
+   */
+  const rowMenu = (model: Model): MenuEntry[] => {
+    const name = friendlyModelName(model);
+    const dl = getDownloadForModel(model.id, model.name);
+    const primary: MenuEntry[] = dl
+      ? [
+          dl.status === 'Paused'
+            ? { label: 'Resume download', onSelect: () => handleResumeDownload(dl.download_id) }
+            : { label: 'Pause download', onSelect: () => handlePauseDownload(dl.download_id) },
+        ]
+      : isInstalled(model)
+        ? isActive(model)
+          ? []
+          : [{ label: 'Use this model', onSelect: () => handleSwitchModel(model.id, model.name) }]
+        : [{ label: 'Download', onSelect: () => installWithTokenCheck(model) }];
+
+    const marks: MenuEntry[] = [
+      starred.has(model.id)
+        ? { label: 'Remove from starred', onSelect: () => void toggleStar(model.id, name) }
+        : { label: 'Add to starred', onSelect: () => void toggleStar(model.id, name) },
+      {
+        label: 'Copy model ID',
+        onSelect: () => {
+          void navigator.clipboard?.writeText(model.id);
+          showSuccess('Model ID copied', model.id);
+        },
+      },
+    ];
+
+    const removal: MenuEntry[] = dl
+      ? [{ label: 'Stop download', danger: true, onSelect: () => handleCancelDownload(dl.download_id) }]
+      : isInstalled(model)
+        ? [{ label: 'Remove from this computer', danger: true, onSelect: () => handleRemoveModel(model.id) }]
+        : [];
+
+    return [primary, marks, removal]
+      .filter(group => group.length > 0)
+      .flatMap((group, i) => (i === 0 ? group : (['separator', ...group] as MenuEntry[])));
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100%', backgroundColor: 'var(--bg-canvas)' }}>
-      {/* Header */}
-      <div className="chat-header">
-        <div className="chat-header-bar centered">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button className="header-icon-button" onClick={onClose} title="Back to chat">
-              <ArrowLeft size={18} />
+    <div className="app-view models-page">
+      <div className="ws-landing models-landing">
+        <header className="ws-landing-head models-head">
+          <h1 className="ws-landing-title">Models</h1>
+        </header>
+
+        <div className="ws-views" role="tablist" aria-label="Model views">
+          {([
+            ['available', 'All models'],
+            ['installed', 'On this computer'],
+            ['starred', 'Starred'],
+            ['downloads', 'Downloads'],
+          ] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              className={`ws-view-tab${activeTab === tab ? ' is-on' : ''}`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {label}
+              {tab === 'starred' && starred.size > 0 && (
+                <span className="models-tab-count">{starred.size}</span>
+              )}
+              {tab === 'installed' && activeDownloadCount > 0 && (
+                <span className="models-tab-count">{activeDownloadCount}</span>
+              )}
+              {tab === 'downloads' && downloadsTabCount > 0 && (
+                <span className="models-tab-count">{downloadsTabCount}</span>
+              )}
             </button>
-            <h1 className="chat-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-              </svg>
-              Model Management
-            </h1>
-          </div>
+          ))}
         </div>
-      </div>
 
-      {/* Hardware Info Bar */}
-      {hardwareInfo && (
-        <div style={{
-          display: 'flex', justifyContent: 'center', gap: '24px', padding: '10px 16px',
-          backgroundColor: 'var(--bg-secondary)',
-          fontSize: '13px', color: 'var(--text-secondary)',
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Database size={14} />
-            RAM: {hardwareInfo.available_ram_gb.toFixed(1)} GB free / {hardwareInfo.total_ram_gb.toFixed(1)} GB
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Cpu size={14} />
-            CPU: {hardwareInfo.cpu_cores} cores
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Cpu size={14} />
-            GPU: {hardwareInfo.gpu_available
-              ? `${hardwareInfo.gpu_vram_gb?.toFixed(1) ?? '?'} GB VRAM`
-              : 'Not detected'}
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <HardDrive size={14} />
-            Storage: {formatBytes(hardwareInfo.storage_used_bytes)} used / {formatBytes(hardwareInfo.storage_available_bytes)} free
-          </span>
-        </div>
-      )}
-
-      {/* Search + Tabs */}
-      <div style={{ padding: '16px 16px 0', maxWidth: '960px', margin: '0 auto', width: '100%' }}>
-        {/* Search Bar */}
-        <div style={{ position: 'relative', marginBottom: '16px' }}>
-          <Search size={16} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+        <div className="ws-searchbar">
+          <Search size={15} strokeWidth={2.25} className="ws-search-icon" />
           <input
-            type="text"
-            placeholder="Search by model name, company (Google, Meta, OpenAI...), or tags..."
+            className="ws-search-input"
+            type="search"
+            placeholder="Search models"
+            aria-label="Search models"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              width: '100%', padding: '10px 14px 10px 40px',
-              border: '1px solid var(--border-primary)', borderRadius: '12px',
-              fontSize: '14px', outline: 'none', backgroundColor: 'var(--bg-input)',
-              color: 'var(--text-primary)',
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setSearchQuery('');
             }}
           />
-        </div>
-
-        {/* Tabs + Sort/Refresh */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-primary)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0' }}>
-            {(['available', 'downloads', 'installed'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: '10px 20px', fontSize: '14px', fontWeight: 500,
-                  border: 'none', background: 'none', cursor: 'pointer',
-                  color: activeTab === tab ? 'var(--accent)' : 'var(--text-secondary)',
-                  borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
-                  position: 'relative',
-                }}
-              >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                {tab === 'downloads' && activeDownloadCount > 0 && (
-                  <span style={{
-                    position: 'absolute', top: '4px', right: '2px',
-                    backgroundColor: 'var(--danger)', color: 'var(--bg-surface)', fontSize: '11px',
-                    borderRadius: '50%', width: '18px', height: '18px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    {activeDownloadCount}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '2px' }}>
-            {/* Sort dropdown */}
-            <div style={{ position: 'relative' }}>
-              <button className="header-button" onClick={() => setShowSortDropdown(!showSortDropdown)}>
-                Sort <ChevronDown size={14} />
-              </button>
-              {showSortDropdown && (
-                <div className="dropdown-menu" style={{ right: 0, top: '100%', minWidth: '160px' }}>
-                  {sortOptions.map(opt => (
-                    <button
-                      key={opt.value}
-                      className="dropdown-item"
-                      style={{ fontSize: '13px', fontWeight: sortBy === opt.value ? 600 : 400 }}
-                      onClick={() => { setSortBy(opt.value); setShowSortDropdown(false); }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button className="header-button" onClick={refreshCatalog}>
-              <RefreshCw size={16} />
-              Refresh
+          {searchQuery && (
+            <button type="button" className="ws-close" onClick={() => setSearchQuery('')} aria-label="Clear search">
+              <X size={14} strokeWidth={1.75} />
             </button>
-          </div>
+          )}
         </div>
-      </div>
 
-      {/* API Keys Section */}
-      <div style={{ padding: '16px', maxWidth: '960px', margin: '0 auto', width: '100%' }}>
-        <div style={{
-          padding: '14px 16px', marginBottom: '0',
-          backgroundColor: 'var(--bg-secondary)', borderRadius: '12px',
-          border: '1px solid var(--border-primary)',
-        }}>
-          <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '12px' }}>
-            API Keys
-          </div>
-          
-          {/* HuggingFace Token */}
-          <div style={{ marginBottom: showHfTokenInput ? '12px' : '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showHfTokenInput ? '10px' : '0' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{
-                  width: '8px', height: '8px', borderRadius: '50%',
-                  backgroundColor: hfToken ? 'var(--success-fg)' : 'var(--danger)',
-                  boxShadow: hfToken ? '0 0 8px #166534' : '0 0 8px #ef4444',
-                  marginRight: '8px'
-                }} />
-                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>HuggingFace Token</span>
+        <section className="ws-files-box models-box" aria-label="Models">
+          <div className="ws-files-toolbar">
+            <div className="ws-filters">
+              <div className="ws-toolbar-actions">
+                <button
+                  type="button"
+                  className="ws-pill ws-create-folder vault-pill models-token-btn"
+                  onClick={toggleTokenPanel}
+                  aria-expanded={tokenOpen}
+                  title={hasToken ? undefined : 'Enter a complete access token to close this'}
+                >
+                  Access token
+                </button>
+                <FilterSelect label="Sort models" value={sortBy} options={sortOptions} onChange={setSortBy} />
+                <CompanySelect value={company} companies={companies} onChange={setCompany} />
               </div>
+            </div>
+            <div className="ws-toolbar-actions">
               <button
-                onClick={() => setShowHfTokenInput(!showHfTokenInput)}
-                style={{
-                  padding: '4px 16px', borderRadius: '6px', fontSize: '12px',
-                  border: '1px solid var(--border-primary)', backgroundColor: 'var(--bg-surface)',
-                  color: 'var(--text-primary)', cursor: 'pointer', fontWeight: 500,
-                }}
+                type="button"
+                className="ws-pill ws-create-folder models-icon-btn"
+                onClick={refreshCatalog}
+                title="Refresh the model list"
+                aria-label="Refresh the model list"
               >
-                {showHfTokenInput ? 'Hide' : hfToken ? 'Change' : 'Add'}
+                <RefreshCw size={16} strokeWidth={1.75} />
               </button>
             </div>
-            {showHfTokenInput && (
-              <div>
+          </div>
+
+          {/* Always mounted; the CSS grid row eases between 0 and its content
+              height, so opening and closing are one continuous slide. */}
+          <div
+            className={`models-token${tokenOpen ? ' is-open' : ''}`}
+            aria-hidden={!tokenOpen}
+            {...(tokenOpen ? {} : ({ inert: '' } as object))}
+          >
+            <div className="models-token__inner">
+              <div className="models-token__text">
+                <span className={`models-key-dot${hfToken ? ' is-set' : ''}`} aria-hidden="true" />
+                <span>HuggingFace access token</span>
+                <span className="models-token__hint">
+                  Get one at{' '}
+                  <a
+                    href="#"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      await open('https://huggingface.co/settings/tokens');
+                    }}
+                  >
+                    huggingface.co/settings/tokens
+                  </a>
+                </span>
+              </div>
+              <div className="ws-searchbar models-token__field">
+                <KeyRound size={15} strokeWidth={2} className="ws-search-icon" />
                 <input
                   id="hf-token-input"
+                  className="ws-search-input"
                   type="password"
-                  placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  placeholder="Paste your access token"
+                  aria-label="HuggingFace access token"
                   value={hfToken || ''}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -1833,178 +1256,278 @@ const ModelsPanel: React.FC<{
                       setApiKey('huggingface', '');
                     }
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const val = (e.target as HTMLInputElement).value.trim();
-                      if (val) {
-                        storeHfToken(val);
-                        setApiKey('huggingface', val);
-                        persistApiKey('huggingface', val).catch(console.error);
-                      } else {
-                        clearStoredHfToken();
-                        setApiKey('huggingface', '');
-                      }
-                    }
-                  }}
-                  style={{
-                    width: '100%', padding: '8px 12px', borderRadius: '8px',
-                    border: '1px solid var(--border-primary)', fontSize: '13px',
-                    backgroundColor: 'var(--bg-input)', color: 'var(--text-primary)',
-                    outline: 'none',
-                  }}
                 />
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                  Required for gated models (Gemma, Llama-2, etc.). Get a token at{' '}
-                  <a href="#" onClick={async (e) => {
-                    e.preventDefault();
-                    await open('https://huggingface.co/settings/tokens');
-                  }} style={{ color: 'var(--accent)', textDecoration: 'none', cursor: 'pointer' }}>huggingface.co/settings/tokens</a>
-                </p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                  <strong>Note:</strong> After adding your token, you may need to restart the application for it to take effect.
-                </p>
               </div>
-            )}
+            </div>
           </div>
-          
-        </div>
-      </div>
 
-      {/* Content Area - Scrollable */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px', backgroundColor: 'var(--bg-canvas)' }}>
-        <div style={{ maxWidth: '960px', margin: '0 auto' }}>
-          {fetchError && !isLoading && (
-            <div style={{
-              padding: '14px 16px', marginBottom: '16px',
-              backgroundColor: 'var(--danger-quiet)', borderRadius: '12px',
-              border: '1px solid #fca5a5', color: 'var(--danger-fg)', fontSize: '13px',
-            }}>
-              {fetchError}
-            </div>
-          )}
+          <div className="models-below">
 
-          {isLoading ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '60px 0' }}>
-              <div style={{
-                width: '32px', height: '32px', border: '3px solid var(--border-primary)',
-                borderTop: '3px solid var(--accent)', borderRadius: '50%',
-                animation: 'spin 1s linear infinite',
-              }} />
-            </div>
-          ) : activeTab === 'downloads' ? (
-            /* Downloads Tab */
-            <div>
-              {downloads.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-                  <Download size={40} style={{ margin: '0 auto 12px', opacity: 0.5 }} />
-                  <p>No active downloads</p>
-                  <p style={{ marginTop: '8px', fontSize: '13px' }}>
-                    Go to the <button onClick={() => setActiveTab('available')} style={{ color: 'var(--accent)', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px' }}>Available</button> tab to browse and download models.
-                  </p>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {downloads.map(download => (
-                    <DownloadCard
-                      key={download.download_id}
-                      download={download}
-                      onPause={handlePauseDownload}
-                      onResume={handleResumeDownload}
-                      onCancel={handleCancelDownload}
-                      formatBytes={formatBytes}
-                    />
-                  ))}
-                </div>
+          {/* The embedding model, with the other models that are on this
+              computer.
+
+              It used to sit in a box of its own above the tabs, which put the
+              one model nobody chooses — it ships with the app and is installed
+              before the page is ever opened — in the most prominent position
+              on a page about choosing models. It is not an announcement; it is
+              an inventory item, and this is the inventory. */}
+          {activeTab === 'installed' && <EmbeddingModelsSection />}
+
+          {activeTab === 'downloads' ? (
+            shownDownloads.length === 0 && interrupted.length === 0 ? (
+              <div className="models-state">
+                <Download size={30} strokeWidth={1.5} className="models-state__icon" />
+                <span className="models-state__title">No downloads right now</span>
+              </div>
+            ) : (
+              <ul key="downloads" className="models-downloads ws-mode-in" aria-label="Downloads">
+                {shownDownloads.map(dl => {
+                  const pct = Math.min(dl.percentage ?? 0, 100);
+                  const running = dl.status === 'Downloading' || dl.status === 'Starting' || dl.status === 'Queued';
+                  const statusText =
+                    dl.status === 'Completed'
+                      ? 'Downloaded'
+                      : dl.status === 'Failed'
+                        ? `Failed${dl.error_message ? `: ${dl.error_message.split('\n')[0]}` : ''}`
+                        : dl.status === 'Paused'
+                          ? 'Paused'
+                          : dl.status === 'Queued' || dl.status === 'Starting'
+                            ? 'Starting…'
+                            : [
+                                dl.speed_bps > 0 ? `${formatBytes(dl.speed_bps)}/s` : '',
+                                formatEta(dl.estimated_time_remaining),
+                              ].filter(Boolean).join(' · ');
+                  return (
+                    <li key={dl.download_id} className={`models-dl models-dl--${dl.status.toLowerCase()}`}>
+                      <div className="models-dl__head">
+                        <span className="models-dl__name">{dl.model_name}</span>
+                        <span className="models-dl__pct">{pct.toFixed(0)}%</span>
+                      </div>
+                      <div
+                        className={`ui-progress ui-progress--thin${running ? ' is-active' : ''}`}
+                        style={{ '--progress': pct } as React.CSSProperties}
+                        role="progressbar"
+                        aria-label={`${dl.model_name} download`}
+                        aria-valuenow={Math.round(pct)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div className="ui-progress__fill" />
+                      </div>
+                      <div className="models-dl__foot">
+                        <span className="models-dl__meta">
+                          {formatBytes(dl.bytes_downloaded ?? 0)}
+                          {dl.total_bytes ? ` of ${formatBytes(Math.max(dl.total_bytes, dl.bytes_downloaded ?? 0))}` : ''}
+                          {statusText ? ` · ${statusText}` : ''}
+                        </span>
+                        <span className="models-dl__actions">
+                          {dl.status === 'Downloading' && (
+                            <button type="button" className="models-dl__btn" onClick={() => handlePauseDownload(dl.download_id)}>
+                              <Pause size={13} strokeWidth={0} fill="currentColor" /> Pause
+                            </button>
+                          )}
+                          {dl.status === 'Paused' && (
+                            <button type="button" className="models-dl__btn models-dl__btn--primary" onClick={() => handleResumeDownload(dl.download_id)}>
+                              <Play size={13} strokeWidth={0} fill="currentColor" /> Resume
+                            </button>
+                          )}
+                          {(running || dl.status === 'Paused') && (
+                            <button type="button" className="models-dl__btn" onClick={() => handleCancelDownload(dl.download_id)}>
+                              <Square size={11} strokeWidth={0} fill="currentColor" /> Cancel
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+                {interrupted.map(d => {
+                  const pct = d.size_bytes > 0 ? Math.min((d.bytes_on_disk / d.size_bytes) * 100, 100) : 0;
+                  return (
+                    <li key={`interrupted-${d.model_id}`} className="models-dl models-dl--paused">
+                      <div className="models-dl__head">
+                        <span className="models-dl__name">{d.model_name}</span>
+                        <span className="models-dl__pct">{pct.toFixed(0)}%</span>
+                      </div>
+                      <div
+                        className="ui-progress ui-progress--thin"
+                        style={{ '--progress': pct } as React.CSSProperties}
+                        role="progressbar"
+                        aria-label={`${d.model_name} download`}
+                        aria-valuenow={Math.round(pct)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div className="ui-progress__fill" />
+                      </div>
+                      <div className="models-dl__foot">
+                        <span className="models-dl__meta">
+                          {formatBytes(d.bytes_on_disk)}
+                          {d.size_bytes ? ` of ${formatBytes(d.size_bytes)}` : ''} · Paused when the app closed
+                        </span>
+                        <span className="models-dl__actions">
+                          <button type="button" className="models-dl__btn models-dl__btn--primary" onClick={() => void handleResumeInterrupted(d)}>
+                            <Play size={13} strokeWidth={2} /> Resume
+                          </button>
+                          <button type="button" className="models-dl__btn" onClick={() => void handleDiscardInterrupted(d)}>
+                            <Trash2 size={12} strokeWidth={2} /> Discard
+                          </button>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )
+          ) : isLoading ? (
+            <div className="models-state">Loading models…</div>
+          ) : listed.length === 0 ? (
+            <div className="models-state">
+              <Download size={30} strokeWidth={1.5} className="models-state__icon" />
+              <span className="models-state__title">
+                {searchQuery
+                  ? 'No models match your search'
+                  : activeTab === 'installed'
+                    ? 'No models on this computer yet'
+                    : activeTab === 'starred'
+                      ? 'No starred models yet. Use ⋮ › Add to starred on any model'
+                      : 'No models available'}
+              </span>
+              {(activeTab === 'installed' || activeTab === 'starred') && !searchQuery && (
+                <button
+                  type="button"
+                  className="ws-pill ws-create-folder vault-pill models-all-btn"
+                  onClick={() => setActiveTab('available')}
+                >
+                  Browse all models
+                </button>
               )}
             </div>
           ) : (
-            /* Installed / Available Tab */
-            <div>
-              {filteredModels.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-                  <Download size={40} style={{ margin: '0 auto 12px', opacity: 0.5 }} />
-                  <p>{searchQuery ? 'No models match your search' : `No ${activeTab} models`}</p>
-                  {activeTab === 'installed' && !searchQuery && (
-                    <p style={{ marginTop: '8px', fontSize: '13px' }}>
-                      Go to the <button onClick={() => setActiveTab('available')} style={{ color: 'var(--accent)', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px' }}>Available</button> tab to browse and install models.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="models-grid">
-                  {filteredModels.map(model => {
-                    const dl = getDownloadForModel(model.id);
-                    return (
-                      <ModelCard
-                        key={model.id}
-                        model={model}
-                        download={dl}
-                        isInstalled={isInstalled(model)}
-                        isAvailable={isAvailable(model)}
-                        onInstall={handleInstallModel}
-                        onRemove={handleRemoveModel}
-                        onPauseDownload={handlePauseDownload}
-                        onResumeDownload={handleResumeDownload}
-                        onCancelDownload={handleCancelDownload}
-                        formatBytes={formatBytes}
-                        selectedModel={selectedModel}
-                        activeModelInfo={activeModelInfo}
-                        onSwitchModel={handleSwitchModel}
-                      />
-                    );
-                  })}
-                </div>
-              )}
+            <div key={activeTab} className="ws-file-list models-table ws-mode-in" role="table" aria-label="Models">
+              <div className="ws-list-head" role="row">
+                <span role="columnheader">Model</span>
+                <span role="columnheader">Company</span>
+                <span role="columnheader">Download size</span>
+                <span role="columnheader">Modality</span>
+                <span role="columnheader" title="How well it runs on this computer">Fit</span>
+                <span role="columnheader" />
+              </div>
+              <div className="ws-list-body">
+                {listed.map(model => {
+                  const dl = getDownloadForModel(model.id, model.name);
+                  const size = model.size_bytes + (model.mmproj_filename ? (model.mmproj_size_bytes ?? 0) : 0);
+                  const fit = fitOnThisComputer(size, hardwareInfo, model.compatibility_score);
+                  const maker = makerName(model);
+                  const pct = Math.min(dl?.percentage ?? 0, 100).toFixed(0);
+                  const status = dl
+                    ? dl.status === 'Paused'
+                      ? `Paused ${pct}%`
+                      : dl.status === 'Queued'
+                        ? 'Queued'
+                        : `Downloading ${pct}%`
+                    : isInstalled(model)
+                      ? isActive(model) ? 'In use' : 'Installed'
+                      : 'Available';
+                  const statusTone = dl ? 'busy' : isActive(model) ? 'active' : isInstalled(model) ? 'installed' : 'available';
+
+                  return (
+                    <div
+                      key={model.id}
+                      role="row"
+                      className={`ws-list-row models-row${dl ? ' models-row--downloading' : ''}`}
+                      style={dl ? ({ '--progress': Math.min(dl.percentage ?? 0, 100) } as React.CSSProperties) : undefined}
+                    >
+                      <span className="ws-list-name" title={model.id}>
+                        <span className="ws-list-title">{friendlyModelName(model)}</span>
+                        {starred.has(model.id) && (
+                          <Star size={13} strokeWidth={2} className="models-star" aria-label="Starred" />
+                        )}
+                        {statusTone !== 'available' && (
+                          <span className={`models-name-status models-status-${statusTone}`}>{status}</span>
+                        )}
+                      </span>
+                      <span className="ws-list-cell models-lab">
+                        {maker ? (
+                          <>
+                            <LabLogo company={maker} />
+                            <span className="models-lab__name">{maker}</span>
+                          </>
+                        ) : '-'}
+                      </span>
+                      <span className="ws-list-cell">{size > 0 ? formatBytes(size) : '-'}</span>
+                      <span className="ws-list-cell">
+                        <Modalities vision={Boolean(model.mmproj_filename)} />
+                      </span>
+                      <span className="ws-list-cell">
+                        {fit ? (
+                          <span className={`ws-chip models-chip-plain models-fit-${fit.tone}`}>
+                            <span className="ws-chip-dot" aria-hidden="true" />
+                            {fit.label}
+                          </span>
+                        ) : '-'}
+                      </span>
+                      <span className="ws-list-actions">
+                        {dl?.status === 'Downloading' && (
+                          <button
+                            type="button"
+                            className="models-row-dlbtn"
+                            onClick={() => handlePauseDownload(dl.download_id)}
+                            aria-label={`Pause downloading ${friendlyModelName(model)}`}
+                            title="Pause"
+                          >
+                            <Pause size={14} strokeWidth={0} fill="currentColor" />
+                          </button>
+                        )}
+                        {dl?.status === 'Paused' && (
+                          <button
+                            type="button"
+                            className="models-row-dlbtn"
+                            onClick={() => handleResumeDownload(dl.download_id)}
+                            aria-label={`Resume downloading ${friendlyModelName(model)}`}
+                            title="Resume"
+                          >
+                            <Play size={14} strokeWidth={0} fill="currentColor" />
+                          </button>
+                        )}
+                        <ItemMenu label={friendlyModelName(model)} vertical entries={rowMenu(model)} />
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-        </div>
+          </div>
+        </section>
       </div>
 
       {/* Download notification bubble (shown on other pages via App-level, but also here for context) */}
-      {activeTab !== 'downloads' && activeDownloadCount > 0 && (
-        <div className="download-bubble">
-          <div className="download-bubble-header">
-            <span className="download-bubble-title">
-              {activeDownloadCount} download{activeDownloadCount > 1 ? 's' : ''} in progress
-            </span>
-            <button className="download-bubble-close" onClick={() => setActiveTab('downloads')}>
-              View
-            </button>
-          </div>
-          {/* Third and last inline progress bar in this file, now also on the
-              shared primitive. All three previously hand-rolled a trough and a
-              fill with their own heights, radii and transition durations. */}
-          {downloads.filter(d => d.status === 'Downloading').slice(0, 2).map(dl => (
-            <div key={dl.download_id} style={{ marginBottom: 'var(--sp-2)' }}>
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 'var(--sp-1)' }}>
-                {dl.model_name}
-              </div>
-              <div
-                className="ui-progress ui-progress--thin is-active"
-                style={{ '--progress': Math.min(dl.percentage ?? 0, 100) } as React.CSSProperties}
+      {activeTab !== 'installed' && activeTab !== 'downloads' && activeDownloadCount > 0 && (
+        (() => {
+          const running = downloads.filter(d => d.status === 'Downloading');
+          const first = running[0] ?? downloads[0];
+          const pct = Math.min(first?.percentage ?? 0, 100);
+          return (
+            <div className="download-bubble" role="status">
+              <span className="download-bubble-name">
+                {activeDownloadCount > 1 ? `${activeDownloadCount} downloads` : first?.model_name}
+              </span>
+              <span className="download-bubble-pct">{pct.toFixed(0)}%</span>
+              <button className="download-bubble-close" onClick={() => setActiveTab('downloads')}>
+                View
+              </button>
+              <span
+                className="download-bubble-line"
+                style={{ '--progress': pct } as React.CSSProperties}
                 role="progressbar"
-                aria-valuenow={Math.round(dl.percentage ?? 0)}
+                aria-valuenow={Math.round(pct)}
                 aria-valuemin={0}
                 aria-valuemax={100}
-              >
-                <div className="ui-progress__fill" />
-              </div>
-              <div
-                style={{
-                  fontSize: 'var(--fs-2xs)',
-                  color: 'var(--text-muted)',
-                  marginTop: '3px',
-                  fontVariantNumeric: 'tabular-nums',
-                }}
-              >
-                {Math.min(dl.percentage ?? 0, 100).toFixed(0)}% · {formatBytes(dl.bytes_downloaded ?? 0)}
-                {dl.total_bytes
-                  ? ` / ${formatBytes(Math.max(dl.total_bytes, dl.bytes_downloaded ?? 0))}`
-                  : ''}
-              </div>
+              />
             </div>
-          ))}
-        </div>
+          );
+        })()
       )}
 
       {/* Model Removal Confirmation Modal */}
@@ -2021,91 +1544,34 @@ const ModelsPanel: React.FC<{
           <div style={{
             backgroundColor: 'var(--bg-surface)',
             border: '1px solid var(--border)',
-            borderRadius: 'var(--r-xl)',
+            borderRadius: '6px',
             padding: 'var(--sp-6)',
+            fontFamily: 'var(--font-sans)',
             maxWidth: '500px',
             width: '90%',
             boxShadow: 'var(--shadow-lg)',
           }}>
             <h3 style={{ margin: '0 0 var(--sp-4) 0', color: 'var(--text-heading)', fontSize: 'var(--fs-xl)' }}>Remove this model?</h3>
             <p style={{ margin: '0 0 16px 0', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Are you sure you want to permanently remove this model? This action cannot be undone.
+              The model will be deleted from this computer. You can install it again later.
             </p>
             
-            {/* Model Details */}
-            <div style={{
-              backgroundColor: 'var(--bg-inset)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--r-md)',
-              padding: '16px',
-              marginBottom: '16px',
-            }}>
-              <h4 style={{ margin: '0 0 12px 0', color: 'var(--text-primary)', fontSize: '16px' }}>{modelToRemove.name}</h4>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '12px' }}>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Format</div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-primary)', fontWeight: 500 }}>{modelToRemove.format.toUpperCase()}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Size</div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-primary)', fontWeight: 500 }}>{formatBytes(modelToRemove.size_bytes)}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Parameters</div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-primary)', fontWeight: 500 }}>
-                    {modelToRemove.parameters || 'N/A'}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Source</div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-primary)', fontWeight: 500 }}>
-                    {modelToRemove.download_source ? modelToRemove.download_source.charAt(0).toUpperCase() + modelToRemove.download_source.slice(1) : 'Local'}
-                  </div>
-                </div>
-              </div>
-              
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {(modelToRemove.tags || []).slice(0, 5).map((tag, index) => (
-                  <span key={index} style={{
-                    fontSize: '11px',
-                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                    color: 'var(--accent)',
-                    padding: '4px 8px',
-                    borderRadius: '6px',
-                  }}>
-                    #{tag}
-                  </span>
-                ))}
-              </div>
+            <div className="models-remove-detail">
+              <span className="models-remove-detail__name">{friendlyModelName(modelToRemove)}</span>
+              <span className="models-remove-detail__size">
+                Frees about {formatBytes(modelToRemove.size_bytes)} on this computer
+              </span>
             </div>
-            
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
               <button
                 onClick={cancelRemoveModel}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-primary)',
-                  backgroundColor: 'transparent',
-                  color: 'var(--text-primary)',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                }}
+                className="models-modal-btn"
               >
                 Cancel
               </button>
               <button
                 onClick={confirmRemoveModel}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  backgroundColor: 'var(--danger)',
-                  color: 'var(--text-on-accent)',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
+                className="models-modal-btn models-modal-btn--primary"
               >
                 Remove Model
               </button>
@@ -2117,460 +1583,26 @@ const ModelsPanel: React.FC<{
   );
 };
 
-// Model Card Component with inline download progress
-const ModelCard: React.FC<{
-  model: Model;
-  download?: DownloadProgress;
-  isInstalled: boolean;
-  isAvailable: boolean;
-  onInstall: (m: Model) => void;
-  onRemove: (id: string) => void;
-  onPauseDownload: (id: string) => void;
-  onResumeDownload: (id: string) => void;
-  onCancelDownload: (id: string) => void;
-  formatBytes: (b: number) => string;
-  selectedModel?: SelectedModel | null;
-  activeModelInfo?: ActiveModelInfo | null;
-  onSwitchModel?: (modelId: string, modelName: string) => void;
-}> = ({ model, download, isInstalled, isAvailable, onInstall, onRemove, onPauseDownload, onResumeDownload, onCancelDownload, formatBytes, selectedModel, activeModelInfo, onSwitchModel }) => {
-  const { setApiKey } = useAuth();
-  const modelIdClean = model.id;
-  const isSelected = selectedModel?.id === modelIdClean;
-  // In-flight guard: prevents a second click firing another install between
-  // the click and the backend response populating `download`.
-  const [isInstalling, setIsInstalling] = useState(false);
-
-  const isActiveModel = () => {
-    return activeModelInfo && activeModelInfo.model_path && 
-      (activeModelInfo.model_path.includes(model.id) || 
-       (model.filename && activeModelInfo.model_path.includes(model.filename)) ||
-       activeModelInfo.model_name.includes(model.name));
-  };
-  
-  // Define helper function locally to ensure availability
-  const getSourceLabel = (source?: string): string => {
-    switch (source) {
-      case 'huggingface': return 'HuggingFace';
-      case 'ollama': return 'Ollama';
-
-      default: return 'Local';
-    }
-  };
-  
-  /* Compatibility verdict REMOVED from the card (user decision 2026-08-08):
-     the "Runs well here / Too large for this machine" line on every card read
-     as odd/judgmental. The backend still computes compatibility_score (it
-     drives Best Match sorting); it is simply no longer rendered here. */
-
-  // Parameter count: from the field when the backend supplies one, otherwise
-  // from the name, since many HuggingFace entries encode it only there.
-  const paramLabel =
-    model.parameters ??
-    model.name.match(/(\d+(?:\.\d+)?\s*[BMK])\b/i)?.[1]?.replace(/\s+/g, '').toUpperCase() ??
-    null;
-
-  const dlState = download?.status ?? '';
-  const dlTone =
-    dlState === 'Paused'
-      ? 'warning'
-      : dlState === 'Failed'
-        ? 'danger'
-        : dlState === 'Completed'
-          ? 'success'
-          : '';
-
-  return (
-    <div className={`model-card${isSelected || isActiveModel() ? ' is-active' : ''}`}>
-      <div className="model-card__head">
-        <h3 className="model-card__name">{model.name}</h3>
-        <span className="ui-badge">{getSourceLabel(model.download_source)}</span>
-      </div>
-
-      {model.description && <p className="model-card__desc">{model.description}</p>}
-
-      <div className="model-card__meta">
-        {model.mmproj_filename && (
-          <span
-            className="ui-badge ui-badge--success"
-            title="Vision-capable: reads text (including handwriting) from images and scanned documents. The multimodal projector downloads with the model and loads automatically."
-          >
-            Vision
-          </span>
-        )}
-        <span className="ui-badge">{model.format.toUpperCase()}</span>
-        {paramLabel && <span className="ui-badge ui-badge--accent">{paramLabel}</span>}
-        {(model.provider || model.author) && <span className="ui-badge">{model.provider || model.author}</span>}
-        {model.size_bytes > 0 && (
-          <span
-            className="ui-badge"
-            title={
-              model.mmproj_filename && (model.mmproj_size_bytes ?? 0) > 0
-                ? `Model ${formatBytes(model.size_bytes)} + vision projector ${formatBytes(model.mmproj_size_bytes!)}`
-                : undefined
-            }
-          >
-            {formatBytes(model.size_bytes + (model.mmproj_filename ? (model.mmproj_size_bytes ?? 0) : 0))}
-          </span>
-        )}
-        {model.context_length != null && model.context_length > 0 && (
-          <span className="ui-badge" title="Context window this model was trained for">
-            {model.context_length >= 1024
-              ? `${Math.round(model.context_length / 1024)}K ctx`
-              : `${model.context_length} ctx`}
-          </span>
-        )}
-      </div>
-
-      {model.tags.length > 0 && (
-        <div className="model-card__tags">
-          {model.tags.slice(0, 5).map(tag => (
-            <span key={tag}>#{tag}</span>
-          ))}
-          {model.tags.length > 5 && <span>+{model.tags.length - 5}</span>}
-        </div>
-      )}
-
-      {/* Download in flight.
-          Built on the .ui-progress primitive, which means a PAUSED transfer is
-          visibly still: the travelling sheen runs only while .is-active. That
-          stillness is the clearest confirmation that pausing actually worked —
-          the previous bar looked identical paused or downloading, and only the
-          amber fill colour distinguished them. */}
-      {download && (
-        <div className="model-dl">
-          <div className="model-dl__top">
-            <span className="model-dl__pct">
-              {/* Clamped: the backend total is an estimate until the transfer's
-                  own Content-Length lands, and a raw value once rendered as
-                  "112%" in production. The bars below already clamped; the
-                  number did not. */}
-              {Math.min(download.percentage ?? 0, 100).toFixed(0)}
-              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>%</span>
-            </span>
-            <span className="model-dl__state">{dlState || 'Downloading'}</span>
-          </div>
-
-          <div
-            className={[
-              'ui-progress',
-              dlTone && `ui-progress--${dlTone}`,
-              dlState === 'Downloading' && 'is-active',
-              // Queued has no meaningful percentage yet, so an indeterminate
-              // bar is honest where a 0% determinate bar reads as "stalled".
-              dlState === 'Queued' && 'ui-progress--indeterminate',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            style={{ '--progress': Math.min(download.percentage ?? 0, 100) } as React.CSSProperties}
-            role="progressbar"
-            aria-valuenow={Math.round(download.percentage ?? 0)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div className="ui-progress__fill" />
-          </div>
-
-          <div className="model-dl__facts">
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Received</span>
-              <span className="model-dl__fact-val">
-                {formatBytes(download.bytes_downloaded ?? 0)}
-                {/* Never show "2 GB / 1.8 GB": if the running total is behind
-                    the bytes already received, the received figure IS the
-                    better lower bound for the total. */}
-                {download.total_bytes
-                  ? ` / ${formatBytes(Math.max(download.total_bytes, download.bytes_downloaded ?? 0))}`
-                  : ''}
-              </span>
-            </span>
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Speed</span>
-              <span className="model-dl__fact-val">
-                {download.speed_bps > 0 ? `${formatBytes(download.speed_bps)}/s` : '—'}
-              </span>
-            </span>
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Remaining</span>
-              <span className="model-dl__fact-val">
-                {download.speed_bps > 0 &&
-                download.estimated_time_remaining != null &&
-                download.estimated_time_remaining > 0
-                  ? formatEta(download.estimated_time_remaining)
-                  : '—'}
-              </span>
-            </span>
-          </div>
-
-          {download.error_message && (
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger-fg)' }}>
-              {download.error_message}
-            </span>
-          )}
-
-          <div className="model-dl__actions">
-            {dlState === 'Downloading' && (
-              <button
-                type="button"
-                className="ui-btn ui-btn--sm ui-btn--secondary"
-                onClick={() => onPauseDownload(download.download_id)}
-              >
-                <Pause size={12} /> Pause
-              </button>
-            )}
-            {dlState === 'Paused' && (
-              <button
-                type="button"
-                className="ui-btn ui-btn--sm ui-btn--primary"
-                onClick={() => onResumeDownload(download.download_id)}
-              >
-                <Play size={12} /> Resume
-              </button>
-            )}
-            <button
-              type="button"
-              className="ui-btn ui-btn--sm ui-btn--danger"
-              onClick={() => onCancelDownload(download.download_id)}
-            >
-              <Square size={12} /> Stop
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="model-card__spacer" />
-
-      <div className="model-card__actions">
-        {!download && isInstalled && (
-          <>
-            <button
-              type="button"
-              className="ui-iconbtn ui-iconbtn--danger"
-              onClick={() => onRemove(model.id)}
-              title="Remove this model from disk"
-              aria-label={`Remove ${model.name}`}
-            >
-              <Trash2 size={14} />
-            </button>
-            <button
-              type="button"
-              className={`ui-btn ui-btn--sm ui-btn--pill ${
-                isSelected || isActiveModel() ? 'ui-btn--secondary' : 'ui-btn--primary'
-              }`}
-              onClick={() => onSwitchModel?.(model.id, model.name)}
-              disabled={Boolean(isActiveModel())}
-            >
-              {isSelected || isActiveModel() ? 'Active' : 'Use model'}
-            </button>
-          </>
-        )}
-        {!download && isAvailable && (
-          <button
-            type="button"
-            className="ui-btn ui-btn--sm ui-btn--pill ui-btn--solid"
-            disabled={isInstalling}
-            onClick={async () => {
-              if (isInstalling) return;
-              // A gated HuggingFace repo needs a token. Ask once, then continue
-              // into the same install call whichever way it resolves.
-              if (model.download_source === 'huggingface' && !getStoredHfToken()) {
-                // Only wire the install to `onComplete` — `onHfTokenChange`
-                // also fires inside the modal's saveToken and would double the install.
-                showHuggingFaceApiKeyModal(undefined, setApiKey, () => onInstall(model));
-              } else {
-                setIsInstalling(true);
-                try {
-                  await Promise.resolve(onInstall(model));
-                } finally {
-                  setIsInstalling(false);
-                }
-              }
-            }}
-          >
-            <Download size={13} /> {isInstalling ? 'Starting…' : 'Install'}
-          </button>
-        )}
-        {download && (
-          <span className="model-dl__state">
-            {dlState === 'Queued' ? 'Queued' : `Installing ${(download.percentage ?? 0).toFixed(0)}%`}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-};
-
-/** Human ETA. Extracted to module scope because BOTH download surfaces
- *  rendered it, each with its own inline `Math.round(s/60)m Math.round(s%60)s`
- *  — which printed "0m 7s" for seven seconds and "94m 3s" for an hour and a
- *  half, neither of which reads naturally. */
-const formatEta = (seconds: number): string => {
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  const h = Math.floor(s / 3600);
-  return `${h}h ${Math.round((s % 3600) / 60)}m`;
-};
-
-/** Which `.ui-progress` tone a download status maps to. Shared by both cards so
- *  the same status can never be two colours in two places. */
-const downloadTone = (status: string): string =>
-  status === 'Paused'
-    ? 'warning'
-    : status === 'Failed'
-      ? 'danger'
-      : status === 'Completed'
-        ? 'success'
-        : '';
-
-/** Badge variant for a download status.
- *  Replaces two parallel 6-branch ternaries that hardcoded twelve hex values
- *  (#dcfce7/#166534, #dbeafe/#1e40af, …) — all of them light-mode tints with
- *  dark text, so on the dark theme this badge was a pale pastel block. */
-const statusBadgeClass = (status: string): string => {
-  switch (status) {
-    case 'Completed':
-      return 'ui-badge ui-badge--success';
-    case 'Failed':
-      return 'ui-badge ui-badge--danger';
-    case 'Paused':
-      return 'ui-badge ui-badge--warning';
-    case 'Downloading':
-    case 'Starting':
-    case 'Queued':
-      return 'ui-badge ui-badge--accent';
-    default:
-      return 'ui-badge';
-  }
-};
-
-// Download Card for the Downloads tab
-const DownloadCard: React.FC<{
-  download: DownloadProgress;
-  onPause: (id: string) => void;
-  onResume: (id: string) => void;
-  onCancel: (id: string) => void;
-  formatBytes: (b: number) => string;
-}> = ({ download, onPause, onResume, onCancel, formatBytes }) => {
-  const inFlight =
-    download.status === 'Downloading' ||
-    download.status === 'Starting' ||
-    download.status === 'Paused' ||
-    download.status === 'Queued';
-  const tone = downloadTone(download.status);
-
-  return (
-    <div className="model-card">
-      <div className="model-card__head">
-        <h3 className="model-card__name">{download.model_name}</h3>
-        <span className={statusBadgeClass(download.status)}>
-          {download.status === 'Downloading' && <span className="ui-badge__dot ui-badge__dot--pulse" />}
-          {download.status}
-        </span>
-      </div>
-
-      {inFlight && (
-        <div className="model-dl">
-          <div className="model-dl__top">
-            <span className="model-dl__pct">
-              {/* Clamped: the backend total is an estimate until the transfer's
-                  own Content-Length lands, and a raw value once rendered as
-                  "112%" in production. The bars below already clamped; the
-                  number did not. */}
-              {Math.min(download.percentage ?? 0, 100).toFixed(0)}
-              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>%</span>
-            </span>
-            <span className="model-dl__state">
-              {download.elapsed_time > 0 ? `${formatEta(download.elapsed_time)} elapsed` : ''}
-            </span>
-          </div>
-
-          <div
-            className={[
-              'ui-progress',
-              'ui-progress--thick',
-              tone && `ui-progress--${tone}`,
-              download.status === 'Downloading' && 'is-active',
-              download.status === 'Queued' && 'ui-progress--indeterminate',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            style={{ '--progress': Math.min(download.percentage ?? 0, 100) } as React.CSSProperties}
-            role="progressbar"
-            aria-valuenow={Math.round(download.percentage ?? 0)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div className="ui-progress__fill" />
-          </div>
-
-          <div className="model-dl__facts">
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Received</span>
-              <span className="model-dl__fact-val">
-                {formatBytes(download.bytes_downloaded ?? 0)}
-                {/* Never show "2 GB / 1.8 GB": if the running total is behind
-                    the bytes already received, the received figure IS the
-                    better lower bound for the total. */}
-                {download.total_bytes
-                  ? ` / ${formatBytes(Math.max(download.total_bytes, download.bytes_downloaded ?? 0))}`
-                  : ''}
-              </span>
-            </span>
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Speed</span>
-              <span className="model-dl__fact-val">
-                {download.speed_bps > 0 ? `${formatBytes(download.speed_bps)}/s` : '—'}
-              </span>
-            </span>
-            <span className="model-dl__fact">
-              <span className="model-dl__fact-key">Remaining</span>
-              <span className="model-dl__fact-val">
-                {download.speed_bps > 0 &&
-                download.estimated_time_remaining != null &&
-                download.estimated_time_remaining > 0
-                  ? formatEta(download.estimated_time_remaining)
-                  : '—'}
-              </span>
-            </span>
-          </div>
-
-          <div className="model-dl__actions">
-            {download.status === 'Downloading' && (
-              <button
-                type="button"
-                className="ui-btn ui-btn--sm ui-btn--secondary"
-                onClick={() => onPause(download.download_id)}
-              >
-                <Pause size={13} /> Pause
-              </button>
-            )}
-            {download.status === 'Paused' && (
-              <button
-                type="button"
-                className="ui-btn ui-btn--sm ui-btn--primary"
-                onClick={() => onResume(download.download_id)}
-              >
-                <Play size={13} /> Resume
-              </button>
-            )}
-            <button
-              type="button"
-              className="ui-btn ui-btn--sm ui-btn--danger"
-              onClick={() => onCancel(download.download_id)}
-            >
-              <Square size={13} /> Stop
-            </button>
-          </div>
-        </div>
-      )}
-
-      {download.status === 'Failed' && download.error_message && (
-        <p style={{ color: 'var(--danger-fg)', fontSize: 'var(--fs-sm)', lineHeight: 'var(--lh-normal)' }}>
-          {download.error_message}
-        </p>
-      )}
-    </div>
-  );
-};
+// ── Two dead card components used to stand here (~455 lines) ────────────────
+//
+//   ModelCard     ~280 lines -- a card per model, with its own install button,
+//                 badge, progress bar and a call into the HuggingFace token
+//                 dialog.
+//   DownloadCard  ~130 lines -- a card per download, with pause/resume/cancel.
+//
+// Neither was imported or rendered anywhere. The live page renders models and
+// downloads as table rows (`.models-table`), which is what the CSS in
+// ModelsPanel.css is written for.
+//
+// Three module-scope helpers went with them, because the cards were their only
+// callers: `downloadTone`, `statusBadgeClass`, and a module-scope `formatEta`.
+// That last one is worth a note, because its own comment said it had been
+// "extracted to module scope because BOTH download surfaces rendered it" --
+// and yet the live surface never called it. It called a second, differently
+// formatted `formatEta` declared locally inside the component ("5 min left"
+// against the module version's "5m 3s"). The extraction had been defeated
+// without anyone noticing, because the only callers it ever gained were the
+// two components nothing rendered. The local one is the one users see, so it
+// is the one that stayed.
 
 export default ModelsPanel;

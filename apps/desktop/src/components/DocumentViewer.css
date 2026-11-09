@@ -131,3 +131,42 @@
   color: var(--text-primary);
   margin: 0;
 }
+
+/* A cited passage, found and marked when a source opens its document.
+   A soft wash of the ink, not a yellow marker, so it reads in both themes. */
+.pdf-page { position: relative; width: fit-content; margin: 0 auto; }
+.pdf-hl {
+  position: absolute;
+  border-radius: var(--r-sm);
+  background: var(--highlight);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.doc-hl {
+  border-radius: var(--r-sm);
+  padding: 0 1px;
+  background: var(--highlight);
+  color: inherit;
+}
+[data-theme='dark'] .doc-hl { background: var(--highlight); }
+
+/* In place, under the clicked list row: as wide as the list's container,
+   a fixed share of the window tall, then the list continues below it. */
+.document-viewer-inline {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: min(70vh, 760px);
+  margin: 6px 0 10px;
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  animation: dv-inline-open var(--dur-2, 200ms) var(--ease-out, ease-out) both;
+}
+.document-viewer-inline .document-viewer-body { min-height: 0; }
+@keyframes dv-inline-open {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .document-viewer-inline { animation: none; } }

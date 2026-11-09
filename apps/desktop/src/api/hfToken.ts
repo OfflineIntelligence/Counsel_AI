@@ -15,6 +15,17 @@
  */
 
 export const HF_TOKEN_KEY = 'offline-intelligence-hf-token';
+
+/** Fired on window whenever the token is saved or cleared, so every view shows the same token and status. */
+export const HF_TOKEN_EVENT = 'hf-token-change';
+
+function announce(): void {
+  try {
+    window.dispatchEvent(new Event(HF_TOKEN_EVENT));
+  } catch {
+    // no window (tests)
+  }
+}
 const LEGACY_HF_TOKEN_KEY = 'aud-io-hf-token';
 
 let migrated = false;
@@ -57,6 +68,7 @@ export function setHfToken(token: string): void {
     } else {
       localStorage.removeItem(HF_TOKEN_KEY);
     }
+    announce();
   } catch {
     // localStorage unavailable — token lives only in component state
   }
@@ -71,4 +83,5 @@ export function clearHfToken(): void {
   } catch {
     // localStorage unavailable
   }
+  announce();
 }

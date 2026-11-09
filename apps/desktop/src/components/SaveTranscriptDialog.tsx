@@ -2,13 +2,26 @@
 // Allows users to select a directory and specify filename before saving transcript
 import { useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { writeTextFile, BaseDirectory } from '@tauri-apps/plugin-fs';
-import { save } from '@tauri-apps/plugin-dialog';
-import { Buffer } from 'buffer';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
+/* `BaseDirectory` and plugin-dialog's `save` were imported here and never
+   called -- this dialog picks its own directory and writes an absolute path.
+   The `save` import mattered beyond tidiness: a static import of
+   @tauri-apps/plugin-dialog from this module is one of the reasons Rollup
+   could not move that plugin out of the entry chunk, because a module that is
+   statically imported anywhere is pinned there for everyone. */
 
-// Import docx and jsPDF functionality
-import { Document as DocxDocument, Paragraph as DocxParagraph } from 'docx';
-import { jsPDF } from 'jspdf';
+// docx and jspdf are loaded ON DEMAND, in the branch that needs them -- see
+// the switch in handleSave below.
+//
+// They used to be imported statically here AND again dynamically a few lines
+// into that switch, which is the worst of both: a static import of a module
+// pins it into the entry chunk, and the later `await import()` of the same
+// module then resolves against that already-bundled copy. So the dynamic
+// import looked like a lazy load, read like one in review, and deferred
+// nothing. Between them the two libraries are a large part of the main bundle,
+// and this dialog is only reached by choosing "Save transcript".
+//
+// SaveTranscriptWebDialog.tsx already did it this way; the two agree now.
 
 interface SaveTranscriptDialogProps {
   open: boolean;
@@ -64,7 +77,7 @@ export function SaveTranscriptDialog({ open: isOpen, defaultFileName, content, o
           await writeTextFile(fullPath, content);
           break;
         case 'docx': {
-          // For DOCX files, create a docx document
+          const { Document: DocxDocument, Paragraph: DocxParagraph, Packer } = await import('docx');
           const doc = new DocxDocument({
             sections: [{
               properties: {},
@@ -74,8 +87,6 @@ export function SaveTranscriptDialog({ open: isOpen, defaultFileName, content, o
             }],
           });
           
-          // Generate the docx buffer
-          const { Packer } = await import('docx');
           const buffer = await Packer.toBuffer(doc);
           const fileData = new Uint8Array(buffer);
           
@@ -85,7 +96,7 @@ export function SaveTranscriptDialog({ open: isOpen, defaultFileName, content, o
           break;
         }
         case 'pdf': {
-          // For PDF files, create a PDF
+          const { jsPDF } = await import('jspdf');
           const pdf = new jsPDF();
           const textLines = pdf.splitTextToSize(content, 180);
           pdf.text(textLines, 10, 10);
@@ -115,7 +126,7 @@ export function SaveTranscriptDialog({ open: isOpen, defaultFileName, content, o
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
     }}>
       <div style={{ background: 'var(--bg-surface)', width: 520, maxWidth: '90vw', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eee', fontWeight: 600 }}>Save Transcript</div>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eee', fontWeight: 'var(--fw-semibold)' }}>Save Transcript</div>
         <div style={{ padding: 20 }}>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>File name</label>
@@ -141,7 +152,7 @@ export function SaveTranscriptDialog({ open: isOpen, defaultFileName, content, o
                     border: fileFormat === format ? '2px solid #0c6' : '1px solid #ddd',
                     background: fileFormat === format ? 'var(--bg-selected)' : 'var(--bg-surface)',
                     color: fileFormat === format ? 'var(--accent)' : 'var(--text-primary)',
-                    fontWeight: fileFormat === format ? 600 : 400,
+                    fontWeight: fileFormat === format ? 'var(--fw-semibold)' : 400,
                     cursor: 'pointer',
                   }}
                 >

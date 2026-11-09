@@ -22,12 +22,18 @@ import { render, type RenderOptions, type RenderResult } from '@testing-library/
 import { AuthProvider } from '../contexts/AuthContext';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { NotificationProvider } from '../contexts/NotificationContext';
+import { ConfirmProvider } from '../contexts/ConfirmContext';
+import { AssistantProvider } from '../contexts/AssistantContext';
 
 /** Same nesting order as main.tsx, so context resolution matches production. */
 export const AppProviders: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <AuthProvider>
     <ThemeProvider>
-      <NotificationProvider>{children}</NotificationProvider>
+      <NotificationProvider>
+        <ConfirmProvider>
+          <AssistantProvider>{children}</AssistantProvider>
+        </ConfirmProvider>
+      </NotificationProvider>
     </ThemeProvider>
   </AuthProvider>
 );

@@ -1,25 +1,59 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { Suspense, lazy, useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { ChatWindow } from './components/ChatWindow'
+import { WhatsNewDialog } from './components/WhatsNewDialog'
 import { Sidebar } from './components/Sidebar'
+import { ModelSelectionProvider } from './contexts/ModelSelectionContext'
+import { useDownloads } from './api/modelSync';
+import {
+  MODELS_CHANGED_EVENT,
+  discardInterruptedDownload,
+  formatBytes,
+  getInterruptedDownloads,
+  reportWindowFocus,
+  chooseModel,
+  resumeInterruptedDownload,
+} from './api/models'
+import { useNotifications } from './contexts/NotificationContext'
+import TitleBar from './components/TitleBar'
+import { listDrafts, listFolders } from './api/drafts'
+import { listLibrary } from './api/library'
+import { OPEN_SOURCE_EVENT, nameKey, type OpenSourceRequest } from './utils/openSource'
 import { SearchModal } from './components/SearchModal'
 import NotificationsContainer from './components/Notifications'
-import ModelsPanel from './components/ModelsPanel'
 
-import SettingsPanel from './components/SettingsPanel'
-import HelpFeedbackPanel from './components/HelpFeedbackPanel'
-import LocalFilesPanel from './components/LocalFilesPanel'
-import DraftWorkspace from './components/workspace/DraftWorkspace'
+
+/* ── The six pages that are not the chat, loaded when first visited ──────────
+   `activeView` is a switch over seven views, and six of them are reachable
+   only by a deliberate click in the rail. They were all imported eagerly, so
+   starting the app parsed Models (1.6k lines), the Workspace and its five
+   document editors, the Vault, the Library, Settings and Help before drawing
+   the chat — the one view that actually appears.
+
+   ChatWindow stays a static import: it is the default view, so deferring it
+   would only add a round trip to the thing everyone sees first. */
+const ModelsPanel = lazy(() => import('./components/ModelsPanel'))
+const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
+const LocalFilesPanel = lazy(() => import('./components/LocalFilesPanel'))
+const DraftWorkspace = lazy(() => import('./components/workspace/DraftWorkspace'))
+const LibraryPanel = lazy(() => import('./components/workspace/LibraryPanel'))
 import LoginModal from './components/LoginModal'
-import FeedbackPopup from './components/FeedbackPopup'
+import LoginPage from './components/LoginPage'
+import FeedbackPage from './components/FeedbackPage'
 import { useAuth } from './contexts/AuthContext'
+import { useAssistant, type AssistantPage } from './contexts/AssistantContext'
 import type { Chat } from './components/ChatWindow'
 import type { Message } from './api/chat'
 import { fetchConversations, fetchConversation, deleteConversation, updateConversationPinned } from './api/chat'
 import { SYSTEM_PROMPT } from './systemPrompt'
 import { getApiBaseSync } from './api/backendUrl'
 import { getAllApiKeys, migrateKeysFromLocalStorage } from './api/apiKeys'
+import { syncAnswerSource } from './api/cloud'
 import { getHfToken, setHfToken as storeHfToken } from './api/hfToken'
+import { useConfirm } from './contexts/confirm'
+import ModelDialogHost from './components/models/ModelDialogs'
+import ViewBoundary from './components/ViewBoundary'
 import './App.css'
+import './styles/buttons.css'
 
 interface SimpleModel {
     id: string;
@@ -44,11 +78,163 @@ function MainApp() {
     return localStorage.getItem('offline-intelligence-active-session');
   });
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'models' | 'settings' | 'help' | 'localfiles' | 'draft'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'models' | 'settings' | 'help' | 'localfiles' | 'draft' | 'library' | 'login' | 'feedback'>('chat');
+
+  // ── "Go to this source" (a source clicked under an answer) ────────────────
+  // Resolves where the cited document lives and switches to that screen:
+  // Vault files open in the Vault's viewer at the passage, Workspace drafts
+  // open in the editor, Library items are selected in the Library. A file
+  // attached to a chat only has no other home, so that is said instead.
+  const [vaultFocus, setVaultFocus] = useState<OpenSourceRequest | null>(null);
+  const [libraryFocus, setLibraryFocus] = useState<number | null>(null);
+  const clearVaultFocus = useCallback(() => setVaultFocus(null), []);
+  const clearLibraryFocus = useCallback(() => setLibraryFocus(null), []);
+  useEffect(() => {
+    const onOpen = async (e: Event) => {
+      const req = (e as CustomEvent<OpenSourceRequest>).detail;
+      try {
+        const resp = await fetch(`${getApiBaseSync()}/documents/${req.documentId}`);
+        if (!resp.ok) throw new Error(await resp.text());
+        const meta: { source_kind?: string; local_file_id?: number | null; original_filename?: string } = await resp.json();
+        const name = meta.original_filename ?? req.filename;
+        if (meta.source_kind === 'local_storage' || meta.local_file_id != null) {
+          setVaultFocus({ ...req, filename: name });
+          setActiveView('localfiles');
+          return;
+        }
+        if (meta.source_kind === 'draft') {
+          const drafts = await listDrafts();
+          const hit = drafts.find(d => d.source_document_id === req.documentId)
+            ?? drafts.find(d => nameKey(`${d.title}.${d.format}`) === nameKey(name));
+          if (hit) {
+            setDraftToOpen(hit.id);
+            setActiveView('draft');
+            return;
+          }
+        }
+        if (meta.source_kind === 'knowledge') {
+          const items = await listLibrary();
+          const hit = items.find(i => nameKey(i.title) === nameKey(name));
+          if (hit) {
+            setLibraryFocus(hit.id);
+            setActiveView('library');
+            return;
+          }
+        }
+        addNotification({
+          type: 'info',
+          title: 'Attached in chat only',
+          message: `${name} was attached to a conversation and isn't stored in your Vault, Workspace or Library.`,
+          duration: 6000,
+        });
+      } catch (err) {
+        addNotification({
+          type: 'error',
+          title: "Couldn't open source",
+          message: err instanceof Error ? err.message : String(err),
+          duration: 6000,
+        });
+      }
+    };
+    window.addEventListener(OPEN_SOURCE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SOURCE_EVENT, onOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // A document picked on the Library page, handed to the Workspace to open.
+  const [draftToOpen, setDraftToOpen] = useState<number | null>(null);
+  // Top-level Workspace folders, listed as Spaces in the sidebar.
+  const [spaces, setSpaces] = useState<{ id: number; name: string }[]>([]);
+  const [folderToOpen, setFolderToOpen] = useState<number | null>(null);
+  const [recentDrafts, setRecentDrafts] = useState<{ id: number; title: string }[]>([]);
+  const assistant = useAssistant();
+  const { setDefaultPage } = assistant;
+
+  // What the AI Assistant knows about each page. Views with something more
+  // specific (an open draft) register over this while mounted.
+  useEffect(() => {
+    const pages: Record<typeof activeView, AssistantPage> = {
+      chat: {
+        label: 'Chat',
+        title: currentChatTitle ?? undefined,
+        // The visible discussion, so "summarise this conversation" works.
+        text: currentMessages
+          .filter(m => m.role !== 'system')
+          .slice(-12)
+          .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+          .join('\n\n') || undefined,
+        suggestions: ['Summarise this conversation', 'List the open questions', 'Turn this into a client email'],
+      },
+      draft: { label: 'Workspace', suggestions: ['Which document should I start from for an NDA?', 'Draft a short engagement letter'] },
+      library: { label: 'Library', suggestions: ['What makes a good precedent?', 'Draft a governing-law clause'] },
+      localfiles: { label: 'Vault', suggestions: ['How should I organise matter files?', 'What should an index of documents include?'] },
+      models: { label: 'Models', suggestions: ['Which model size suits my computer?', 'What does quantisation change?'] },
+      settings: { label: 'Settings' },
+      help: { label: 'Help' },
+      login: { label: 'Sign in' },
+      feedback: { label: 'Feedback' },
+    };
+    setDefaultPage(pages[activeView]);
+  }, [activeView, currentChatTitle, currentMessages, setDefaultPage]);
+
+  // Report window focus so the backend unloads the model sooner while the app
+  // sits in the background.
+  useEffect(() => {
+    const report = () => {
+      const visible = document.visibilityState === 'visible';
+      const active = document.hasFocus() && visible;
+      document.documentElement.dataset.appActive = active ? 'true' : 'false';
+      // index.css pauses CSS animations only while the window is HIDDEN
+      // (minimised, or behind a fullscreen app). Pausing on mere blur froze
+      // one-shot entrances at their first frame — opacity 0 — so a window
+      // that was visible but unfocused (a second monitor, a side-by-side app)
+      // showed blank pages until it was clicked.
+      document.documentElement.dataset.appHidden = visible ? 'false' : 'true';
+      reportWindowFocus(active);
+    };
+    window.addEventListener('focus', report);
+    window.addEventListener('blur', report);
+    document.addEventListener('visibilitychange', report);
+    report();
+    return () => {
+      window.removeEventListener('focus', report);
+      window.removeEventListener('blur', report);
+      document.removeEventListener('visibilitychange', report);
+    };
+  }, []);
+  useEffect(() => {
+    if (activeView !== 'draft') return;
+    let cancelled = false;
+    Promise.all([listFolders(), listDrafts()])
+      .then(([folders, drafts]) => {
+        if (cancelled) return;
+        setSpaces(folders.filter(f => f.parent_id === null).map(f => ({ id: f.id, name: f.name })));
+        setRecentDrafts(
+          [...drafts]
+            .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+            .map(d => ({ id: d.id, title: d.title })),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // On Computer / On Cloud lives in the backend; restore it there on start.
+  useEffect(() => { void syncAnswerSource(); }, []);
   const [questionCount, setQuestionCount] = useState(0);
   const [showLoginModal, setShowLoginModal] = useState(false);
-  const [showFeedbackPopup, setShowFeedbackPopup] = useState(false);
+  // A computer that already has an account asks for the user name and password
+  // at launch, until someone has signed in.
+  const [loginGate, setLoginGate] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetch(`${getApiBaseSync()}/auth/status`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(s => { if (live && s?.has_users) setLoginGate(true); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
   const [selectedModel, setSelectedModel] = useState<{
     id: string;
     name: string;
@@ -80,9 +266,9 @@ function MainApp() {
   const nextQueueIdRef = useRef(0);
   // Pending queue execution trigger
   const [pendingQueueRun, setPendingQueueRun] = useState<{ sessionId: string; content: string } | null>(null);
-  // Delete confirmation
-  const [deleteConfirmTargetId, setDeleteConfirmTargetId] = useState<string | null>(null);
-  const [isDeletingConfirm, setIsDeletingConfirm] = useState(false);
+  // Deleting a chat asks through the app's own confirmation (ConfirmProvider),
+  // the same dialog every other destructive action in the app uses.
+  const confirm = useConfirm();
   const [chatWindowKey, setChatWindowKey] = useState(0);
 
   // Sync API keys with auth context
@@ -166,27 +352,148 @@ function MainApp() {
     syncKeysFromBackend();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Global download progress tracking for notification bubble
-  const [globalDownloads, setGlobalDownloads] = useState<{ download_id: string; model_name: string; status: string; percentage: number; bytes_downloaded: number; total_bytes?: number; speed_bps: number }[]>([]);
-  const [showDownloadBubble, setShowDownloadBubble] = useState(true);
-
+  // Downloads interrupted by closing the app: offer to continue each one from
+  // where it stopped. Asked once per launch; the Models page's Downloads tab
+  // lists them too, for anyone who dismisses this.
+  const { addNotification } = useNotifications()
   useEffect(() => {
-    const pollDownloads = async () => {
-      try {
-        const res = await fetch(`${getApiBaseSync()}/models/downloads`);
-        if (res.ok) {
-          const data = await res.json();
-          setGlobalDownloads(data);
+    let cancelled = false
+    getInterruptedDownloads()
+      .then(list => {
+        if (cancelled) return
+        for (const d of list) {
+          const progress = d.size_bytes
+            ? `${formatBytes(d.bytes_on_disk)} of ${formatBytes(d.size_bytes)}`
+            : formatBytes(d.bytes_on_disk)
+          addNotification({
+            type: 'download',
+            title: 'Resume download?',
+            message: `${d.model_name} paused at ${progress}.`,
+            duration: 0,
+            actions: [
+              {
+                label: 'Resume',
+                primary: true,
+                onClick: () => {
+                  void resumeInterruptedDownload(d).then(result => {
+                    if (!result.ok) {
+                      addNotification({ type: 'error', title: "Couldn't resume download", message: result.message, duration: 0 })
+                    }
+                  })
+                },
+              },
+              { label: 'Discard', onClick: () => void discardInterruptedDownload(d.model_id) },
+            ],
+          })
         }
-      } catch { /* ignore */ }
-    };
-    const interval = setInterval(pollDownloads, 3000);
-    pollDownloads();
-    return () => clearInterval(interval);
-  }, []);
+      })
+      .catch(() => {
+        /* Nothing to offer if the backend cannot say. */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Global download progress tracking for notification bubble
+  // One shared watcher for every download (api/modelSync.ts).
+  const globalDownloads = useDownloads();
+  const [showDownloadBubble, setShowDownloadBubble] = useState(true);
 
 
   const activeGlobalDownloads = globalDownloads.filter(d => d.status === 'Downloading' || d.status === 'Starting');
+
+  // Where the agent lives on this view: the search bar in chat, the glass
+  // panel from the right on every other page.
+  // One placement everywhere: the compact card at the bottom-right.
+  const auroraPlacement = 'card' as const;
+
+  // Opening Aurora collapses the sidebar, from any trigger (rail button,
+  // 'Ask Aurora', a page), so the panel has the room it takes.
+  useEffect(() => {
+    if (assistant.open && activeView !== 'chat') setSidebarOpen(false);
+  }, [assistant.open, activeView]);
+  // The draft editor keeps the sidebar shut. Clicking the rail twice in a
+  // moment leaves the document for the Workspace list instead.
+  const draftEditing = useRef(false);
+  const railClicks = useRef<number[]>([]);
+  useEffect(() => {
+    const onEditor = (e: Event) => {
+      draftEditing.current = (e as CustomEvent).detail === true;
+      if (draftEditing.current) setSidebarOpen(false);
+    };
+    window.addEventListener('oca-draft-editor', onEditor);
+    return () => window.removeEventListener('oca-draft-editor', onEditor);
+  }, []);
+  // Settings and Help & Support also keep the sidebar shut; two quick clicks
+  // on the rail return to the chat window.
+  const railLocked = activeView === 'settings' || activeView === 'help';
+  useEffect(() => {
+    if (railLocked) setSidebarOpen(false);
+  }, [railLocked]);
+  // Typing in the composer hides the sidebar; after 120 s without typing it
+  // comes back, but only if typing is what hid it.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let hidByTyping = false;
+    const onTyping = () => {
+      setSidebarOpen(open => {
+        if (open) hidByTyping = true;
+        return false;
+      });
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (hidByTyping) setSidebarOpen(true);
+        hidByTyping = false;
+      }, 120_000);
+    };
+    window.addEventListener('oca-composer-typing', onTyping);
+    return () => {
+      window.removeEventListener('oca-composer-typing', onTyping);
+      clearTimeout(timer);
+    };
+  }, []);
+  const toggleRail = () => {
+    if (draftEditing.current || railLocked) {
+      const now = Date.now();
+      railClicks.current = [...railClicks.current.filter(t => now - t < 1500), now];
+      if (railClicks.current.length >= 2) {
+        railClicks.current = [];
+        if (railLocked) {
+          setActiveView('chat');
+          setSidebarOpen(false);
+        } else {
+          window.dispatchEvent(new Event('oca-draft-back'));
+        }
+      }
+      return;
+    }
+    setSidebarOpen(open => !open);
+  };
+  // Whether the download notification bubble is on screen.
+  const downloadsVisible = activeView !== 'models' && activeGlobalDownloads.length > 0 && showDownloadBubble;
+
+  // The bubble's measured height, published as --dl-bubble-h for the panel's
+  // docked top. Measured live (ResizeObserver) rather than estimated, so the
+  // card always clears one, two or three download rows exactly.
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = bubbleRef.current;
+    if (!el) {
+      document.documentElement.style.removeProperty('--dl-bubble-h');
+      return;
+    }
+    const publish = () => {
+      document.documentElement.style.setProperty('--dl-bubble-h', `${el.offsetHeight}px`);
+    };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty('--dl-bubble-h');
+    };
+  }, [downloadsVisible, activeGlobalDownloads.length]);
 
   /* The Activity panel was removed from the product (2026-08-08). Its
      settings state (activityEnabled / autoDeletePeriod) and its bulk
@@ -268,22 +575,28 @@ function MainApp() {
 
         setAvailableModels(modelList);
 
-        if (selectedModel && !modelList.some(m => m.id === selectedModel.id)) {
-          setSelectedModel(null);
-        }
-
-        if (!selectedModel) {
+        // Functional update: this runs again on every models-changed event,
+        // so it must read the CURRENT selection, not the one captured when
+        // the effect was first created.
+        setSelectedModel(prev => {
+          if (prev && modelList.some(m => m.id === prev.id)) return prev;
           if (installedModels.length > 0) {
-            setSelectedModel({ id: installedModels[0].id, name: installedModels[0].name, source: 'local' });
-          } else if (activeModelName) {
-            setSelectedModel({ id: `active:${activeModelName}`, name: activeModelName, source: 'local' });
+            return { id: installedModels[0].id, name: installedModels[0].name, source: 'local' };
           }
-        }
+          if (activeModelName) {
+            return { id: `active:${activeModelName}`, name: activeModelName, source: 'local' };
+          }
+          return null;
+        });
       } catch (error) {
         console.error('Failed to fetch models:', error);
       }
     };
     fetchModels();
+    // A download finishing, a model being loaded from the chat's setup
+    // prompt, or a switch on the Models page all announce this.
+    window.addEventListener(MODELS_CHANGED_EVENT, fetchModels);
+    return () => window.removeEventListener(MODELS_CHANGED_EVENT, fetchModels);
   }, []);
 
   // Sync messages to the chats array so sidebar shows up-to-date message counts.
@@ -310,12 +623,24 @@ function MainApp() {
     }
   }, [questionCount, isLoggedIn]);
 
-  // Show feedback popup every 5 queries
+  // Every 5 questions, a "Give us Feedback" capsule offers the feedback page.
+  const { addNotification: notify } = useNotifications();
   useEffect(() => {
     if (questionCount > 0 && questionCount % 5 === 0) {
-      setShowFeedbackPopup(true);
+      notify({
+        type: 'feedback',
+        title: 'Give us Feedback',
+        message: '',
+        duration: 12000,
+        tag: 'feedback-prompt',
+        actions: [{
+          label: 'Give feedback',
+          primary: true,
+          onClick: () => { setActiveView('feedback'); setSidebarOpen(false); },
+        }],
+      });
     }
-  }, [questionCount]);
+  }, [questionCount, notify]);
 
   const handleTitleGenerated = (title: string, sessionIdArg: string) => {
     // Update refs immediately so handleMessagesUpdate (via ref) sees the chatId during streaming
@@ -500,6 +825,28 @@ function MainApp() {
     ));
   };
 
+  /**
+   * Ask, then delete.
+   *
+   * The asking used to be a modal of its own down in the render tree — its own
+   * scrim, its own 40px warning glyph, its own square buttons, its own Escape
+   * handler — none of which matched the dialog every other destructive action
+   * in the app already used. One shape now, from ConfirmProvider.
+   */
+  const confirmDeleteChat = async (chatId: string) => {
+    const ok = await confirm({
+      title: 'Delete chat?',
+      message: 'This conversation and its messages will be removed. This cannot be undone.',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
+    try {
+      await handleDeleteChat(chatId);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+    }
+  };
+
   const handleDeleteChat = async (chatId: string) => {
     const success = await deleteConversation(chatId);
     if (!success) throw new Error('Failed to delete conversation from database');
@@ -507,16 +854,34 @@ function MainApp() {
     if (activeChatId === chatId) handleNewChat();
   };
 
-  // Close delete confirmation on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDeleteConfirmTargetId(null);
-    };
-    if (deleteConfirmTargetId) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }
-  }, [deleteConfirmTargetId]);
+  /**
+   * Go somewhere from the sidebar, and put the sidebar away.
+   *
+   * Every rail destination routes through this. Opening the sidebar is a
+   * means, not an end: you open it to get somewhere, and once you are there it
+   * is 260px of navigation sitting on top of the thing you went to look at.
+   * Closing it is what the click was FOR.
+   *
+   * Deliberately not applied to picking a chat out of the history list. That
+   * list only exists while the sidebar is open, and people move through it
+   * several at a time; closing after each pick would fight them.
+   */
+  const goTo = (view: Parameters<typeof setActiveView>[0], before?: () => void) => {
+    before?.();
+    setActiveView(view);
+    setSidebarOpen(false);
+  };
+
+  /**
+   * Aurora is a panel, not a page: it opens over whatever is already showing,
+   * from the right. So the rail closes on the left as the panel arrives on the
+   * right — one movement across the window, rather than two surfaces competing
+   * for the middle of it.
+   */
+  const openAurora = () => {
+    setSidebarOpen(false);
+    assistant.toggle();
+  };
 
   const openModelsWithFocus = (_focusApiKey = false, focusHfToken = false) => {
     setActiveView('models');
@@ -541,27 +906,61 @@ function MainApp() {
       case 'settings':
         return <SettingsPanel
           isOpen={true}
-          onClose={() => setActiveView('chat')}
+          onClose={() => goTo('chat', handleNewChat)}
           onOpenModels={(focusApiKey = false, focusHfToken = false) => {
             openModelsWithFocus(focusApiKey, focusHfToken);
           }}
           onHuggingFaceTokenChange={setHfToken}
           onOpenStorage={() => setActiveView('localfiles')}
-          onOpenHelp={() => setActiveView('help')}
-          onRequestLogin={() => setShowLoginModal(true)}
+          onOpenHelp={() => goTo('help')}
+          onRequestLogin={() => goTo('login')}
         />;
+      case 'feedback':
+        return <FeedbackPage onDone={() => setActiveView('chat')} />;
+      case 'login':
+        return <LoginPage onDone={() => setActiveView('chat')} />;
       case 'help':
+        // Help & Support is a tab of Settings.
+        return <SettingsPanel
+          isOpen={true}
+          initialTab="help"
+          onClose={() => goTo('chat', handleNewChat)}
+          onOpenModels={(focusApiKey = false, focusHfToken = false) => {
+            openModelsWithFocus(focusApiKey, focusHfToken);
+          }}
+          onHuggingFaceTokenChange={setHfToken}
+          onOpenStorage={() => setActiveView('localfiles')}
+          onRequestLogin={() => goTo('login')}
+        />;
+      case 'localfiles':
         return (
-          <HelpFeedbackPanel
+          <LocalFilesPanel
             isOpen={true}
             onClose={() => setActiveView('chat')}
-            isLoggedIn={isLoggedIn}
+            focusDocument={vaultFocus}
+            onFocusHandled={clearVaultFocus}
           />
         );
-      case 'localfiles':
-        return <LocalFilesPanel isOpen={true} onClose={() => setActiveView('chat')} />;
       case 'draft':
-        return <DraftWorkspace onClose={() => setActiveView('chat')} />;
+        return (
+          <DraftWorkspace
+            openDraftId={draftToOpen}
+            onDraftOpened={() => setDraftToOpen(null)}
+            openFolderId={folderToOpen}
+            onFolderOpened={() => setFolderToOpen(null)}
+          />
+        );
+      case 'library':
+        return (
+          <LibraryPanel
+            focusItemId={libraryFocus}
+            onFocusHandled={clearLibraryFocus}
+            onOpenDraft={(id) => {
+              setDraftToOpen(id);
+              setActiveView('draft');
+            }}
+          />
+        );
       default:
         return (
           <ChatWindow
@@ -578,7 +977,6 @@ function MainApp() {
             onDeleteChat={handleDeleteChat}
             onQuestionAsked={() => setQuestionCount(prev => prev + 1)}
             selectedModel={selectedModel}
-            onSelectedModelChange={setSelectedModel}
             models={availableModels}
             onOpenModels={(focusHfToken = false) => {
               openModelsWithFocus(false, focusHfToken);
@@ -592,37 +990,86 @@ function MainApp() {
             isSessionStreaming={sessionStreaming.has(currentSessionId ?? '')}
             pendingQueueRun={pendingQueueRun}
             onQueueRunConsumed={() => setPendingQueueRun(null)}
-            onRequestDeleteChat={(id) => setDeleteConfirmTargetId(id)}
+            onRequestDeleteChat={(id) => void confirmDeleteChat(id)}
+            onSelectChat={(id) => { handleSelectChat(id); setActiveView('chat'); }}
+            onOpenLibrary={() => setActiveView('library')}
+            onOpenDraft={() => setActiveView('draft')}
+            onOpenLocalFiles={() => setActiveView('localfiles')}
           />
         );
     }
   };
 
+  // One model selection for the whole app: the chat composer's capsule and
+  // the drafts composer's capsule are the same choice, because there is one
+  // engine with one model loaded.
+  const modelSelection = useMemo(
+    () => ({
+      models: availableModels,
+      selected: selectedModel,
+      // Choosing in the model menu also tells the backend, lazily: the
+      // previous model is unloaded and the new one loads on the next
+      // question. A failure reverts the menu to the model still in use.
+      select: (model: { id: string; name: string; source: 'local' } | null) => {
+        const previous = selectedModel;
+        setSelectedModel(model);
+        if (!model || model.id.startsWith('active:')) return;
+        void chooseModel(model.id).then(result => {
+          if (!result.ok) {
+            setSelectedModel(previous);
+            addNotification({ type: 'error', title: "Couldn't switch model", message: result.message ?? '', duration: 0 });
+          }
+        });
+      },
+      openModels: () => openModelsWithFocus(false, false),
+    }),
+    // openModelsWithFocus is redeclared every render and only sets view state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [availableModels, selectedModel],
+  );
+
   return (
-    <div className="app-root" data-sidebar={sidebarOpen ? 'open' : 'closed'}>
+    <ModelSelectionProvider value={modelSelection}>
+    <div className="app-root" data-sidebar={sidebarOpen ? 'open' : 'closed'} data-assistant={assistant.open ? 'open' : 'closed'} data-view={activeView} data-downloads={downloadsVisible ? 'active' : 'idle'} data-aurora={auroraPlacement}>
+      <TitleBar />
+      {/* Suppressed on a machine with no models installed: that is a first
+          run, and someone who has never used Counsel does not need to be told
+          what changed since a version they never had. */}
+      <WhatsNewDialog suppressed={availableModels.length === 0} />
+      {/* Aurora lives in the notification island (NotificationsContainer). */}
       <Sidebar
         chats={chats}
         activeChatId={activeChatId}
         isOpen={sidebarOpen}
-        onToggle={() => setSidebarOpen(!sidebarOpen)}
-        onNewChat={() => { handleNewChat(); setActiveView('chat'); }}
+        onToggle={toggleRail}
+        onNewChat={() => goTo('chat', handleNewChat)}
         onSelectChat={(id) => { handleSelectChat(id); setActiveView('chat'); }}
-        onOpenModels={() => {
-          setActiveView('models');
-          setShouldFocusHfToken(false);
-        }}
+        onOpenModels={() => goTo('models', () => setShouldFocusHfToken(false))}
         onPinChat={handlePinChat}
         onSaveChat={handleSaveChat}
-        onDeleteChat={(id) => setDeleteConfirmTargetId(id)}
-        onOpenSettings={() => setActiveView('settings')}
+        onDeleteChat={(id) => void confirmDeleteChat(id)}
+        onOpenSettings={() => goTo('settings')}
         onOpenHelp={() => setActiveView('help')}
-        onOpenHome={() => { handleNewChat(); setActiveView('chat'); }}
-        onOpenLocalFiles={() => setActiveView('localfiles')}
-        onOpenDraft={() => setActiveView('draft')}
+        onOpenAccount={() => goTo('login')}
+        onOpenLocalFiles={() => goTo('localfiles')}
+        onOpenDraft={() => goTo('draft')}
+        onOpenLibrary={() => goTo('library')}
+        spaces={spaces}
+        onOpenSpace={(id) => goTo('draft', () => setFolderToOpen(id))}
+        recentDrafts={recentDrafts}
+        onOpenRecentDraft={(id) => goTo('draft', () => setDraftToOpen(id))}
         activeView={activeView}
-        userName={user?.name || 'User'}
+        assistantOpen={assistant.open}
+        onToggleAssistant={openAurora}
       />
-      {renderMainContent()}
+      {/* One boundary around the switch rather than one per page: the pages are
+          mutually exclusive, and the fallback is null because every chunk is a
+          local file — a spinner for the frame it takes to arrive would read as
+          a flicker, not as progress. The rail and the window band stay drawn
+          throughout, so the frame is never blank. */}
+      <ViewBoundary resetKey={activeView}>
+        <Suspense fallback={null}>{renderMainContent()}</Suspense>
+      </ViewBoundary>
       <SearchModal
         isOpen={isSearchOpen}
         chats={chats}
@@ -633,78 +1080,27 @@ function MainApp() {
         isOpen={showLoginModal}
         onClose={() => setShowLoginModal(false)}
       />
-      <FeedbackPopup
-        isOpen={showFeedbackPopup}
-        onClose={() => setShowFeedbackPopup(false)}
+      {/* Mounted here rather than inside ModelsPanel because its dialogs are
+          also opened from Settings, which is a sibling of that panel — only
+          one of the two is ever mounted at a time. See the header note in
+          ModelDialogs.tsx. */}
+      <ModelDialogHost />
+      {loginGate && !isLoggedIn && (
+        <div className="login-gate"><LoginPage gated onDone={() => setLoginGate(false)} /></div>
+      )}
+      <NotificationsContainer
+        onOpenModels={() => openModelsWithFocus(false, false)}
+        downloadNote={downloadsVisible ? {
+          title: `${activeGlobalDownloads.length} download${activeGlobalDownloads.length > 1 ? 's' : ''} in progress`,
+          message: activeGlobalDownloads.slice(0, 3).map(dl =>
+            `${dl.model_name} ${dl.percentage.toFixed(1)}%${dl.speed_bps > 0 ? ` · ${(dl.speed_bps / (1024 * 1024)).toFixed(1)} MB/s` : ''}`
+          ).join('  |  '),
+          onView: () => setActiveView('models'),
+          onDismiss: () => setShowDownloadBubble(false),
+        } : null}
       />
-      {deleteConfirmTargetId && (
-        <div className="modal-overlay" onClick={() => setDeleteConfirmTargetId(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <svg className="modal-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="40" height="40">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4v2m0 4v2m0-14a9 9 0 110 18 9 9 0 010-18zm0 0a9 9 0 110 18 9 9 0 010-18z" />
-              </svg>
-            </div>
-            <h2 className="modal-title">Delete Chat</h2>
-            <p className="modal-message">Are you sure you want to delete this conversation?</p>
-            <div className="modal-buttons">
-              <button className="modal-button cancel" onClick={() => setDeleteConfirmTargetId(null)}>
-                Cancel
-              </button>
-              <button
-                className="modal-button delete"
-                disabled={isDeletingConfirm}
-                onClick={async () => {
-                  setIsDeletingConfirm(true);
-                  try {
-                    await handleDeleteChat(deleteConfirmTargetId);
-                    setDeleteConfirmTargetId(null);
-                  } catch (error) {
-                    console.error('Error deleting chat:', error);
-                  } finally {
-                    setIsDeletingConfirm(false);
-                  }
-                }}
-              >
-                {isDeletingConfirm ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Global download notification bubble - shows on all pages except models */}
-      {activeView !== 'models' && activeGlobalDownloads.length > 0 && showDownloadBubble && (
-        <div className="download-bubble">
-          <div className="download-bubble-header">
-            <span className="download-bubble-title">
-              {activeGlobalDownloads.length} download{activeGlobalDownloads.length > 1 ? 's' : ''} in progress
-            </span>
-            <div style={{ display: 'flex', gap: '4px' }}>
-              <button className="download-bubble-close" onClick={() => setActiveView('models')} style={{ fontSize: '12px' }}>
-                View
-              </button>
-              <button className="download-bubble-close" onClick={() => setShowDownloadBubble(false)}>
-                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          {activeGlobalDownloads.slice(0, 3).map(dl => (
-            <div key={dl.download_id} style={{ marginBottom: '6px' }}>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '3px' }}>{dl.model_name}</div>
-              <div style={{ width: '100%', height: '4px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '2px', overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(dl.percentage, 100)}%`, height: '100%', backgroundColor: 'var(--accent)', borderRadius: '2px', transition: 'width 0.3s' }} />
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                {dl.percentage.toFixed(1)}%{dl.speed_bps > 0 ? ` - ${(dl.speed_bps / (1024 * 1024)).toFixed(1)} MB/s` : ''}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <NotificationsContainer />
     </div>
+    </ModelSelectionProvider>
   );
 }
 

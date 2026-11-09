@@ -1,6 +1,7 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo } from 'react';
+import AppMark from './AppMark';
+import RailIcon from './RailIcon';
 import { useAuth } from '../contexts/AuthContext';
-import LoginModal from './LoginModal';
 
 type Conversation = {
   id: string;
@@ -22,22 +23,66 @@ interface SidebarProps {
   onPinChat?: (chatId: string) => void;
   onSaveChat?: (chatId: string) => void;
   onOpenModels?: () => void;
-
   onOpenSettings?: () => void;
-  onOpenActivity?: () => void;
   onOpenHelp?: () => void;
-  onOpenHome?: () => void;
+  /** The user button above Settings: set up, lock or remove the login. */
+  onOpenAccount?: () => void;
   onOpenLocalFiles?: () => void;
   onOpenDraft?: () => void;
-  onOpenMetrics?: () => void;
+  onOpenLibrary?: () => void;
+  /** Top-level Workspace folders shown under Spaces. */
+  spaces?: { id: number; name: string }[];
+  onOpenSpace?: (folderId: number) => void;
+  /** Previous Workspace drafts, listed while the Workspace is active. */
+  recentDrafts?: { id: number; title: string }[];
+  onOpenRecentDraft?: (draftId: number) => void;
   activeView?: string;
+  /** Whether the app-wide AI Assistant panel is showing. */
+  assistantOpen?: boolean;
+  onToggleAssistant?: () => void;
   isOpen: boolean;
   onToggle: () => void;
-  userName?: string;
+
+  /* Five props that nothing here reads have been removed rather than left as
+     optional-and-ignored: onOpenActivity, onOpenNotifications and
+     onOpenMetrics (no caller ever passed them -- the pages they named are not
+     in the rail), onOpenHome (App passed it, but it was a duplicate of
+     onNewChat, which is what the New Chat button actually calls), and userName
+     (passed, and only ever used to compute `initials` for an avatar this rail
+     does not draw).
+
+     An optional prop a component ignores is worse than no prop: a caller
+     wiring it up gets no error and no behaviour. */
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
-  conversations,
+/* A `LoginGlyph` component stood here -- a hand-drawn person-in-a-square for a
+   "Log in" rail entry that no longer exists. Signing in is reached from
+   Settings. */
+
+/**
+ * A rail label that reveals word by word as the sidebar opens — "New" then
+ * "Chat" — instead of popping in and wrapping mid-animation. Every button
+ * already carries an aria-label, so the words are pure visuals: positions
+ * never move, rows never change height, and the rail's own clipping does the
+ * hiding while the words fade/slide in place.
+ */
+const RailLabel: React.FC<{ text: string }> = ({ text }) => {
+  const words = text.split(' ');
+  return (
+    <span>
+      {words.map((w, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? ' ' : null}
+          <span className="rail-word" style={{ '--i': i } as React.CSSProperties}>
+            {w}
+          </span>
+        </React.Fragment>
+      ))}
+    </span>
+  );
+};
+
+export const Sidebar: React.FC<SidebarProps> = ({  conversations,
   chats,
   selectedChatId,
   activeChatId,
@@ -48,338 +93,290 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSaveChat,
   onOpenModels,
   onOpenSettings,
-  onOpenActivity,
   onOpenHelp,
-  onOpenHome,
+  onOpenAccount,
   onOpenLocalFiles,
   onOpenDraft,
-  onOpenMetrics,
+  onOpenLibrary,
+  spaces = [],
+  onOpenSpace,
+  recentDrafts = [],
+  onOpenRecentDraft,
   activeView,
+  assistantOpen = false,
+  onToggleAssistant,
   isOpen,
   onToggle,
-  userName = '',
 }) => {
-  const { user, isLoggedIn, logout } = useAuth();
-  const [showLoginModal, setShowLoginModal] = useState(false);
-  
-  // Suppress unused variable warning
-  const _ = user;
-  const [search, setSearch] = useState('');
-  const [profilePopup, setProfilePopup] = useState(false);
-  const [hoveredChat, setHoveredChat] = useState<string | null>(null);
-  const profileRef = useRef<HTMLDivElement>(null);
+  /* ── What was removed from here, and why it mattered ──────────────────────
+     Nine pieces of state, a ref, a memo and a document-level listener used to
+     stand in this block. None of them was read by anything this component
+     renders, and three of them were costing something every single render of
+     the app's chrome:
 
-  const source = useMemo(() => conversations ?? chats ?? [], [conversations, chats, activeView]);
+     - `search` was read by the chat filter below, but `setSearch` was never
+       called by anything: the search field it belonged to is gone (SearchModal
+       owns search now). So the filter ran `title.toLowerCase().includes('')`
+       over every conversation on every render to decide, always, to keep it.
+     - `profileRef` was attached to no element, so it was permanently null, and
+       a `mousedown` listener on the whole document ran on every click in the
+       app to read that null ref and set `profilePopup`, which nothing read.
+     - the `source` memo listed `activeView` as a dependency it does not use,
+       so it recomputed on every navigation.
+
+     The rest -- `initials`, `pinnedChats`, `otherChats`, `hoveredChat`,
+     `showHistory`, `isLoggedIn`, `logout`, `user` (kept alive by a `const _ =
+     user` line written to silence the warning about it) -- were simply
+     computed and discarded. */
+  const source = useMemo(() => conversations ?? chats ?? [], [conversations, chats]);
   const selected = selectedChatId ?? activeChatId ?? null;
 
-  // Get initials from user name
-  const initials = useMemo(() => {
-    if (!userName) return 'U';
-    const parts = userName.trim().split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return parts[0][0]?.toUpperCase() || 'U';
-  }, [userName]);
-
-  // Sort: pinned first, then by date
+  // Pinned first, then newest first.
   const sorted = useMemo(() => {
     const list = Array.isArray(source) ? [...source] : [];
-    return list
-      .filter(c => c.title.toLowerCase().includes(search.toLowerCase()))
-      .sort((a, b) => {
-        if (a.pinned && !b.pinned) return -1;
-        if (!a.pinned && b.pinned) return 1;
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
-  }, [source, search]);
+    return list.sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [source]);
 
-  const pinnedChats = sorted.filter(c => c.pinned);
-  const otherChats = sorted.filter(c => !c.pinned);
+  /* This used to return a fragment wrapping the nav AND a LoginModal whose
+     `isOpen={showLoginModal}` could never be true, because `setShowLoginModal`
+     was never called -- a modal mounted permanently closed. Signing in is
+     reached from Settings; the modal and the fragment are both gone, so the
+     nav is the component.
 
-  // Close dropdowns on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfilePopup(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  // Fixed toggle button (always visible at same position)
+     Always mounted. Closed it becomes an icon rail rather than being
+     unmounted, so the destinations stay one click away. Its empty space opens
+     and closes it; its icons always go straight to their page. */
+  const { user: signedInUser } = useAuth();
+  const lockProfile = signedInUser ? { username: signedInUser.name } : null;
   return (
-    <>
-      <button className="sidebar-toggle-btn" onClick={onToggle} aria-label={isOpen ? "Close sidebar" : "Open sidebar"} title={isOpen ? "Close sidebar" : "Open sidebar"}>
-        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
-      
-      {isOpen && (
-        <nav className="sidebar" aria-label="Chat navigation" role="navigation">
-          {/* ── Identity row ──────────────────────────────────────────────
-              The account control, at the TOP of the rail. Logged out it
-              reads "Welcome User" with a login glyph and opens the login
-              modal; logged in it shows the user's full name in bold caps
-              with an initials tile, and opens a menu whose only item is
-              Logout (a bare click would log people out by accident). */}
-          <div className="sidebar-identity-wrap" ref={profileRef}>
-            <button
-              type="button"
-              className="sidebar-identity"
-              onClick={() => (isLoggedIn ? setProfilePopup(v => !v) : setShowLoginModal(true))}
-              aria-label={isLoggedIn ? `Account: ${user?.name || userName}` : 'Log in'}
-              aria-haspopup={isLoggedIn ? 'menu' : undefined}
-              aria-expanded={isLoggedIn ? profilePopup : undefined}
-              title={isLoggedIn ? (user?.name || userName) : 'Log in'}
-            >
-              <span className="sidebar-identity__name">
-                {isLoggedIn ? (user?.name || userName || 'User') : 'Welcome User'}
-              </span>
-              {isLoggedIn ? (
-                <span className="sidebar-identity__initials" aria-hidden="true">{initials}</span>
-              ) : (
-                <span className="sidebar-identity__login" aria-hidden="true">
-                  <svg width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                  </svg>
-                </span>
-              )}
-            </button>
+      <nav
+        className={`sidebar${isOpen ? '' : ' sidebar--rail'}`}
+        aria-label="Chat navigation"
+        role="navigation"
+        onClick={e => {
+          if (!(e.target as Element).closest('button, a, input, li, [role="menu"]')) onToggle()
+        }}
+      >
+      {/* The brand row is empty, and deliberately still here.
 
-            {isLoggedIn && profilePopup && (
-              <div className="sidebar-identity__menu" role="menu">
-                <button
-                  className="sidebar-dropdown-item"
-                  role="menuitem"
-                  onClick={() => { logout(); setProfilePopup(false); }}
-                >
-                  <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                  </svg>
-                  <span>Logout</span>
-                </button>
-              </div>
-            )}
-          </div>
+          The mark it used to hold now stands for Aurora further down the rail,
+          and the app's name is already on the window and reaches a screen
+          reader through this nav's own label — so nothing is left to draw. But
+          the row also set where every destination below it begins. Deleting
+          the element would have slid the whole rail up by its height, which is
+          a change to the sidebar nobody asked for, so the box stays and only
+          its contents go. */}
+      <div className="sidebar-brand" aria-hidden="true" />
 
-      {/* New Discussion */}
-      <button className="sidebar-nav-btn" onClick={() => onNewChat?.()} aria-label="New discussion">
-        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-        </svg>
-        <span>New Discussion</span>
+      {/* New Chat */}
+      <button className="sidebar-nav-btn" onClick={() => onNewChat?.()} aria-label="New chat">
+        <RailIcon name="discussion" />
+        <RailLabel text="New Chat" />
       </button>
 
-      {/* Assistant — placeholder, deliberately inert until the feature exists. */}
-      <button className="sidebar-nav-btn" type="button" aria-label="Assistant">
-        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-        </svg>
-        <span>Assistant</span>
+      {/* The order below leads with the place work is DONE — the Workspace —
+          and puts the material it draws on behind it (Library, then Vault),
+          with the engine that runs it after those. Aurora sits last because it
+          is not a page at all: it is a panel that opens over whichever of these
+          is showing. */}
+
+      {/* Workspace — where documents are organised and edited.
+          Its icon was previously a byte-identical copy of New Chat's
+          pencil, which made the two indistinguishable in the collapsed rail
+          where the label is gone. This is a folder-and-document mark instead:
+          the workspace holds files, which is what tells it apart from a chat. */}
+      <button className="sidebar-nav-btn" onClick={onOpenDraft} type="button" aria-label="Workspace">
+        <RailIcon name="workspace" />
+        <RailLabel text="Workspace" />
       </button>
 
-      {/* Draft — the document workspace. */}
-      <button className="sidebar-nav-btn" onClick={onOpenDraft} type="button" aria-label="Draft">
-        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-        </svg>
-        <span>Draft</span>
+      {/* Library — precedents, templates and clauses to start documents from. */}
+      <button className="sidebar-nav-btn" onClick={onOpenLibrary} type="button" aria-label="Library">
+        <RailIcon name="library" />
+        <RailLabel text="Library" />
       </button>
 
       {/* Vault — the document library. */}
       <button className="sidebar-nav-btn" onClick={onOpenLocalFiles} aria-label="Vault">
-        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-        </svg>
-        <span>Vault</span>
+        <RailIcon name="vault" />
+        <RailLabel text="Vault" />
       </button>
 
       {/* Models - Box icon */}
       <button className="sidebar-nav-btn" onClick={onOpenModels} aria-label="Manage models">
-        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-        </svg>
-        <span>Models</span>
+        <RailIcon name="models" />
+        <RailLabel text="Models" />
       </button>
 
-      {/* Search filter */}
-      {source.length > 0 && (
-        <div style={{ padding: '4px 8px 0', position: 'relative' }}>
-          <svg
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            style={{
-              position: 'absolute',
-              left: '16px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              // --rail-*, not --text-muted: this icon sits on the rail, which
-              // is dark in BOTH themes, so a themed colour would resolve to
-              // dark grey on near-black in light mode.
-              color: 'var(--rail-text-faint)',
-              pointerEvents: 'none',
-            }}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <input
-            className="sidebar-search-input"
-            type="text"
-            placeholder="Search chats..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            aria-label="Filter conversations"
-            style={{ paddingLeft: '28px' }}
-          />
-        </div>
+      {/* Aurora — opens the app-wide panel over whatever page is open.
+
+          It carries AppMark, the outlined triangle that used to sit at the top
+          of this rail, rather than the solid one from the icon family: the two
+          triangles differed only in fill, which is not a difference you can
+          see in a 20px glyph, and only one of them is now on screen.
+
+          Rendered as a bare <svg>, NOT wrapped in a span. The collapsed rail
+          hides a button's direct span children to drop the labels, so a mark
+          inside a span disappeared the moment the sidebar closed — Aurora was
+          the one rail entry with no icon there. As an svg it is treated
+          exactly like every other rail icon, by the same rules. */}
+      <button
+        className={`sidebar-nav-btn${assistantOpen ? ' is-active' : ''}`}
+        type="button"
+        aria-label="Agent Lara"
+        aria-pressed={assistantOpen}
+        title="Agent Lara"
+        onClick={() => onToggleAssistant?.()}
+      >
+        <AppMark size={20} className="rail-icon sidebar-nav-mark" />
+        <RailLabel text="Agent Lara" />
+      </button>
+
+      {/* Only on the page they belong to, with no heading: previous chats
+          while New Chat is active; spaces (Workspace folders) and
+          previous drafts while the Workspace is active. Each row is a grey
+          dot and a name. */}
+      {activeView === 'chat' && sorted.length > 0 && (
+        <ul className="sidebar-plain-list sidebar-context-list">
+          {sorted.map(chat => (
+            /* The row is an <li> holding a title button and three action
+               buttons, rather than one big button. A <button> may not contain
+               other buttons, so the old single-button row had nowhere to put
+               these. The actions appear on hover or keyboard focus. */
+            <li key={chat.id} className="sidebar-row">
+              <button
+                type="button"
+                className={`sidebar-plain-row${chat.id === selected ? ' is-on' : ''}`}
+                onClick={() => onSelectChat?.(chat.id)}
+                title={chat.title}
+              >
+                <span className="sidebar-dot" aria-hidden="true" />
+                <span className="sidebar-plain-label">{chat.title}</span>
+              </button>
+
+              <span className="sidebar-row-actions">
+                {/* A pin. Filled once the chat is pinned, so the button
+                    reports the state as well as changing it. */}
+                <button
+                  type="button"
+                  className={`sidebar-icon-btn-xs${chat.pinned ? ' is-on' : ''}`}
+                  aria-pressed={!!chat.pinned}
+                  title={chat.pinned ? 'Unpin chat' : 'Pin chat'}
+                  aria-label={chat.pinned ? 'Unpin chat' : 'Pin chat'}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onPinChat?.(chat.id);
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill={chat.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M15 3.5v5.2l2.6 2.6a1.5 1.5 0 0 1 .4 1V14h-5v6l-1 1.5-1-1.5v-6H6v-1.7c0-.38.14-.74.4-1L9 8.7V3.5h6z" />
+                  </svg>
+                </button>
+
+                {/* A bookmark, for saving. */}
+                <button
+                  type="button"
+                  className={`sidebar-icon-btn-xs${chat.saved ? ' is-on' : ''}`}
+                  aria-pressed={!!chat.saved}
+                  title={chat.saved ? 'Unsave chat' : 'Save chat'}
+                  aria-label={chat.saved ? 'Unsave chat' : 'Save chat'}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onSaveChat?.(chat.id);
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill={chat.saved ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M6 4.5h12v16l-6-3.6-6 3.6v-16z" />
+                  </svg>
+                </button>
+
+                {/* A waste bin. The only destructive one here, so it is the
+                    only one that goes red. */}
+                <button
+                  type="button"
+                  className="sidebar-icon-btn-xs sidebar-icon-btn-xs--danger"
+                  title="Delete chat"
+                  aria-label="Delete chat"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onDeleteChat?.(chat.id);
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M4 6.5h16M9.5 6.5V4.8h5v1.7M6.5 6.5l.9 12.2a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-12.2M10.3 10v6.5M13.7 10v6.5" />
+                  </svg>
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
 
-      {/* Pinned Section */}
-      {pinnedChats.length > 0 && (
-        <>
-          <div className="sidebar-section-title">Pinned</div>
-          <ul className="sidebar-chat-list">
-            {pinnedChats.map(chat => (
-              <ChatItem
-                key={chat.id}
-                chat={chat}
-                isSelected={chat.id === selected}
-                isHovered={hoveredChat === chat.id}
-                onMouseEnter={() => setHoveredChat(chat.id)}
-                onMouseLeave={() => setHoveredChat(null)}
-                onSelect={() => onSelectChat?.(chat.id)}
-                onPin={() => onPinChat?.(chat.id)}
-                onSave={() => onSaveChat?.(chat.id)}
-                onDelete={() => onDeleteChat?.(chat.id)}
-              />
-            ))}
-          </ul>
-        </>
+      {activeView === 'draft' && (spaces.length > 0 || recentDrafts.length > 0) && (
+        <ul className="sidebar-plain-list sidebar-context-list">
+          {spaces.map(space => (
+            <li key={`s${space.id}`}>
+              <button
+                type="button"
+                className="sidebar-plain-row"
+                onClick={() => onOpenSpace?.(space.id)}
+                title={space.name}
+              >
+                <span className="sidebar-dot" aria-hidden="true" />
+                <span className="sidebar-plain-label">{space.name}</span>
+              </button>
+            </li>
+          ))}
+          {recentDrafts.map(draft => (
+            <li key={`d${draft.id}`}>
+              <button
+                type="button"
+                className="sidebar-plain-row"
+                onClick={() => onOpenRecentDraft?.(draft.id)}
+                title={draft.title}
+              >
+                <span className="sidebar-dot" aria-hidden="true" />
+                <span className="sidebar-plain-label">{draft.title}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
+      <div className="sidebar-spacer" />
 
-      {/* Other Chats */}
-      <div className="sidebar-section-title">
-        {pinnedChats.length > 0 ? 'Recent' : 'Your chats'}
-      </div>
-      <ul className="sidebar-chat-list" style={{ flex: 1, overflowY: 'auto' }}>
-        {otherChats.length === 0 && pinnedChats.length === 0 && (
-          <li className="sidebar-empty-state">No conversations yet</li>
-        )}
-        {otherChats.map(chat => (
-          <ChatItem
-            key={chat.id}
-            chat={chat}
-            isSelected={chat.id === selected}
-            isHovered={hoveredChat === chat.id}
-            onMouseEnter={() => setHoveredChat(chat.id)}
-            onMouseLeave={() => setHoveredChat(null)}
-            onSelect={() => onSelectChat?.(chat.id)}
-            onPin={() => onPinChat?.(chat.id)}
-            onSave={() => onSaveChat?.(chat.id)}
-            onDelete={() => onDeleteChat?.(chat.id)}
-          />
-        ))}
-      </ul>
-
-      {/* Footer: Settings and Help & Feedback, pinned to the bottom. */}
-      <div className="sidebar-footer-section">
-        <button className="sidebar-nav-btn" onClick={onOpenSettings} aria-label="Settings">
-          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-          <span>Settings</span>
+      {/* Bottom of the rail: Help & Feedback above Settings, stacked in the
+          icon column whether the sidebar is open or closed. */}
+      <div className="sidebar-bottom">
+        <button
+          className="sidebar-bottom-btn sidebar-login-btn"
+          type="button"
+          onClick={onOpenAccount}
+          aria-label={lockProfile ? lockProfile.username : 'Sign in'}
+          title={lockProfile ? lockProfile.username : 'Sign in'}
+        >
+          <RailIcon name="login" />
+          <RailLabel text={lockProfile ? lockProfile.username : 'Sign in'} />
         </button>
-        <button className="sidebar-nav-btn" onClick={onOpenHelp} aria-label="Help and feedback">
-          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span>Help &amp; Feedback</span>
+        <button className="sidebar-bottom-btn" type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings">
+          <RailIcon name="settings" />
+          <RailLabel text="Settings" />
         </button>
       </div>
     </nav>
-      )}
-      <LoginModal 
-        isOpen={showLoginModal}
-        onClose={() => setShowLoginModal(false)}
-      />
-    </>
   );
 };
 
-// Individual chat item with hover actions
-const ChatItem: React.FC<{
-  chat: Conversation;
-  isSelected: boolean;
-  isHovered: boolean;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
-  onSelect: () => void;
-  onPin: () => void;
-  onSave: () => void;
-  onDelete: () => void;
-}> = ({ chat, isSelected, isHovered, onMouseEnter, onMouseLeave, onSelect, onPin, onSave, onDelete }) => {
-  return (
-    <li
-      className={`sidebar-chat-item ${isSelected ? 'selected' : ''}`}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-    >
-      <div className="sidebar-chat-row">
-        {/* Indicators */}
-        <div className="sidebar-chat-indicators">
-          {chat.pinned && (
-            <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24" className="sidebar-pin-icon" aria-label="Pinned">
-              <path d="M16 4a1 1 0 01.117 1.993L16 6v4.26l1.527 1.527.097.112a2 2 0 01.369 1.014L18 13v1h-5v6l-1 2-1-2v-6H6v-1a2 2 0 01.883-1.662l.144-.078L8 10.26V6a1 1 0 01-.117-1.993L8 4h8z" />
-            </svg>
-          )}
-          {chat.saved && (
-            <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24" className="sidebar-save-icon" aria-label="Saved">
-              <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
-          )}
-        </div>
-
-        {/* Title */}
-        <button className="sidebar-chat-title" onClick={onSelect}>
-          {chat.title}
-        </button>
-
-        {/* Hover Actions */}
-        {isHovered && (
-          <div className="sidebar-chat-actions">
-            <button
-              className="sidebar-icon-btn-xs"
-              onClick={(e) => { e.stopPropagation(); onPin(); }}
-              title={chat.pinned ? 'Unpin' : 'Pin'}
-            >
-              <svg width="14" height="14" fill={chat.pinned ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 4a1 1 0 01.117 1.993L16 6v4.26l1.527 1.527.097.112a2 2 0 01.369 1.014L18 13v1h-5v6l-1 2-1-2v-6H6v-1a2 2 0 01.883-1.662l.144-.078L8 10.26V6a1 1 0 01-.117-1.993L8 4h8z" />
-              </svg>
-            </button>
-            <button
-              className="sidebar-icon-btn-xs"
-              onClick={(e) => { e.stopPropagation(); onSave(); }}
-              title={chat.saved ? 'Unsave' : 'Save'}
-            >
-              <svg width="14" height="14" fill={chat.saved ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-              </svg>
-            </button>
-            <button
-              className="sidebar-icon-btn-xs"
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              title="Delete"
-            >
-              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
-        )}
-      </div>
-    </li>
-  );
-};
+// A second, never-rendered chat row used to follow here: `ChatItem`, a ~75-line
+// component with its own pin / save / delete icons and its own hover-reveal
+// behaviour, drawn from `hoveredChat` state that nothing set. Nothing ever
+// imported or rendered it. The live row is the inline `<li className=
+// "sidebar-row">` above, whose actions appear on hover OR keyboard focus --
+// which is the reason to prefer it: ChatItem gated its actions on
+// `isHovered` alone, so they were unreachable from the keyboard.
+//
+// Two designs for one row, one of them dead, is worse than either on its own:
+// it leaves no way to tell which is canonical.

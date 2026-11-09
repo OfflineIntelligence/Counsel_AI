@@ -1,0 +1,681 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NOTIFICATION ISLAND
+   ═══════════════════════════════════════════════════════════════════════════
+   Geometry — every number below derives from the window band:
+
+     band          38px  (--window-band-h)
+     capsule       28px  tall, so 5px clear above and below: centred
+     wells         22px  circles, 3px inset from each end: the glyph on the
+                         left and the close button on the right are the same
+                         size at the same inset, so the capsule balances
+     glyph / ×     13 / 12px at stroke 2.5 — optically equal in their wells
+
+   Horizontal: the region spans the content area (right of the sidebar) and
+   reserves 96px at BOTH ends — the width the window lights take on the right
+   — so the capsule is centred over the page and can never reach the lights.
+
+   Colour: black in both themes, like the hardware island. Per theme, only
+   the separation changes: a soft shadow on light, a hairline rim on dark.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.island-region {
+  --island-h: 34px;
+  --island-well: 24px;
+  --island-inset: 8px;
+  --island-side-reserve: 96px;
+
+  position: fixed;
+  top: 0;
+  left: calc(var(--rail-collapsed-width) + var(--island-side-reserve));
+  right: var(--island-side-reserve);
+  height: var(--window-band-h);
+  z-index: 2002; /* above the drag strip (2000) and the lights (2001) */
+  display: flex;
+  /* Top-anchored, not centred: the capsule's TOP stays put in the band and
+     the agent sheet grows downward from it. */
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: calc((var(--window-band-h) - var(--island-h)) / 2);
+  box-sizing: border-box;
+  /* The region spans the band; only the capsule takes the pointer, so the
+     rest of the band still drags the window. */
+  pointer-events: none;
+}
+.app-root[data-sidebar='open'] .island-region {
+  left: calc(var(--rail-width) + var(--island-side-reserve));
+}
+
+.island {
+  --island-bg: #000;
+  --island-text: #f5f5f5;
+  --island-text-dim: rgba(245, 245, 245, 0.6);
+  --island-fill: rgba(255, 255, 255, 0.1);
+  --island-fill-strong: rgba(255, 255, 255, 0.18);
+  --island-tint: #f5f5f5;
+  --island-rim: rgba(255, 255, 255, 0);
+  --island-shadow: 0 6px 18px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.12);
+
+  position: relative;
+  width: var(--island-w, 140px);
+  max-width: 100%;
+  height: var(--island-h);
+  border-radius: var(--r-pill);
+  background: var(--island-bg);
+  color: var(--island-text);
+  box-shadow: var(--island-shadow), inset 0 0 0 1px var(--island-rim);
+  overflow: hidden;
+  contain: layout paint;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  font-family: var(--font-sans);
+  transition: width var(--dur-anim) var(--spring-bouncy),
+    height var(--dur-anim) var(--spring-bouncy),
+    border-radius var(--dur-anim) var(--spring-smooth);
+}
+
+[data-theme='dark'] .island {
+  --island-rim: rgba(255, 255, 255, 0.1);
+  --island-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+
+
+/* Arrive out of a point, leave back into one. Scale is from the centre of
+   the band, so the capsule never crosses its edges on the way. */
+.island[data-phase='enter'] {
+  animation: island-in var(--dur-anim) var(--spring-bouncy) both;
+}
+.island[data-phase='leave'] {
+  animation: island-out calc(var(--dur-anim) * 0.8) var(--spring-smooth) both;
+}
+@keyframes island-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes island-out {
+  0%   { opacity: 1; transform: scale(1); }
+  40%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(0.6); }
+}
+
+/* ── Content: one row, always ─────────────────────────────────────────────── */
+
+.island__content {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  /* `translate`, not `transform`, so the fade-in keyframes own transform.
+     The shell widens from its centre; the content stays centred with it. */
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--island-h);
+  /* max-content, not shrink-to-fit: an absolutely positioned box sizes to
+     its containing block, which here is the capsule itself — so measuring
+     it would only ever report the capsule's current width plus a little,
+     and the capsule would creep open over many frames instead of springing.
+     The cap keeps it inside the region. */
+  width: max-content;
+  max-width: calc(100vw - var(--rail-width) - 2 * var(--island-side-reserve));
+  padding: 0 var(--island-inset);
+  white-space: nowrap;
+  animation: island-content-in calc(var(--dur-anim) * 0.7) var(--spring-smooth) both;
+  animation-delay: 50ms;
+}
+.island__content.is-dismissing {
+  animation: island-content-out 140ms var(--ease-out) both;
+}
+@keyframes island-content-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes island-content-out {
+  to { opacity: 0; transform: scale(0.97); }
+}
+
+/* The two wells — identical boxes at identical insets. */
+.island__well {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--island-well);
+  width: var(--island-well);
+  height: var(--island-well);
+  border-radius: 50%;
+}
+.island__glyph {
+  background: color-mix(in srgb, var(--island-tint) 16%, transparent);
+  color: var(--island-tint);
+}
+.island__close {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--island-text-dim);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
+}
+.island__close:hover { background: var(--island-fill-strong); color: var(--island-text); }
+.island__close:active { transform: scale(0.86); transition-duration: 60ms; }
+
+.island__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+}
+
+.island__message {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Soft edges while the text scrolls, so it slides under the capsule's
+     surface instead of being cut by a hard line. */
+  --fade: 0px;
+  mask-image: linear-gradient(90deg, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent);
+  font-size: var(--fs-sm);
+  color: var(--island-text-dim);
+  animation: island-content-in calc(var(--dur-anim) * 0.7) var(--spring-smooth) both;
+  animation-delay: 80ms;
+}
+
+.island__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin-left: 4px;
+  animation: island-content-in calc(var(--dur-anim) * 0.7) var(--spring-smooth) both;
+  animation-delay: 110ms;
+}
+.island__action {
+  height: var(--island-well);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--island-fill);
+  color: var(--island-text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out),
+    transform var(--dur-3) var(--spring-bouncy);
+}
+.island__action:hover { background: var(--island-fill-strong); }
+.island__action:active { transform: scale(0.95); transition-duration: 60ms; }
+.island__action--primary {
+  background: var(--island-text);
+  color: var(--island-bg);
+}
+.island__action--primary:hover { background: #fff; }
+
+.island__action:focus-visible,
+.island__close:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 1px;
+}
+
+.island__count {
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: var(--island-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Countdown: a hairline along the bottom lip that drains toward the centre,
+   symmetric like the capsule. Paused while hovered. */
+.island__timer {
+  position: absolute;
+  left: calc(var(--island-h) / 2);
+  right: calc(var(--island-h) / 2);
+  bottom: 2px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--island-fill-strong);
+  transform-origin: center;
+  animation: island-timer linear forwards;
+  animation-duration: var(--island-duration, 5000ms);
+}
+.island:hover .island__timer,
+.island:focus-within .island__timer {
+  animation-play-state: paused;
+}
+@keyframes island-timer {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* A message longer than its slot scrolls, on hover, inside the capsule — the
+   way the Dynamic Island scrolls a long track title. It never leaves the
+   band, so nothing on the page is ever covered. Transform-only; the travel
+   distance (--marquee) is measured in JS. Pauses at both ends so each end
+   can be read. */
+.island__message[data-marquee] {
+  text-overflow: clip;
+  --fade: 12px;
+}
+.island__message[data-marquee] > span {
+  display: inline-block;
+  animation: island-marquee var(--marquee-dur, 6s) ease-in-out 300ms infinite alternate;
+}
+@keyframes island-marquee {
+  0%, 12%  { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(-1 * var(--marquee, 0px))); }
+}
+
+/* Reduce Motion: no widening, scaling or folding — cross-fades only. */
+@media (prefers-reduced-motion: reduce) {
+  .island { transition: none; }
+  .island[data-phase='enter'],
+  .island__content,
+  .island__message,
+  .island__actions { animation: island-fade 200ms ease both; }
+  .island__message[data-marquee] > span { animation: none; }
+  .island[data-phase='leave'],
+  .island__content.is-dismissing { animation: island-fade 200ms ease reverse both; }
+  .island__timer { display: none; }
+}
+@keyframes island-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   IDLE — the resting pill
+   ═══════════════════════════════════════════════════════════════════════════
+   Always present, so Aurora is one click away from any page. Small and quiet:
+   the app mark and the word, nothing else. */
+/* The resting pill is gone: Aurora opens only from its rail button. The
+   island is still the home of notifications and the open agent. */
+.island[data-mode='idle'] { display: none; }
+.island__idle {
+  gap: 7px;
+  padding: 0 14px 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--island-text-dim);
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out);
+}
+.island__idle:hover { color: var(--island-text); }
+.island__idle:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: -3px;
+  border-radius: var(--r-pill);
+}
+.island__idle-mark { display: inline-flex; }
+.island__idle-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-normal);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AGENT — a search capsule, and an answer bar that appears beneath it
+   ═══════════════════════════════════════════════════════════════════════════
+   Opening Aurora widens the island into a search-like capsule: attach, the
+   question, send — one 44px row, nothing else. Nothing appears below it until
+   something is asked. Then a second black bar eases in under the capsule
+   (slowly, on purpose: it is the answer arriving), grows with the reply up
+   to about a third of the window, and scrolls inside after that.
+
+   The island itself stops being the black shape in this mode: the capsule
+   and the answer bar are each their own black surface, stacked with a gap,
+   so the answer reads as a new component appearing rather than the capsule
+   swelling. Notifications are unaffected by any of this.
+
+   Esc or a click on the dimmed page folds everything back to the pill. */
+.island[data-mode='agent'] {
+  width: min(560px, 100%);
+  height: auto;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  contain: none;
+  cursor: default;
+}
+.island__agent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--island-text);
+}
+
+/* Aurora's panel, unseated from every rule that used to float it as a card
+   (fixed position, glass, slide transform). The heavy selector settles them
+   without !important. */
+html body .island .ai-panel.ai-panel--island.ai-panel--island {
+  position: static;
+  inset: auto;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  transform: none;
+  opacity: 1;
+  transition: none;
+  pointer-events: auto;
+}
+/* No title row: the capsule IS the agent. Esc / the dimmed page close it. */
+.island .ai-panel--island .ai-panel-head { display: none; }
+.island .ai-panel--island .ai-panel-body { display: block; }
+
+.island .ai-panel--island .dr-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: auto;
+  min-height: 0;
+  background: transparent;
+}
+
+/* Aurora's capsule follows the app theme: white with a white edge and a soft
+   grey shadow in light; black and grey in dark. Every ancestor lets the
+   shadow through, so it is not cut to a rectangle at the capsule's sides. */
+.island[data-mode='agent'] {
+  --island-bg: #ffffff;
+  --island-text: #111111;
+  --island-text-dim: rgba(17, 17, 17, 0.5);
+  --island-fill: rgba(0, 0, 0, 0.06);
+  --island-fill-strong: rgba(0, 0, 0, 0.1);
+  --island-tint: #111111;
+  --island-rim: #ffffff;
+  --island-shadow: 0 4px 20px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+[data-theme='dark'] .island[data-mode='agent'] {
+  --island-bg: #0b0b0b;
+  --island-text: #f5f5f5;
+  --island-text-dim: rgba(245, 245, 245, 0.55);
+  --island-fill: rgba(255, 255, 255, 0.08);
+  --island-fill-strong: rgba(255, 255, 255, 0.14);
+  --island-tint: #f5f5f5;
+  --island-rim: #2a2a2a;
+  --island-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+}
+.island[data-mode='agent'],
+.island__agent,
+html body .island .ai-panel.ai-panel--island.ai-panel--island,
+.island .ai-panel--island .ai-panel-body,
+.island .ai-panel--island .dr-assistant {
+  overflow: visible;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.island .ai-panel--island .dr-island-mark {
+  order: 0;
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  color: var(--island-text);
+}
+.island .ai-panel--island .dr-attach { display: none; }
+
+/* ── The capsule (Aurora's composer) ──────────────────────────────────────── */
+.island .ai-panel--island .dr-assistant-input {
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 6px 6px 8px;
+  border: 0;
+  border-radius: 22px;
+  background: var(--island-bg);
+  box-shadow: var(--island-shadow), inset 0 0 0 1px var(--island-rim);
+  animation: island-capsule-in var(--dur-anim) var(--spring-bouncy) both;
+}
+@keyframes island-capsule-in {
+  from { opacity: 0; transform: scaleX(0.3); }
+  to   { opacity: 1; transform: none; }
+}
+.island .ai-panel--island .dr-assistant-input textarea {
+  order: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 7px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--island-text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 18px;
+  resize: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.island .ai-panel--island .dr-assistant-input textarea::placeholder { color: var(--island-text-dim); }
+.island .ai-panel--island .dr-assistant-input textarea:focus { outline: none; }
+.island .ai-panel--island .dr-attach { order: 0; position: relative; }
+.island .ai-panel--island .dr-send { order: 2; }
+/* Attached files sit on their own line inside the capsule, under the input. */
+.island .ai-panel--island .dr-attached { order: 3; flex-basis: 100%; padding: 0 4px 2px; }
+.island .ai-panel--island .dr-attach__btn,
+.island .ai-panel--island .dr-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+.island .ai-panel--island .dr-attach__btn {
+  background: var(--island-fill);
+  color: var(--island-text);
+}
+.island .ai-panel--island .dr-send {
+  background: var(--island-text);
+  color: var(--island-bg);
+}
+/* The attach menu drops DOWN from the capsule, over the dimmed page. */
+.island .ai-panel--island .dr-attach__menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: 0;
+}
+
+/* ── The answer bar (Aurora's conversation) ──────────────────────────────── */
+.island .ai-panel--island .dr-assistant-scroll {
+  display: none;
+}
+/* Shown only once there is something in it besides the empty-state intro:
+   a question asked, an answer streaming, or the model-setup prompt. */
+.island .ai-panel--island .dr-assistant-scroll:has(> :not(.dr-assistant-intro)) {
+  display: block;
+  max-height: 34vh;
+  overflow-y: auto;
+  padding: 14px 16px;
+  border-radius: var(--r-xl);
+  background: var(--island-bg);
+  box-shadow: var(--island-shadow), inset 0 0 0 1px var(--island-rim);
+  color: var(--island-text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  transform-origin: top center;
+  /* Slow, on purpose: the answer bar is a new thing arriving. */
+  animation: island-answer-in 700ms var(--spring-smooth) both;
+}
+@keyframes island-answer-in {
+  from { opacity: 0; transform: translateY(-10px) scaleY(0.92); }
+  to   { opacity: 1; transform: none; }
+}
+.island .ai-panel--island .dr-assistant-intro { display: none; }
+.island .ai-panel--island .dr-assistant-scroll::-webkit-scrollbar { width: 0; }
+
+/* "New conversation" sits quietly under the answer bar, centred. */
+.island .ai-panel--island .dr-new-thread {
+  align-self: center;
+  order: 2;
+  background: var(--island-bg);
+  color: var(--island-text-dim);
+  border-radius: var(--r-pill);
+  padding: 4px 12px;
+}
+
+/* A notification arriving while Aurora is open: its own small black row
+   above the capsule, the same shape it has everywhere else. */
+.island__content--inline {
+  position: static;
+  translate: none;
+  width: max-content;
+  max-width: 100%;
+  align-self: center;
+  border-radius: var(--r-pill);
+  background: var(--island-bg);
+  box-shadow: var(--island-shadow), inset 0 0 0 1px var(--island-rim);
+}
+.island__content--inline .island__message { max-width: 320px; }
+
+/* ── The dimmed page ───────────────────────────────────────────────────────
+   Under the island (and the window lights), over everything else. Opacity
+   only, so fading it costs one compositor property. */
+.island-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1990;
+  background: rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-anim) var(--ease-out);
+}
+[data-theme='dark'] .island-scrim { background: rgba(0, 0, 0, 0.5); }
+.island-scrim.is-on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-scrim { transition: none; }
+  .island .ai-panel--island .dr-assistant-input,
+  .island .ai-panel--island .dr-assistant-scroll { animation: island-fade 200ms ease both; }
+}
+
+/* ── Aurora at the bottom: Workspace, Vault, Library ───────────────────────
+   On these three pages the open agent sits at the BOTTOM centre of the page:
+   the search capsule along the bottom edge, the answer bar growing upward
+   above it. The idle pill and notifications stay in the top band; only the
+   open agent moves, and only here. */
+.app-root:not([data-view='chat'])
+  .island-region:has(.island[data-mode='agent']) {
+  top: auto;
+  bottom: 18px;
+  height: auto;
+  align-items: flex-end;
+  padding-top: 0;
+}
+.app-root:not([data-view='chat'])
+  .island .ai-panel--island .dr-assistant {
+  /* Capsule at the bottom, answer bar (and "New conversation") above it. */
+  flex-direction: column-reverse;
+}
+.app-root:not([data-view='chat'])
+  .island .ai-panel--island .dr-assistant-scroll:has(> :not(.dr-assistant-intro)) {
+  transform-origin: bottom center;
+  animation-name: island-answer-up;
+}
+@keyframes island-answer-up {
+  from { opacity: 0; transform: translateY(10px) scaleY(0.92); }
+  to   { opacity: 1; transform: none; }
+}
+/* The attach menu opens UP from a capsule at the bottom. */
+.app-root:not([data-view='chat'])
+  .island .ai-panel--island .dr-attach__menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+/* ── Notifications: a white bar ────────────────────────────────────────────
+   The notification row (only — not the idle pill, not Aurora) is white with
+   black text, a 50%-white border, and a very light grey shadow just around
+   its edges. Its controls and glyph switch to dark ink to match. Same in
+   both themes, like a system banner. */
+.island[data-mode='notification'] {
+  --island-bg: #ffffff;
+  --island-text: #0a0a0a;
+  --island-text-dim: rgba(10, 10, 10, 0.58);
+  --island-fill: rgba(0, 0, 0, 0.05);
+  --island-fill-strong: rgba(0, 0, 0, 0.09);
+  --island-tint: #0a0a0a;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+}
+.island[data-mode='notification'] .island__action--primary:hover { background: #262626; }
+.island[data-mode='notification'] .island__action:focus-visible,
+.island[data-mode='notification'] .island__close:focus-visible {
+  outline-color: rgba(0, 0, 0, 0.45);
+}
+
+/* ── Status on the glyph ───────────────────────────────────────────────────
+   Monochrome: each status has its own glyph shape (check, triangle, cross,
+   info), drawn in the island's ink inside a faint wash of the same ink. The
+   shape and the words carry the status; nothing depends on hue. */
+.island[data-mode='notification'] .island__glyph {
+  background: color-mix(in srgb, var(--island-tint) 10%, transparent);
+}
+
+/* ── Notifications follow the theme ────────────────────────────────────────
+   White in light mode (above); black with light text in dark mode. The status
+   tints switch to the brighter dark-mode shades to stay readable on black. */
+[data-theme='dark'] .island[data-mode='notification'] {
+  --island-bg: #000000;
+  --island-text: #f5f5f5;
+  --island-text-dim: rgba(245, 245, 245, 0.6);
+  --island-fill: rgba(255, 255, 255, 0.1);
+  --island-fill-strong: rgba(255, 255, 255, 0.18);
+  --island-tint: #f5f5f5;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+[data-theme='dark'] .island[data-mode='notification'] .island__action--primary:hover { background: #ffffff; }
+[data-theme='dark'] .island[data-mode='notification'] .island__action:focus-visible,
+[data-theme='dark'] .island[data-mode='notification'] .island__close:focus-visible {
+  outline-color: rgba(255, 255, 255, 0.6);
+}
+
+/* Codex palette: notifications are a raised surface in each theme —
+   white in light, charcoal in dark. */
+[data-theme='dark'] .island[data-mode='notification'] {
+  --island-bg: #2a2a2a;
+  --island-text: #ececec;
+  --island-text-dim: rgba(236, 236, 236, 0.6);
+  --island-fill: rgba(255, 255, 255, 0.08);
+  --island-fill-strong: rgba(255, 255, 255, 0.14);
+  --island-tint: #ececec;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+[data-theme='dark'] .island[data-mode='notification'] .island__action--primary:hover { background: #ffffff; }
+[data-theme='dark'] .island[data-mode='notification'] .island__action:focus-visible,
+[data-theme='dark'] .island[data-mode='notification'] .island__close:focus-visible {
+  outline-color: rgba(255, 255, 255, 0.6);
+}
+[data-theme='dark'] .island[data-mode='agent'] {
+  --island-bg: #212121;
+  --island-rim: #333333;
+}
+
+/* Aurora open: 36% wider than before (560px → 762px), height unchanged. */
+.island[data-mode='agent'] { width: min(640px, 100%); }
+
+/* No film behind the open agent: the scrim stays (a click on it still
+   closes the agent) but is fully clear, in both themes. */
+.island-scrim,
+[data-theme='dark'] .island-scrim { background: transparent; }

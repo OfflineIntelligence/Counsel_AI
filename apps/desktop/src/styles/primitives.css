@@ -74,13 +74,15 @@
     border-color var(--dur-1) var(--ease-out),
     color var(--dur-1) var(--ease-out),
     box-shadow var(--dur-1) var(--ease-out),
-    transform var(--dur-1) var(--ease-out);
+    transform var(--dur-3) var(--spring-bouncy);
 }
 
-/* 1px depress on press. Cheap, and it is most of what makes a button feel
-   physical; applied on the base so every variant inherits it. */
+/* Press = a slight shrink, the way Apple controls give under a finger. It
+   snaps in on --dur-1 and springs back on release (the base transition runs
+   the spring), and it is transform-only, so it never touches layout. */
 .ui-btn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.97);
+  transition-duration: 60ms;
 }
 
 .ui-btn:disabled,
@@ -172,6 +174,28 @@
   color: var(--text-on-accent);
 }
 
+/* Confirmations (vault/workspace/library deletes) speak monochrome instead:
+   near-black at rest, white on hover — the Linear/Vercel register. Scoped to
+   `.confirm-dialog` so danger buttons anywhere else keep their red meaning.
+   Identical in both themes: black and white need no theme. */
+.confirm-dialog .ui-btn--danger {
+  background: #1b1b1e;
+  border-color: #1b1b1e;
+  color: #f4f4f5;
+  box-shadow: var(--shadow-xs);
+}
+.confirm-dialog .ui-btn--danger:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #000000;
+}
+.confirm-dialog .ui-btn--danger:active:not(:disabled) {
+  background: #e7e7e7;
+  border-color: #e7e7e7;
+  color: #000000;
+  box-shadow: none;
+}
+
 /* ── Size modifiers ────────────────────────────────────────────────────── */
 .ui-btn--sm {
   --btn-h: 28px;
@@ -210,14 +234,15 @@
   color: var(--text-secondary);
   cursor: pointer;
   transition: background-color var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+    color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--spring-bouncy);
 }
 .ui-iconbtn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 .ui-iconbtn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.9);
+  transition-duration: 60ms;
 }
 .ui-iconbtn:disabled {
   opacity: 0.4;
@@ -259,11 +284,12 @@
 
 .ui-progress__fill {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: clamp(0%, calc(var(--progress) * 1%), 100%);
+  inset: 0;
   border-radius: inherit;
   background: var(--progress-color);
-  transition: width var(--dur-4) var(--ease-out),
+  transform: scaleX(clamp(0, calc(var(--progress) / 100), 1));
+  transform-origin: left center;
+  transition: transform var(--dur-4) var(--ease-out),
     background-color var(--dur-2) var(--ease-out);
 }
 
@@ -297,7 +323,9 @@
    rather than a full-width pulse, because a pulse is easily mistaken for a
    determinate bar sitting at 100%. */
 .ui-progress--indeterminate .ui-progress__fill {
+  right: auto;
   width: 35%;
+  transform: none;
   animation: ui-progress-slide 1.25s var(--ease-in-out) infinite;
 }
 
@@ -341,11 +369,12 @@
 }
 .ui-meter__fill {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: clamp(0%, calc(var(--progress) * 1%), 100%);
+  inset: 0;
   border-radius: inherit;
   background: var(--progress-color);
-  transition: width var(--dur-3) var(--ease-out),
+  transform: scaleX(clamp(0, calc(var(--progress) / 100), 1));
+  transform-origin: left center;
+  transition: transform var(--dur-3) var(--ease-out),
     background-color var(--dur-2) var(--ease-out);
 }
 
@@ -690,6 +719,37 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Buttons inside a toast (e.g. Resume / Discard). */
+.ui-toast__actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.ui-toast__action {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.ui-toast__action:hover { background: var(--bg-hover); }
+.ui-toast__action--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.ui-toast__action--primary:hover { background: var(--accent-hover); }
+.ui-toast__action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* Auto-dismiss countdown.
    Driven by a CSS animation reading --toast-duration, NOT by React state. The
    previous implementation ran a 50ms setInterval per toast and called
@@ -747,4 +807,54 @@
   --toast-accent: var(--accent);
   --toast-tint: var(--accent-quiet);
   --toast-fg: var(--accent-fg);
+}
+
+/* ── Notifications in the app's theme ────────────────────────────────────────
+   Same surface as the Workspace boxes: a surface card, soft shadow, and the
+   type shown as a small coloured dot on a neutral tile rather than as a
+   coloured stripe down the edge.
+
+   One set of rules, not a light set plus a dark mirror. The nine
+   `:root[data-theme="dark"] .ui-toast*` overrides that used to follow this
+   block were there only because the rules above were written as literal
+   #ffffff / #000000 / #f3f4f6; naming the roles instead resolves both themes,
+   which is the whole point of this file carrying no [data-theme] rules. */
+.ui-toast {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  box-shadow: var(--shadow-lg);
+}
+.ui-toast::before {
+  display: none;
+}
+.ui-toast__icon {
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  border-radius: var(--r-md);
+}
+.ui-toast__title {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  color: var(--text-heading);
+}
+.ui-toast__message {
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.ui-toast__meta {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.ui-toast__timer {
+  background: var(--bg-inset);
+}
+.ui-toast__timer-fill {
+  background: var(--accent);
+}
+.ui-toast .ui-iconbtn {
+  color: var(--text-primary);
 }

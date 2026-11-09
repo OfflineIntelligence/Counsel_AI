@@ -1,12 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getApiBaseSync } from '../api/backendUrl';
 import {
-  ArrowLeft, Send, CheckCircle, MessageSquare, HardDrive, Key,
-  Settings as SettingsIcon, User, Palette, LifeBuoy, Info,
+  ArrowLeft, ChevronRight, HelpCircle, SlidersHorizontal, User, HardDrive, Box, Activity, Info,
 } from 'lucide-react';
-import { showHuggingFaceApiKeyModal } from './ModelsPanel';
+import { showHuggingFaceApiKeyModal } from './models/modelDialogBus';
 import { getAllApiKeys } from '../api/apiKeys';
 import { getHfToken } from '../api/hfToken';
 import {
@@ -17,7 +16,51 @@ import {
   type StorageSettings,
 } from '../api/storageSettings';
 import MetricsPanel from './MetricsPanel';
+import HelpFeedbackPanel from './HelpFeedbackPanel';
+import './workspace/workspace.css';
 import './SettingsPanel.css';
+
+/** The sections, as tabs along the top of one scrolling page. Each carries the one-line
+ *  description shown under its heading. */
+const SETTINGS_TABS = [
+  { id: 'general', label: 'General', icon: SlidersHorizontal, blurb: '' },
+  { id: 'account', label: 'Account', icon: User, blurb: 'Your sign-in on this device.' },
+  { id: 'storage', label: 'Storage', icon: HardDrive, blurb: 'Where your documents live and how much disk the software uses.' },
+  { id: 'models', label: 'Models', icon: Box, blurb: '' },
+  { id: 'system', label: 'System', icon: Activity, blurb: '' },
+  { id: 'help', label: 'Help & Support', icon: HelpCircle, blurb: '' },
+  { id: 'about', label: 'About', icon: Info, blurb: '' },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]['id'];
+
+/** Storage breakdown, in the order a user thinks about it: their own files
+ *  first, then what runs the app, then what it can rebuild. */
+const USAGE_PARTS = [
+  { key: 'vault_bytes', label: 'Vault' },
+  { key: 'drafts_bytes', label: 'Drafts' },
+  { key: 'models_bytes', label: 'Models' },
+  { key: 'engines_bytes', label: 'Engines' },
+  { key: 'database_bytes', label: 'Database' },
+  { key: 'downloads_bytes', label: 'Downloads' },
+  { key: 'kv_cache_bytes', label: 'Cache' },
+  { key: 'other_bytes', label: 'Other' },
+] as const;
+
+const THEME_CHOICES = [
+  { id: 'system', label: 'Automatic' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+] as const;
+
+function initialsOf(name?: string, email?: string): string {
+  const source = (name || (email ?? '').split('@')[0] || '').trim();
+  if (!source) return '?';
+  // First letter of the first name and of the last name ("Ada M. Lovelace" → AL).
+  const parts = source.split(/[\s@._-]+/).filter(Boolean);
+  const last = parts.length > 1 ? parts[parts.length - 1] : '';
+  return ((parts[0]?.[0] ?? '') + (last[0] ?? '')).toUpperCase() || '?';
+}
 
 const SettingsPanel: React.FC<{
   isOpen: boolean;
@@ -28,17 +71,54 @@ const SettingsPanel: React.FC<{
   onOpenMetrics?: () => void;
   onOpenHelp?: () => void;
   onRequestLogin?: () => void;
+  /** Which tab to open on (the sidebar's Help entry opens 'help'). */
+  initialTab?: 'general' | 'account' | 'storage' | 'models' | 'system' | 'help' | 'about';
 }> = ({
   isOpen,
   onClose,
   onOpenModels,
   onHuggingFaceTokenChange,
   onOpenStorage,
-  onOpenMetrics,
-  onOpenHelp,
   onRequestLogin,
+  initialTab = 'general',
 }) => {
-  const { theme, toggleTheme } = useTheme();
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
+  // Where the user has been, so Escape walks back: previous section, then
+  // the settings home (general), then out to a new chat via onClose.
+  const tabHistory = useRef<SettingsTab[]>([]);
+  // Every section is on one scrolling page; a tab scrolls to its section.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const scrollToTab = (id: SettingsTab, smooth = true) => {
+    const box = contentRef.current;
+    const el = box?.querySelector<HTMLElement>(`[data-settings-tab="${id}"]`);
+    if (box && el) box.scrollTo({ top: el.offsetTop - box.offsetTop - 8, behavior: smooth ? 'smooth' : 'auto' });
+    setTab(id);
+  };
+  const goTab = (id: SettingsTab) => {
+    if (id === tab) return;
+    tabHistory.current.push(tab);
+    scrollToTab(id);
+  };
+  // The highlighted tab follows the scroll: the last section whose top has
+  // passed the top of the content area.
+  const onContentScroll = () => {
+    const box = contentRef.current;
+    if (!box) return;
+    let current: SettingsTab = SETTINGS_TABS[0].id;
+    for (const t of SETTINGS_TABS) {
+      const el = box.querySelector<HTMLElement>(`[data-settings-tab="${t.id}"]`);
+      if (el && el.offsetTop - box.offsetTop - box.scrollTop <= 80) current = t.id;
+    }
+    // At the very bottom, the last section counts as current even if short.
+    if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) current = SETTINGS_TABS[SETTINGS_TABS.length - 1].id;
+    if (current !== tab) setTab(current);
+  };
+  // Open on the requested section (the sidebar's Help entry opens 'help').
+  useEffect(() => {
+    if (isOpen) requestAnimationFrame(() => scrollToTab(initialTab, false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialTab]);
+  const { theme, preference, setPreference } = useTheme();
   const { user, isLoggedIn, logout, setApiKey } = useAuth();
 
   // Live API key presence indicators
@@ -64,8 +144,7 @@ const SettingsPanel: React.FC<{
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Storage budget. Loaded from the backend rather than kept in localStorage:
-  // the backend enforces the limit, so it must be the one source of truth —
-  // a cached copy here could disagree with what is actually being applied.
+  // the backend enforces the limit, so it must be the one source of truth.
   const [storage, setStorage] = useState<StorageSettings | null>(null);
   const [storageError, setStorageError] = useState('');
   const [savingLimit, setSavingLimit] = useState(false);
@@ -107,396 +186,342 @@ const SettingsPanel: React.FC<{
     }
   };
 
-  // Feedback form state
-  const [feedbackName, setFeedbackName] = useState(user?.name || '');
-  const [feedbackEmail, setFeedbackEmail] = useState(user?.email || '');
-  const [feedbackMessage, setFeedbackMessage] = useState('');
-  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
-  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
-  const [feedbackError, setFeedbackError] = useState('');
-
-  const handleFeedbackSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!feedbackMessage.trim()) {
-      setFeedbackError('Please enter your feedback');
-      return;
-    }
-
-    if (!feedbackEmail.trim()) {
-      setFeedbackError('Please enter your email');
-      return;
-    }
-
-    setIsSubmittingFeedback(true);
-    setFeedbackError('');
-
-    try {
-      const response = await fetch(`${getApiBaseSync()}/feedback`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: feedbackName,
-          email: feedbackEmail,
-          message: feedbackMessage,
-          subject: `FEEDBACK from ${feedbackName || 'Anonymous'}`,
-          to_email: 'product@offlineintelligence.io',
-        }),
+  // Disk space on this drive, shown beside the app's own budget. Read once
+  // when Storage is opened, since a disk does not fill while a settings page
+  // is on screen.
+  const [disk, setDisk] = useState<{ used: number; free: number; total: number } | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    let live = true;
+    fetch(`${getApiBaseSync()}/hardware/info`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((hw: { storage_used_bytes: number; storage_available_bytes: number } | null) => {
+        if (!live || !hw) return;
+        setDisk({
+          used: hw.storage_used_bytes,
+          free: hw.storage_available_bytes,
+          total: hw.storage_used_bytes + hw.storage_available_bytes,
+        });
+      })
+      .catch(() => {
+        /* Not fatal: the row is simply not shown. */
       });
+    return () => {
+      live = false;
+    };
+  }, [isOpen]);
 
-      if (response.ok) {
-        setFeedbackSubmitted(true);
-        setTimeout(() => {
-          setFeedbackSubmitted(false);
-          setFeedbackMessage('');
-        }, 3000);
-      } else {
-        throw new Error('Failed to submit feedback');
+  // Escape steps back through the sections: previous tab, then the settings
+  // home, then out to a new chat. Backspace jumps straight out — unless the
+  // user is typing in a field, where it must keep deleting text.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const prev = tabHistory.current.pop();
+        if (prev !== undefined) scrollToTab(prev);
+        else if (tab !== 'general') scrollToTab('general');
+        else onClose();
+        return;
       }
-    } catch (err) {
-      setFeedbackError('Failed to send feedback. Please try again.');
-    } finally {
-      setIsSubmittingFeedback(false);
-    }
-  };
-
+      if (e.key === 'Backspace') {
+        const t = e.target as HTMLElement | null;
+        const typing =
+          !!t &&
+          (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+        if (!typing) onClose();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose, tab]);
 
   if (!isOpen) return null;
 
-  return (
-    <div className="settings-page">
-      {/* Header — the same page chrome as every other view, so the app has one
-          header pattern rather than five. */}
-      <div className="chat-header">
-        <div className="chat-header-bar centered">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button className="header-icon-btn" onClick={onClose} title="Back to chat">
-              <ArrowLeft size={18} />
-            </button>
-            <h1 className="chat-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <SettingsIcon size={20} strokeWidth={1.75} />
-              Settings
-            </h1>
-          </div>
-        </div>
+
+  // Share of the app's budget each component takes, for the stacked bar. With
+  // no limit (Unlimited) the bar is scaled to what is in use instead.
+  const usageTotal = storage?.usage.total_bytes ?? 0;
+  const barScale = storage && storage.limit_mb > 0
+    ? Math.max(storage.limit_mb * 1024 * 1024, usageTotal)
+    : usageTotal;
+  const usageParts = storage
+    ? USAGE_PARTS.map((p, i) => ({ ...p, bytes: storage.usage[p.key], shade: i }))
+        .filter((p) => p.bytes > 0)
+    : [];
+
+  // One section of the page: its heading and blurb, then its content.
+  const block = (id: SettingsTab, content: React.ReactNode) => {
+    const t = SETTINGS_TABS.find((x) => x.id === id)!;
+    return (
+      <div className="settings-block" data-settings-tab={id}>
+        {id !== 'about' && (
+          <header className="settings-head">
+            <h2 className="settings-head__title">{t.label}</h2>
+            {t.blurb && <p className="settings-head__blurb">{t.blurb}</p>}
+          </header>
+        )}
+        {content}
       </div>
+    );
+  };
 
-      <div className="settings-page__body">
-        <div className="settings-col">
-          {/* ── 1. SYSTEM METRICS ──────────────────────────────────────────
-              First on the page, deliberately: it is the only LIVE thing here,
-              and it answers the question a user actually opens Settings with
-              when something feels slow. Rendered by the real MetricsPanel in
-              embedded mode, so there is exactly one metrics implementation —
-              the polling, rolling history and sparklines are the same code
-              that used to power the standalone page. */}
-          <div className="settings-block">
-            <MetricsPanel isOpen embedded />
+  return (
+    <div className="app-view settings-page">
+      <div className="settings-shell">
+        {/* Top bar: back, title, and the sections as tabs. Selecting one
+            scrolls the page below to it. */}
+        <header className="settings-top">
+          <div className="settings-top__row">
+            <button type="button" className="settings-back" onClick={onClose} title="Back to chat">
+              <ArrowLeft size={15} strokeWidth={1.75} aria-hidden="true" />
+              <span>Back to chat</span>
+            </button>
+            <h1 className="ws-landing-title settings-title">Settings</h1>
           </div>
+          <nav className="settings-tabs" aria-label="Settings sections">
+            {SETTINGS_TABS.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                className={`settings-tab${tab === id ? ' is-on' : ''}`}
+                aria-current={tab === id ? 'true' : undefined}
+                onClick={() => goTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        </header>
 
-          {/* ── 2. ACCOUNT ─────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <User size={12} strokeWidth={2} />
-              Account
-            </div>
-            <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">
-                    {isLoggedIn ? (user?.name || 'Signed in') : 'Not signed in'}
-                  </span>
-                  <span className="settings-row__desc">
-                    {isLoggedIn
-                      ? (user?.email || 'Signed in on this device')
-                      : 'Sign in to keep your details across sessions'}
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  {isLoggedIn ? (
-                    <button className="settings-btn settings-btn--danger" onClick={() => logout()}>
-                      Log out
-                    </button>
-                  ) : (
-                    <button className="settings-btn settings-btn--primary" onClick={() => onRequestLogin?.()}>
-                      Log in
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+        <div className="settings-content" ref={contentRef} onScroll={onContentScroll}>
+          <div className="settings-inner ui-anim ui-anim--rise">
 
-          {/* ── 3. API KEYS ────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <Key size={12} strokeWidth={2} />
-              API keys
-            </div>
-            <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">
-                    HuggingFace token
-                    <span
-                      className={
-                        apiKeyStatus.huggingface
-                          ? 'settings-pill settings-pill--ok'
-                          : 'settings-pill settings-pill--off'
-                      }
-                    >
-                      <span className="settings-pill__dot" />
-                      {apiKeyStatus.huggingface ? 'Configured' : 'Not set'}
-                    </span>
-                  </span>
-                  <span className="settings-row__desc">
-                    {apiKeyStatus.huggingface
-                      ? 'Active. Gated and private models can be downloaded.'
-                      : 'Needed only for gated or private models on HuggingFace.'}
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  <button
-                    className="settings-btn"
-                    onClick={() =>
-                      showHuggingFaceApiKeyModal(onHuggingFaceTokenChange, setApiKey, refreshApiKeyStatus)
-                    }
-                  >
-                    {apiKeyStatus.huggingface ? 'Change' : 'Add token'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 4. STORAGE ─────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <HardDrive size={12} strokeWidth={2} />
-              Storage
-            </div>
-            <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">Vault</span>
-                  <span className="settings-row__desc">
-                    Your document library — read once, available to every conversation.
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  <button className="settings-btn" onClick={() => onOpenStorage?.()}>
-                    Open Vault
-                  </button>
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">Disk limit</span>
-                  <span className="settings-row__desc">
-                    Maximum space for models, engines, the database, your Vault files and cached data.
-                  </span>
-                  {storageError && (
-                    <span className="settings-note settings-note--danger">{storageError}</span>
-                  )}
-                  {storage && !storageError && (
-                    <span className="settings-note">
-                      Using <strong>{storage.usage_human}</strong> of {storage.limit_human}
-                      {storage.source === 'environment' && ' (default)'}
-                      {storage.over_budget && (
-                        <span className="settings-note--danger"> — over the limit</span>
-                      )}
-                    </span>
-                  )}
-                  {evictionNote && <span className="settings-note">{evictionNote}</span>}
-                </div>
-                <div className="settings-row__control">
-                  <select
-                    className="settings-select"
-                    disabled={!storage || savingLimit}
-                    value={storage ? String(storage.limit_mb) : ''}
-                    onChange={(e) => handleLimitChange(Number(e.target.value))}
-                    aria-label="Disk limit"
-                  >
-                    {/* A limit set outside these choices (e.g. via .env) still needs
-                        to be selectable, or the control would silently misreport it. */}
-                    {storage && !LIMIT_CHOICES_MB.some((c) => c.value === storage.limit_mb) && (
-                      <option value={String(storage.limit_mb)}>{storage.limit_human} (current)</option>
-                    )}
-                    {LIMIT_CHOICES_MB.map((choice) => (
-                      <option key={choice.value} value={String(choice.value)}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 5. APPEARANCE ──────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <Palette size={12} strokeWidth={2} />
-              Appearance
-            </div>
-            <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">Dark mode</span>
-                  <span className="settings-row__desc">
-                    Currently {theme === 'dark' ? 'dark' : 'light'}. The sidebar stays black in both.
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={theme === 'dark'}
-                    aria-label="Dark mode"
-                    className="settings-switch"
-                    onClick={toggleTheme}
-                  >
-                    <span className="settings-switch__thumb" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 6. HELP ────────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <LifeBuoy size={12} strokeWidth={2} />
-              Help
-            </div>
-            <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">Help &amp; guides</span>
-                  <span className="settings-row__desc">
-                    How attachments, the Vault and model selection work.
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  <button className="settings-btn" onClick={() => onOpenHelp?.()}>
-                    Open help
-                  </button>
-                </div>
-              </div>
-              <div className="settings-row">
-                <div className="settings-row__text">
-                  <span className="settings-row__title">Models</span>
-                  <span className="settings-row__desc">
-                    Browse, install and activate local models, including vision models.
-                  </span>
-                </div>
-                <div className="settings-row__control">
-                  <button className="settings-btn" onClick={() => onOpenModels?.()}>
-                    Open models
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 7. FEEDBACK ────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <MessageSquare size={12} strokeWidth={2} />
-              Feedback
-            </div>
-            <div className="settings-group">
-              {feedbackSubmitted ? (
-                <div className="settings-sent">
-                  <span className="settings-sent__icon">
-                    <CheckCircle size={22} strokeWidth={1.75} />
-                  </span>
-                  <span className="settings-sent__title">Thank you</span>
-                  <span className="settings-sent__hint">Your feedback has been sent.</span>
-                </div>
-              ) : (
-                <form className="settings-row settings-row--stack" onSubmit={handleFeedbackSubmit}>
-                  <div className="settings-row__text">
-                    <span className="settings-row__title">Send us feedback</span>
-                    <span className="settings-row__desc">
-                      Goes to product@offlineintelligence.io — tell us what broke or what is missing.
-                    </span>
-                  </div>
-
-                  <div className="settings-field">
-                    <label className="settings-field__label" htmlFor="fb-name">Name</label>
-                    <input
-                      id="fb-name"
-                      className="settings-input"
-                      type="text"
-                      value={feedbackName}
-                      onChange={(e) => setFeedbackName(e.target.value)}
-                      placeholder="Your name"
-                    />
-                  </div>
-
-                  <div className="settings-field">
-                    <label className="settings-field__label" htmlFor="fb-email">Email</label>
-                    <input
-                      id="fb-email"
-                      className="settings-input"
-                      type="email"
-                      value={feedbackEmail}
-                      onChange={(e) => setFeedbackEmail(e.target.value)}
-                      placeholder="you@example.com"
-                      required
-                    />
-                  </div>
-
-                  <div className="settings-field">
-                    <label className="settings-field__label" htmlFor="fb-message">Feedback</label>
-                    <textarea
-                      id="fb-message"
-                      className={
-                        feedbackError ? 'settings-textarea settings-textarea--invalid' : 'settings-textarea'
-                      }
-                      value={feedbackMessage}
-                      onChange={(e) => setFeedbackMessage(e.target.value)}
-                      placeholder="Tell us what you think…"
-                      rows={4}
-                      required
-                    />
-                    {feedbackError && (
-                      <span className="settings-note settings-note--danger">{feedbackError}</span>
-                    )}
-                  </div>
-
-                  <div className="settings-row__control" style={{ minWidth: 0 }}>
+            {block('general', (
+              <section className="settings-section">
+                <div className="settings-themes" role="radiogroup" aria-label="Appearance">
+                  {THEME_CHOICES.map(({ id, label }) => (
                     <button
-                      className="settings-btn settings-btn--primary"
-                      type="submit"
-                      disabled={isSubmittingFeedback}
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={preference === id}
+                      className="settings-theme"
+                      onClick={() => setPreference(id)}
                     >
-                      <Send size={15} strokeWidth={1.75} />
-                      {isSubmittingFeedback ? 'Sending…' : 'Send feedback'}
+                      <span className={`settings-theme__preview settings-theme__preview--${id}`} aria-hidden="true">
+                        {/* A tiny screen in that theme: a search bar, an agent
+                            bar and one button. Automatic shows both halves. */}
+                        {(id === 'system' ? ['light', 'dark'] : [id]).map((half) => (
+                          <span key={half} className={`tp tp--${half}`}>
+                            <span className="tp-search" />
+                            <span className="tp-agent" />
+                            <span className="tp-btn" />
+                          </span>
+                        ))}
+                      </span>
+                      <span className="settings-theme__label">{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+
+            {block('account', (
+              <section className="settings-section">
+                <div className="settings-profile">
+                  <span className={`settings-avatar${isLoggedIn ? '' : ' is-empty'}`} aria-hidden="true">
+                    {isLoggedIn ? initialsOf(user?.name, user?.email) : <User size={22} strokeWidth={1.6} />}
+                  </span>
+                  <div className="settings-profile__text">
+                    <span className="settings-profile__name">
+                      {isLoggedIn ? user?.name || 'Signed in' : 'Not signed in'}
+                    </span>
+                    {isLoggedIn && user?.email && <span className="settings-profile__sub">{user.email}</span>}
+                  </div>
+                  {!isLoggedIn && (
+                    <button className="settings-btn settings-btn--primary" onClick={() => onRequestLogin?.()}>
+                      Sign in
+                    </button>
+                  )}
+                </div>
+
+                <p className="settings-row__desc settings-privacy">
+                  Your account is used only to identify you. Your account keeps the intelligence and information
+                  only for yourself, everything stays on your device.
+                </p>
+
+                {isLoggedIn && (
+                  <div className="settings-row settings-row--action">
+                    <button className="settings-link settings-link--danger" onClick={() => logout()}>
+                      Sign out
                     </button>
                   </div>
-                </form>
-              )}
-            </div>
-          </div>
+                )}
+              </section>
+            ))}
 
-          {/* ── 8. ABOUT ───────────────────────────────────────────────────── */}
-          <div className="settings-block">
-            <div className="settings-block__label">
-              <Info size={12} strokeWidth={2} />
-              About
-            </div>
-            <div className="settings-group">
-              <div className="settings-about">
-                <span className="settings-about__name">Offline Counsel AI</span>
-                <span>Version 0.1.0</span>
-                <span>Offline-first legal AI. Models and documents never leave this device.</span>
-              </div>
-            </div>
+            {block('storage', (
+              <>
+                <section className="settings-section">
+                  <h3 className="settings-section__title">Counsel AI</h3>
+                  <div className="settings-usage">
+                    <div className="settings-usage__head">
+                      {storage ? (
+                        <>
+                          <span className="settings-usage__figure">{storage.usage_human}</span>
+                          <span className="settings-usage__of">
+                            {storage.limit_mb > 0 ? `of ${storage.limit_human}` : 'used, no limit'}
+                          </span>
+                          {storage.over_budget && <span className="settings-badge">Over limit</span>}
+                        </>
+                      ) : (
+                        <span className="settings-usage__of">{storageError ? '—' : 'Calculating…'}</span>
+                      )}
+                    </div>
+                    <div className="settings-stack" role="img" aria-label="Storage used by category">
+                      {barScale > 0 &&
+                        usageParts.map((p) => (
+                          <span
+                            key={p.key}
+                            className={`settings-stack__seg settings-shade-${p.shade}`}
+                            style={{ width: `${(p.bytes / barScale) * 100}%` }}
+                            title={`${p.label}: ${formatBytes(p.bytes)}`}
+                          />
+                        ))}
+                    </div>
+                    {usageParts.length > 0 && (
+                      <ul className="settings-legend">
+                        {usageParts.map((p) => (
+                          <li key={p.key}>
+                            <span className={`settings-legend__dot settings-shade-${p.shade}`} />
+                            <span className="settings-legend__label">{p.label}</span>
+                            <span className="settings-legend__value">{formatBytes(p.bytes)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {storageError && <span className="settings-note settings-note--danger">{storageError}</span>}
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row__text">
+                      <span className="settings-row__title">Disk limit</span>
+                      {evictionNote && <span className="settings-note">{evictionNote}</span>}
+                    </div>
+                    <div className="settings-row__control">
+                      <select
+                        className="settings-select"
+                        disabled={!storage || savingLimit}
+                        value={storage ? String(storage.limit_mb) : ''}
+                        onChange={(e) => handleLimitChange(Number(e.target.value))}
+                        aria-label="Disk limit"
+                      >
+                        {/* A limit set outside these choices (e.g. via .env) still needs
+                            to be selectable, or the control would silently misreport it. */}
+                        {storage && !LIMIT_CHOICES_MB.some((c) => c.value === storage.limit_mb) && (
+                          <option value={String(storage.limit_mb)}>{storage.limit_human} (current)</option>
+                        )}
+                        {LIMIT_CHOICES_MB.map((choice) => (
+                          <option key={choice.value} value={String(choice.value)}>
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                </section>
+
+                {disk && (
+                  <section className="settings-section">
+                    <h3 className="settings-section__title">This drive</h3>
+                    <div className="settings-row">
+                      <div className="settings-row__text settings-row__text--grow">
+                        <span className="settings-row__title">
+                          {formatBytes(disk.free)} available
+                        </span>
+                        <div
+                          className="settings-bar"
+                          role="progressbar"
+                          aria-label="Disk space in use"
+                          aria-valuenow={disk.total > 0 ? Math.round((disk.used / disk.total) * 100) : 0}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        >
+                          <span
+                            className="settings-bar__fill"
+                            style={{ width: `${disk.total > 0 ? (disk.used / disk.total) * 100 : 0}%` }}
+                          />
+                        </div>
+                        <span className="settings-row__desc">
+                          {formatBytes(disk.used)} of {formatBytes(disk.total)} used
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+                )}
+              </>
+            ))}
+
+            {block('models', (
+              <>
+                <section className="settings-section">
+                  <button type="button" className="settings-row settings-row--nav" onClick={() => onOpenModels?.()}>
+                    <div className="settings-row__text">
+                      <span className="settings-row__title">Manage models</span>
+                    </div>
+                    <div className="settings-row__control">
+                      <ChevronRight size={16} strokeWidth={1.75} className="settings-row__chevron" />
+                    </div>
+                  </button>
+                </section>
+
+                <section className="settings-section">
+                  <h3 className="settings-section__title">Access tokens</h3>
+                  <div className="settings-row">
+                    <div className="settings-row__text">
+                      <span className="settings-row__title">Hugging Face</span>
+                      <span className="settings-row__desc">
+                        <span className={`settings-status${apiKeyStatus.huggingface ? ' is-on' : ''}`} />
+                        {apiKeyStatus.huggingface
+                          ? 'Connected'
+                          : 'Not set'}
+                      </span>
+                    </div>
+                    <div className="settings-row__control">
+                      <button
+                        className="settings-btn"
+                        onClick={() =>
+                          showHuggingFaceApiKeyModal(onHuggingFaceTokenChange, setApiKey, refreshApiKeyStatus)
+                        }
+                      >
+                        {apiKeyStatus.huggingface ? 'Change…' : 'Add token…'}
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </>
+            ))}
+
+            {/* The real MetricsPanel, embedded: one implementation of the
+                polling and the charts. */}
+            {block('system', (
+              <section className="settings-section settings-section--flush">
+                <MetricsPanel isOpen embedded />
+              </section>
+            ))}
+
+            {block('help', <HelpFeedbackPanel isOpen embedded onClose={onClose} isLoggedIn={isLoggedIn} />)}
+
+            {block('about', (
+              <>
+                <div className="settings-about">
+                  <h2 className="settings-about__name">Offline Counsel AI</h2>
+                  <span className="settings-about__version">Version 0.1.0</span>
+                </div>
+              </>
+            ))}
           </div>
         </div>
       </div>

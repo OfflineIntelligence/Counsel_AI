@@ -91,7 +91,7 @@ export function uploadTooLargeMessage(totalBytes: number): string {
   return (
     `These files total ${formatMegabytes(totalBytes)}, over the ` +
     `${formatMegabytes(MAX_UPLOAD_TOTAL_BYTES)} limit for a single upload. ` +
-    `Add them in smaller batches instead — each batch is saved as it ` +
+    `Add them in smaller batches instead. Each batch is saved as it ` +
     `completes, so nothing is lost by splitting them up.`
   )
 }

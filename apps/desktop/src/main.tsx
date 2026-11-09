@@ -1,10 +1,17 @@
 import { StrictMode } from 'react'
+import { ConfirmProvider } from './contexts/ConfirmContext'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/inter/opsz.css'
 import './index.css'
 import App from './App.tsx'
+import { installAuthFetch } from './api/authFetch'
+
+// Backend calls carry the signed-in session (api/authFetch.ts).
+installAuthFetch()
 import { AuthProvider } from './contexts/AuthContext.tsx'
 import { NotificationProvider } from './contexts/NotificationContext.tsx'
 import { ThemeProvider } from './contexts/ThemeContext.tsx'
+import { AssistantProvider } from './contexts/AssistantContext.tsx'
 import { LoadingScreen } from './components/LoadingScreen.tsx'
 import { EngineSetupGate } from './components/EngineSetupGate.tsx'
 
@@ -27,7 +34,11 @@ try {
           <AuthProvider>
             <ThemeProvider>
               <NotificationProvider>
-                <App />
+                <ConfirmProvider>
+                  <AssistantProvider>
+                    <App />
+                  </AssistantProvider>
+                </ConfirmProvider>
               </NotificationProvider>
             </ThemeProvider>
           </AuthProvider>
@@ -39,7 +50,7 @@ try {
 } catch (error) {
   console.error('[main.tsx] Failed to render React app:', error);
   document.getElementById('root')!.innerHTML = `
-    <div style="padding: 20px; color: red; background: #1a1a2e; min-height: 100vh;">
+    <div style="padding: 20px; color: #f5f5f5; background: #0a0a0a; min-height: 100vh;">
       <h1>Error Loading Application</h1>
       <pre>${error}</pre>
     </div>
